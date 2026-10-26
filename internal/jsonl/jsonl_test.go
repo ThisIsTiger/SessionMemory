@@ -98,7 +98,7 @@ func TestReaderLeavesPartialLineForNextRead(t *testing.T) {
 	defer r2.Close()
 	recs, err = readAll(t, r2)
 	if err != io.EOF || len(recs) != 1 || string(recs[0].Line) != "{\"b\":2}\n" {
-		t.Fatalf("resumed read = %q err=%v", recs, err)
+		t.Fatalf("resumed read = %v err=%v", recs, err)
 	}
 	if recs[0].Start != 8 {
 		t.Errorf("resumed record start = %d, want 8", recs[0].Start)
@@ -375,7 +375,7 @@ func TestResumeFromCursorReadsOnlyNewRecords(t *testing.T) {
 	defer r2.Close()
 	recs, err := readAll(t, r2)
 	if err != io.EOF || len(recs) != 1 || string(recs[0].Line) != "{\"c\":3}\n" {
-		t.Fatalf("got %q err=%v", recs, err)
+		t.Fatalf("got %v err=%v", recs, err)
 	}
 }
 

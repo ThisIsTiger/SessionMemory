@@ -1,8 +1,0 @@
-{"timestamp":"2026-09-01T03:00:00.000Z","ordinal":0,"type":"session_meta","payload":{"session_id":"01eee111-2222-3333-4444-555566667777","id":"01eee111-2222-3333-4444-555566667777","timestamp":"2026-09-01T03:00:00.000Z","cwd":"/Users/dev/demo/edgecases","originator":"Codex Desktop","source":"vscode","thread_source":"user"}}
-{"timestamp":"2026-09-01T03:00:01.000Z","type":"turn_context","payload":{"turn_id":"turn-edge"}}
-{"timestamp":"2026-09-01T03:00:02.000Z","type":"response_item","payload":{"type":"message","id":"m1","role":"user","content":[{"type":"input_text","text":"第一个 turn 的正常内容"},{"type":"input_image","data":"iVBORw0KGgo="}]}}
-{"timestamp":"2026-09-01T03:00:03.000Z","type":"response_item","payload":{"type":"message","id":"m2","role":"assistant","content":[{"type":"output_text","text":"图片只留占位符"}]}}
-{"timestamp":"2026-09-01T03:00:04.000Z","type":"event_msg","payload":{"type":"task_complete"}}
-{"timestamp":"2026-09-01T03:05:00.000Z","type":"compacted","payload":{"message":"压缩后的历史摘要，包含重复的旧内容，绝不能进入新摘要"}}
-{"timestamp":"2026-09-01T03:06:00.000Z","type":"some_future_record_type","payload":{"anything":"未知记录类型必须计数并跳过，不允许崩溃"}}
-{"timestamp":"2026-09-01T03:07:00.000Z","type":"turn_context","payload":{"turn_id":"turn-tail-no-text"}}

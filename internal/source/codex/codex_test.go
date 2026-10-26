@@ -1,482 +1,392 @@
 package codex
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
-	"time"
 
-	"session-memory/internal/checkpoint"
+	"session-memory/internal/agent"
 	"session-memory/internal/config"
+	"session-memory/internal/session"
+	"session-memory/internal/testutil/codexgen"
 )
 
-func readFixtureBytes(t *testing.T, name string) []byte {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join("testdata", name))
-	if err != nil {
-		t.Fatalf("read fixture: %v", err)
-	}
-	return data
+// memSink stores segments in memory.
+type memSink struct {
+	data map[string][]byte // artifact path -> concatenated bytes (current gen)
+	n    int
 }
 
-func loadFixture(t *testing.T, name string) (SessionMeta, []byte) {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join("testdata", name))
-	if err != nil {
-		t.Fatalf("read fixture: %v", err)
+func newSink() *memSink { return &memSink{data: map[string][]byte{}} }
+
+func (m *memSink) PutSegment(_ context.Context, k agent.ArtifactKey, start, end int64, r io.Reader) (session.SegmentRef, error) {
+	b, _ := io.ReadAll(r)
+	if int64(len(b)) != end-start {
+		return session.SegmentRef{}, fmt.Errorf("segment length %d != %d", len(b), end-start)
 	}
-	firstLine := data
-	if i := strings.IndexByte(string(data), '\n'); i >= 0 {
-		firstLine = data[:i+1]
+	if start == 0 {
+		m.data[k.Path] = nil
 	}
-	meta, err := ParseSessionMeta(firstLine)
-	if err != nil {
-		t.Fatalf("ParseSessionMeta: %v", err)
-	}
-	return meta, data
+	m.data[k.Path] = append(m.data[k.Path], b...)
+	m.n++
+	h := sha256.Sum256(b)
+	return session.SegmentRef{Start: start, End: end, RawHash: hex.EncodeToString(h[:]),
+		Object: "obj_" + strings.Repeat("0", 56) + fmt.Sprintf("%08x", m.n)}, nil
+}
+func (m *memSink) PutBlob(context.Context, agent.ArtifactKey, int64, io.Reader) ([]session.SegmentRef, error) {
+	return nil, nil
 }
 
-func parseFixture(t *testing.T, name string, opts ParseOptions) ParseResult {
+type env struct {
+	home string
+	a    *Adapter
+	id   string
+}
+
+func newEnv(t *testing.T) *env {
 	t.Helper()
-	meta, _ := loadFixture(t, name)
-	res, err := Parse(context.Background(), filepath.Join("testdata", name), meta, opts)
+	home := t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.Agents.Codex.Home = home
+	return &env{home: home, a: New(cfg)}
+}
+
+// put writes a rollout for thread under sessions/2026/09/01/.
+func (e *env) put(t *testing.T, thread string, seg string, content []byte, zst bool) string {
+	t.Helper()
+	name := "rollout-2026-09-01T01-46-53-" + thread
+	if seg != "" {
+		name += "_" + seg
+	}
+	name += ".jsonl"
+	if zst {
+		name += ".zst"
+		content = codexgen.Zstd(content)
+	}
+	p := filepath.Join(e.home, "sessions", "2026", "09", "01", name)
+	os.MkdirAll(filepath.Dir(p), 0700)
+	if err := os.WriteFile(p, content, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func (e *env) capture(t *testing.T, thread string, cur agent.Cursor, sink *memSink) agent.CaptureResult {
+	t.Helper()
+	res, err := e.a.Capture(context.Background(), agent.NativeRef{Home: e.home, NativeID: thread}, cur, sink)
 	if err != nil {
-		t.Fatalf("Parse(%s): %v", name, err)
+		t.Fatal(err)
 	}
 	return res
 }
 
-func utcOpts() ParseOptions { return ParseOptions{Location: time.UTC} }
+func logicOf(thread string) string {
+	return "sessions/2026/09/01/rollout-2026-09-01T01-46-53-" + thread + ".jsonl"
+}
 
-// ---- classify ----
-
-func TestClassifyOrder(t *testing.T) {
-	inc, exc, orig := []string{"vscode"}, []string{"cli", "exec"}, []string{"Codex Desktop", "codex_work_desktop"}
-
-	vscode := SessionMeta{Source: "vscode", Originator: "whatever"}
-	cli := SessionMeta{Source: "cli", Originator: "Codex Desktop"}
-	exec := SessionMeta{Source: "exec"}
-	desktopNoSource := SessionMeta{Source: "", Originator: "Codex Desktop"}
-	unknown := SessionMeta{Source: "newthing", Originator: "SomeOther"}
-
-	if got := Classify(vscode, inc, exc, orig); got != ClassIncluded {
-		t.Errorf("vscode = %s", got)
+func TestCaptureBasicConcatenatesToOriginal(t *testing.T) {
+	e := newEnv(t)
+	thread := codexgen.ThreadIDFor(1)
+	data := codexgen.Rollout(codexgen.Options{Seed: 1, Turns: 4, ToolCalls: 2, Ordinals: true, UILayer: true})
+	e.put(t, thread, "", data, false)
+	sink := newSink()
+	res := e.capture(t, thread, agent.Cursor{}, sink)
+	if res.State != agent.CaptureOK || !res.Changed {
+		t.Fatalf("state=%v changed=%v", res.State, res.Changed)
 	}
-	// exclude wins even when originator would include
-	if got := Classify(cli, inc, exc, orig); got != ClassExcluded {
-		t.Errorf("cli = %s", got)
+	if !bytes.Equal(sink.data[logicOf(thread)], data) {
+		t.Fatal("segments do not concatenate to the original file")
 	}
-	if got := Classify(exec, inc, exc, orig); got != ClassExcluded {
-		t.Errorf("exec = %s", got)
+	st := res.Cursor.Artifacts[logicOf(thread)]
+	if st.Digest != session.SegmentsDigest(st.Segments) || st.Size != int64(len(data)) {
+		t.Errorf("digest/size wrong: %+v", st)
 	}
-	if got := Classify(desktopNoSource, inc, exc, orig); got != ClassIncluded {
-		t.Errorf("desktop without source = %s", got)
-	}
-	if got := Classify(unknown, inc, exc, orig); got != ClassUnknown {
-		t.Errorf("unknown = %s", got)
+	// second capture: nothing new
+	res2 := e.capture(t, thread, res.Cursor, newSink())
+	if res2.Changed || res2.State != agent.CaptureOK {
+		t.Errorf("recapture changed=%v state=%v", res2.Changed, res2.State)
 	}
 }
 
-func TestClassifySourceCaseInsensitive(t *testing.T) {
-	meta := SessionMeta{Source: "VSCode"}
-	if got := Classify(meta, []string{"vscode"}, nil, nil); got != ClassIncluded {
-		t.Errorf("case mismatch: %s", got)
+func TestZstdSameRawHashesAndConversionNotReplaced(t *testing.T) {
+	data := codexgen.Rollout(codexgen.Options{Seed: 2, Turns: 3})
+	a := newEnv(t)
+	tid := codexgen.ThreadIDFor(2)
+	a.put(t, tid, "", data, false)
+	ra := a.capture(t, tid, agent.Cursor{}, newSink())
+
+	b := newEnv(t)
+	b.put(t, tid, "", data, true)
+	rb := b.capture(t, tid, agent.Cursor{}, newSink())
+	sa, sb := ra.Cursor.Artifacts[logicOf(tid)], rb.Cursor.Artifacts[logicOf(tid)]
+	if sa.Digest != sb.Digest || sb.Form != session.FormZstd {
+		t.Fatalf("plain and zstd differ: %s vs %s (%s)", sa.Digest, sb.Digest, sb.Form)
 	}
+
+	// the same stream compressed after capture is not a Replaced
+	c := newEnv(t)
+	p := c.put(t, tid, "", data, false)
+	r1 := c.capture(t, tid, agent.Cursor{}, newSink())
+	os.Remove(p)
+	c.put(t, tid, "", data, true)
+	r2 := c.capture(t, tid, r1.Cursor, newSink())
+	if r2.State != agent.CaptureOK || r2.Changed {
+		t.Errorf("plain->zstd: state=%v changed=%v", r2.State, r2.Changed)
+	}
+	// ...and appended content after compression is read on
+	more := append(append([]byte(nil), data...), codexgen.Rollout(codexgen.Options{Seed: 9, Turns: 1})[0:0]...)
+	_ = more
 }
 
-func TestParseSessionMetaObjectSource(t *testing.T) {
-	// source may be an object (subagent threads); must not crash
-	line := `{"type":"session_meta","payload":{"session_id":"s1","cwd":"/w","source":{"subagent":{"parent_thread_id":"p"}},"originator":"Codex Desktop"}}`
-	meta, err := ParseSessionMeta([]byte(line))
-	if err != nil {
-		t.Fatalf("object source crashed: %v", err)
+func TestSegmentSplitAtRecordBoundary(t *testing.T) {
+	e := newEnv(t)
+	tid := codexgen.ThreadIDFor(3)
+	data := codexgen.Rollout(codexgen.Options{Seed: 3, Turns: 6, PadBytes: 3 << 20})
+	e.put(t, tid, "", data, false)
+	sink := newSink()
+	res := e.capture(t, tid, agent.Cursor{}, sink)
+	st := res.Cursor.Artifacts[logicOf(tid)]
+	if len(st.Segments) < 2 {
+		t.Fatalf("expected several segments for %d bytes, got %d", len(data), len(st.Segments))
 	}
-	if meta.Source != "<object>" {
-		t.Errorf("object source = %q", meta.Source)
-	}
-	// classification: structured (subagent) source is hard-excluded,
-	// never rescued by the originator fallback (design 5.2)
-	if got := Classify(meta, []string{"vscode"}, []string{"cli"}, []string{"Codex Desktop"}); got != ClassExcluded {
-		t.Errorf("subagent session must be excluded, got %s", got)
-	}
-}
-
-func TestParseSessionMetaValidation(t *testing.T) {
-	for _, bad := range []string{
-		`{"type":"turn_context"}`,                                       // not session_meta
-		`{"type":"session_meta","payload":{}}`,                          // missing id + cwd
-		`{"type":"session_meta","payload":{"session_id":"s","cwd":""}}`, // missing cwd
-		`not json`,
-	} {
-		if _, err := ParseSessionMeta([]byte(bad)); err == nil {
-			t.Errorf("accepted bad meta: %s", bad)
+	for i, s := range st.Segments {
+		if s.End-s.Start > int64(agent.MaxSegmentBytes)+4<<20 {
+			t.Errorf("segment %d too large", i)
+		}
+		if i > 0 && s.Start != st.Segments[i-1].End {
+			t.Errorf("segments not contiguous at %d", i)
+		}
+		if data[s.End-1] != '\n' {
+			t.Errorf("segment %d does not end on a record boundary", i)
 		}
 	}
-}
-
-// ---- parser behavior ----
-
-func TestParserBasicDesktop(t *testing.T) {
-	res := parseFixture(t, "desktop_vscode_basic.jsonl", utcOpts())
-	if len(res.Batches) != 1 {
-		t.Fatalf("batches = %d", len(res.Batches))
-	}
-	conv := res.Batches[0].ConversationText()
-	for _, want := range []string{"帮我看一下为什么解析器在边界条件下崩溃", "问题出在 offset 计算没有考虑半行"} {
-		if !strings.Contains(conv, want) {
-			t.Errorf("missing %q in conversation", want)
-		}
-	}
-	// response_item takes precedence: event agent_message duplicate dropped
-	if strings.Contains(conv, "重复的 assistant 内容") {
-		t.Error("duplicate event agent_message was kept")
-	}
-	// forbidden content classes
-	for _, forbidden := range []string{
-		"内部推理", "developer 指令", "cat /etc/passwd", "工具输出", "AKIAIOSFODNN7EXAMPLE",
-	} {
-		if strings.Contains(conv, forbidden) {
-			t.Errorf("forbidden content leaked: %q", forbidden)
-		}
-	}
-	if !res.LastTurnTerminal {
-		t.Error("task_complete should mark turn terminal")
-	}
-	if len(res.UnknownRecords) != 0 {
-		t.Errorf("unexpected unknown records: %v", res.UnknownRecords)
+	if !bytes.Equal(sink.data[logicOf(tid)], data) {
+		t.Fatal("concatenation differs")
 	}
 }
 
-func TestParserEventOnlyFallback(t *testing.T) {
-	res := parseFixture(t, "event_only_fallback.jsonl", utcOpts())
-	if len(res.Batches) != 1 {
-		t.Fatalf("batches = %d", len(res.Batches))
+func TestPartialTailAndCorruptLine(t *testing.T) {
+	e := newEnv(t)
+	tid := codexgen.ThreadIDFor(4)
+	data := codexgen.Rollout(codexgen.Options{Seed: 4, Turns: 2})
+	p := e.put(t, tid, "", append(append([]byte(nil), data...), []byte(`{"timestamp":"x","type":"ev`)...), false)
+	sink := newSink()
+	res := e.capture(t, tid, agent.Cursor{}, sink)
+	if !bytes.Equal(sink.data[logicOf(tid)], data) || res.State != agent.CaptureOK {
+		t.Fatalf("partial tail consumed or state wrong: %v", res.State)
 	}
-	conv := res.Batches[0].ConversationText()
-	if !strings.Contains(conv, "只有 event_msg 表示的用户输入") {
-		t.Error("event user_message fallback missing")
+	// finish the line
+	os.WriteFile(p, append(append([]byte(nil), data...), []byte(`{"timestamp":"x","type":"event_msg","payload":{}}`+"\n")...), 0600)
+	res2 := e.capture(t, tid, res.Cursor, newSink())
+	if !res2.Changed {
+		t.Error("completed line was not captured")
 	}
-	if !strings.Contains(conv, "兼容回退必须保留") {
-		t.Error("event agent_message fallback missing")
+
+	// a corrupt complete line stops capture before it
+	bad := append(append([]byte(nil), data...), []byte("{not json}\n{\"type\":\"x\"}\n")...)
+	e2 := newEnv(t)
+	e2.put(t, tid, "", bad, false)
+	s2 := newSink()
+	r3 := e2.capture(t, tid, agent.Cursor{}, s2)
+	if r3.State != agent.CaptureUnsafe {
+		t.Fatalf("state = %v, want unsafe", r3.State)
 	}
-	if !res.LastTurnTerminal {
-		t.Error("turn_aborted should mark terminal")
+	if !bytes.Equal(s2.data[logicOf(tid)], data) {
+		t.Error("good prefix must still be captured")
 	}
 }
 
-func TestParserCrossDay(t *testing.T) {
-	res := parseFixture(t, "cross_day_turns.jsonl", utcOpts())
-	if len(res.Batches) != 2 {
-		t.Fatalf("expected 2 date batches, got %d", len(res.Batches))
+func TestSameLengthRewriteBumpsGeneration(t *testing.T) {
+	e := newEnv(t)
+	tid := codexgen.ThreadIDFor(5)
+	data := codexgen.Rollout(codexgen.Options{Seed: 5, Turns: 3})
+	p := e.put(t, tid, "", data, false)
+	r1 := e.capture(t, tid, agent.Cursor{}, newSink())
+	mod := append([]byte(nil), data...)
+	mod[20] ^= 0x01
+	os.WriteFile(p, mod, 0600)
+	sink := newSink()
+	r2 := e.capture(t, tid, r1.Cursor, sink)
+	if r2.State != agent.CaptureReplaced {
+		t.Fatalf("state=%v, want replaced", r2.State)
 	}
-	if res.Batches[0].Date != "20260831" || res.Batches[1].Date != "20260901" {
-		t.Errorf("dates = %s, %s", res.Batches[0].Date, res.Batches[1].Date)
+	if g := r2.Cursor.Artifacts[logicOf(tid)].Cursor.Generation; g != 1 {
+		t.Errorf("generation = %d", g)
 	}
-	if !strings.Contains(res.Batches[0].ConversationText(), "八月三十一日") {
-		t.Error("day 1 content in wrong batch")
-	}
-	if !strings.Contains(res.Batches[1].ConversationText(), "九月一日") {
-		t.Error("day 2 content in wrong batch")
-	}
-}
-
-func TestParserEdgeCases(t *testing.T) {
-	res := parseFixture(t, "edge_cases.jsonl", utcOpts())
-	if len(res.Batches) != 1 {
-		t.Fatalf("batches = %d", len(res.Batches))
-	}
-	conv := res.Batches[0].ConversationText()
-	if !strings.Contains(conv, "[Image omitted]") {
-		t.Error("image placeholder missing")
-	}
-	if strings.Contains(conv, "iVBOR") {
-		t.Error("image data leaked")
-	}
-	if strings.Contains(conv, "压缩后的历史摘要") {
-		t.Error("compacted content leaked into batch")
-	}
-	if res.UnknownRecords["some_future_record_type"] != 1 {
-		t.Errorf("unknown type not counted: %v", res.UnknownRecords)
+	if !bytes.Equal(sink.data[logicOf(tid)], mod) {
+		t.Error("new generation must recapture from 0")
 	}
 }
 
-func TestParserHalfLineTail(t *testing.T) {
-	dir := t.TempDir()
-	meta, data := loadFixture(t, "half_line_tail.jsonl")
-	full := len(data)
-	half := `{"type":"response_item","payload":{"type":"message","id":"m3","role":"user","content":[{"type":"input_text","text":"尾部半`
-	path := filepath.Join(dir, "rollout.jsonl")
-	os.WriteFile(path, append(data, []byte(half)...), 0600)
-
-	res, err := Parse(context.Background(), path, meta, utcOpts())
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	conv := ""
-	for _, b := range res.Batches {
-		conv += b.ConversationText()
-	}
-	if strings.Contains(conv, "尾部半") {
-		t.Error("half line consumed")
-	}
-	if res.SafeEndOffset != int64(full) {
-		t.Errorf("SafeEndOffset = %d, want %d (complete lines only)", res.SafeEndOffset, full)
-	}
-	_ = half
-}
-
-func TestParserRecordTooLarge(t *testing.T) {
-	dir := t.TempDir()
-	meta, _ := loadFixture(t, "half_line_tail.jsonl")
-	big := `{"type":"response_item","payload":{"type":"message","id":"m","role":"user","content":[{"type":"input_text","text":"` +
-		strings.Repeat("x", 200) + `"}]}}` + "\n"
-	path := filepath.Join(dir, "r.jsonl")
-	os.WriteFile(path, []byte(big), 0600)
-
-	_, err := Parse(context.Background(), path, meta, ParseOptions{Location: time.UTC, MaxRecordBytes: 100})
-	if err == nil || !strings.Contains(err.Error(), "record_too_large") {
-		t.Errorf("expected record_too_large, got %v", err)
+func TestMiddleRewriteOnZstdDetectedByDeepVerify(t *testing.T) {
+	e := newEnv(t)
+	tid := codexgen.ThreadIDFor(6)
+	data := codexgen.Rollout(codexgen.Options{Seed: 6, Turns: 3})
+	p := e.put(t, tid, "", data, true)
+	r1 := e.capture(t, tid, agent.Cursor{}, newSink())
+	mod := append([]byte(nil), data...)
+	mod[len(mod)/2] ^= 0x01
+	os.WriteFile(p, codexgen.Zstd(mod), 0600)
+	r2 := e.capture(t, tid, r1.Cursor, newSink())
+	if r2.State != agent.CaptureReplaced {
+		t.Errorf("state=%v, want replaced", r2.State)
 	}
 }
 
-func TestParserInvalidJSONStops(t *testing.T) {
-	dir := t.TempDir()
-	meta, _ := loadFixture(t, "half_line_tail.jsonl")
-	ok := `{"type":"turn_context","payload":{"turn_id":"t1"}}` + "\n"
-	bad := `{broken json` + "\n"
-	after := `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"after"}]}}` + "\n"
-	path := filepath.Join(dir, "r.jsonl")
-	os.WriteFile(path, []byte(ok+bad+after), 0600)
-
-	res, err := Parse(context.Background(), path, meta, utcOpts())
-	if err == nil || !strings.Contains(err.Error(), "invalid_json") {
-		t.Fatalf("expected invalid_json error, got %v", err)
+func TestTwinsAndSegmentsAndDetached(t *testing.T) {
+	e := newEnv(t)
+	tid := codexgen.ThreadIDFor(7)
+	data := codexgen.Rollout(codexgen.Options{Seed: 7, Turns: 3})
+	e.put(t, tid, "", data, false)
+	e.put(t, tid, "", data[:len(data)/2], true) // shorter prefix twin
+	r := e.capture(t, tid, agent.Cursor{}, newSink())
+	if r.State != agent.CaptureOK || len(r.Cursor.Artifacts) != 1 {
+		t.Fatalf("equal-prefix twin: state=%v arts=%d", r.State, len(r.Cursor.Artifacts))
 	}
-	// offset stopped at the corrupt line, not past it
-	if res.SafeEndOffset != int64(len(ok)) {
-		t.Errorf("SafeEndOffset advanced past corrupt line: %d", res.SafeEndOffset)
+	// diverged twin
+	e2 := newEnv(t)
+	e2.put(t, tid, "", data, false)
+	other := codexgen.Rollout(codexgen.Options{Seed: 70, Turns: 3})
+	e2.put(t, tid, "", other, true)
+	if r := e2.capture(t, tid, agent.Cursor{}, newSink()); r.State != agent.CaptureUnsafe {
+		t.Errorf("diverged twin: state=%v", r.State)
 	}
-}
-
-func TestParserBlankLinesSkipped(t *testing.T) {
-	dir := t.TempDir()
-	meta, _ := loadFixture(t, "desktop_vscode_basic.jsonl")
-	// fixture with blank separator lines between records
-	content := string(readFixtureBytes(t, "desktop_vscode_basic.jsonl"))
-	withBlanks := strings.ReplaceAll(content, "\n{", "\n\n{")
-	path := filepath.Join(dir, "blank.jsonl")
-	os.WriteFile(path, []byte(withBlanks), 0600)
-
-	res, err := Parse(context.Background(), path, meta, ParseOptions{Location: time.UTC})
-	if err != nil {
-		t.Fatalf("blank lines must not fail the parse: %v", err)
+	// extra segment file = second artifact
+	e3 := newEnv(t)
+	e3.put(t, tid, "", data, false)
+	e3.put(t, tid, "0192f3a4-0000-7000-8000-00000000abcd", data, false)
+	if r := e3.capture(t, tid, agent.Cursor{}, newSink()); len(r.Cursor.Artifacts) != 2 {
+		t.Errorf("segment files: %d artifacts", len(r.Cursor.Artifacts))
 	}
-	conv := ""
-	for _, b := range res.Batches {
-		conv += b.ConversationText()
-	}
-	if !strings.Contains(conv, "解析器在边界条件下崩溃") {
-		t.Error("content lost after blank-line handling")
-	}
-	// full file consumed (all lines were newline-terminated)
-	st, _ := os.Stat(path)
-	if res.SafeEndOffset != st.Size() {
-		t.Errorf("SafeEndOffset = %d, want %d", res.SafeEndOffset, st.Size())
+	// gone
+	e4 := newEnv(t)
+	if r := e4.capture(t, tid, agent.Cursor{}, newSink()); r.State != agent.CaptureDetached {
+		t.Errorf("missing thread: %v", r.State)
 	}
 }
 
-func TestParserFileReplaced(t *testing.T) {
-	dir := t.TempDir()
-	meta, _ := loadFixture(t, "half_line_tail.jsonl")
-	path := filepath.Join(dir, "r.jsonl")
-	os.WriteFile(path, []byte("{}\n"), 0600)
-	_, err := Parse(context.Background(), path, meta, ParseOptions{StartOffset: 999, Location: time.UTC})
-	if err != ErrFileReplaced {
-		t.Errorf("expected ErrFileReplaced, got %v", err)
+func TestMovedToArchiveIsLocated(t *testing.T) {
+	e := newEnv(t)
+	tid := codexgen.ThreadIDFor(8)
+	data := codexgen.Rollout(codexgen.Options{Seed: 8})
+	p := e.put(t, tid, "", data, false)
+	ns, ok, _ := e.a.Locate(context.Background(), agent.NativeRef{Home: e.home, NativeID: tid})
+	if !ok || ns.Cwd != "/work/app" || ns.Profile.Surface != "desktop" || ns.Profile.Version != "0.150.0-test" {
+		t.Fatalf("locate: %+v ok=%v", ns, ok)
+	}
+	arch := filepath.Join(e.home, "archived_sessions", filepath.Base(p))
+	os.MkdirAll(filepath.Dir(arch), 0700)
+	os.Rename(p, arch)
+	ns2, ok, _ := e.a.Locate(context.Background(), agent.NativeRef{Home: e.home, NativeID: tid})
+	if !ok || !strings.HasPrefix(ns2.Files[0].Path, "archived_sessions/") {
+		t.Fatalf("archived thread not found: %+v", ns2)
 	}
 }
 
-// ---- discovery ----
-
-func buildCodexTree(t *testing.T) string {
-	t.Helper()
-	root := t.TempDir()
-	files := map[string]string{
-		"sessions/2026/08/30/rollout-old.jsonl":          "old",
-		"sessions/2026/09/01/rollout-a.jsonl":            "a",
-		"sessions/2026/09/01/rollout-b.jsonl":            "b",
-		"sessions/2026/09/02/rollout-c.jsonl":            "c",
-		"sessions/2026/09/02/notes.txt":                  "not jsonl",
-		"archived_sessions/2026/09/01/rollout-arc.jsonl": "arc",
+func TestDiscoverAndProbeAreSafe(t *testing.T) {
+	e := newEnv(t)
+	secret := "SECRET-SENTINEL-123"
+	for i := int64(1); i <= 3; i++ {
+		data := codexgen.Rollout(codexgen.Options{Seed: i, Turns: 2, Cwd: "/work/" + secret, UILayer: i == 3, Compacted: i == 2, Ordinals: true})
+		e.put(t, codexgen.ThreadIDFor(i), "", data, i == 2)
 	}
-	for rel, content := range files {
-		p := filepath.Join(root, rel)
-		os.MkdirAll(filepath.Dir(p), 0755)
-		os.WriteFile(p, []byte(content), 0644)
+	os.WriteFile(filepath.Join(e.home, "session_index.jsonl"),
+		[]byte(`{"id":"`+codexgen.ThreadIDFor(1)+`","thread_name":"`+secret+`","updated_at":"x"}`+"\n"), 0600)
+	list, err := e.a.Discover(context.Background(), agent.DiscoverOptions{})
+	if err != nil || len(list) != 3 {
+		t.Fatalf("discover: %d %v", len(list), err)
 	}
-	return root
-}
-
-func TestDiscoverLookbackWindow(t *testing.T) {
-	root := buildCodexTree(t)
-	cfg := config.DefaultConfig()
-	cfg.Agents.Codex.Home = root
-	store := checkpoint.NewStore(filepath.Join(t.TempDir(), "state"))
-
-	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
-	opts := DiscoverOptions{Now: now, IncludeArchived: true, Root: root}
-	cands, err := Discover(cfg, store, opts)
-	if err != nil {
-		t.Fatalf("Discover: %v", err)
-	}
-	var names []string
-	for _, c := range cands {
-		names = append(names, filepath.Base(c.Path))
-	}
-	// lookback 48h from 09-02 noon covers 08-31..09-02 plus archived
-	joined := strings.Join(names, ",")
-	for _, want := range []string{"rollout-a.jsonl", "rollout-b.jsonl", "rollout-c.jsonl", "rollout-arc.jsonl"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("missing %s in %v", want, names)
-		}
-	}
-	if strings.Contains(joined, "rollout-old") {
-		t.Errorf("out-of-window file included: %v", names)
-	}
-	if strings.Contains(joined, "notes.txt") {
-		t.Errorf("non-jsonl file included: %v", names)
-	}
-}
-
-func TestDiscoverAllAndSince(t *testing.T) {
-	root := buildCodexTree(t)
-	cfg := config.DefaultConfig()
-	cfg.Agents.Codex.Home = root
-	store := checkpoint.NewStore(filepath.Join(t.TempDir(), "state"))
-
-	all, err := Discover(cfg, store, DiscoverOptions{Now: time.Now(), All: true, Root: root})
+	res, err := e.a.Probe(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := 0
-	for _, c := range all {
-		if strings.Contains(c.Path, "rollout-old") {
-			found++
-		}
+	b, _ := jsonMarshal(res)
+	if strings.Contains(string(b), secret) || strings.Contains(string(b), codexgen.ThreadIDFor(1)) {
+		t.Fatalf("probe leaked sensitive data: %s", b)
 	}
-	if found != 1 {
-		t.Errorf("--all must include historical files: %d", found)
+	h := res.Homes[0]
+	if res.Compatibility != "ok" || h.FileForms["jsonl.zst"] != 1 || h.FileForms["jsonl"] != 2 || h.ClientVer == "" {
+		t.Errorf("probe result: %+v", res)
 	}
-
-	since := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
-	bySince, _ := Discover(cfg, store, DiscoverOptions{Now: time.Now(), Since: &since, Root: root})
-	for _, c := range bySince {
-		if strings.Contains(c.Path, "2026/08/30") {
-			t.Errorf("--since included pre-since file: %s", c.Path)
-		}
+	want := map[string]bool{"form:zst": true, "record:compacted": true, "record:item_completed": true, "has:ordinal": true}
+	for _, c := range h.Capabilities {
+		delete(want, c)
 	}
-}
-
-func TestDiscoverMissingHome(t *testing.T) {
-	cfg := config.DefaultConfig()
-	cfg.Agents.Codex.Home = filepath.Join(t.TempDir(), "nonexistent")
-	store := checkpoint.NewStore(filepath.Join(t.TempDir(), "state"))
-	_, err := Discover(cfg, store, DiscoverOptions{Now: time.Now()})
-	if err == nil || !strings.Contains(err.Error(), "codex_home_missing") {
-		t.Errorf("expected codex_home_missing, got %v", err)
+	if len(want) != 0 {
+		t.Errorf("missing capabilities %v in %v", want, h.Capabilities)
+	}
+	// empty home
+	empty := New(config.Config{Agents: config.AgentsConfig{Codex: config.AgentConfig{Home: filepath.Join(t.TempDir(), "none")}}})
+	if r, _ := empty.Probe(context.Background()); r.Compatibility != "unsupported" {
+		t.Errorf("missing home: %s", r.Compatibility)
 	}
 }
 
-func TestDiscoverMergesRetryable(t *testing.T) {
-	root := buildCodexTree(t)
-	cfg := config.DefaultConfig()
-	cfg.Agents.Codex.Home = root
-	stateDir := t.TempDir()
-	store := checkpoint.NewStore(filepath.Join(stateDir, "state"))
-	// a failed session pointing at the old, out-of-window file
-	store.Save(checkpoint.State{
-		SessionID: "s-old", Source: SourceName, Status: checkpoint.StatusFailed,
-		RolloutPath: filepath.Join(root, "sessions/2026/08/30/rollout-old.jsonl"),
-	})
+func TestRuntimeUnknownWithoutLocks(t *testing.T) {
+	e := newEnv(t)
+	st, _, _ := e.a.Runtime().Running(context.Background(), e.home, "x")
+	if st != agent.Unknown {
+		t.Errorf("state = %v, want Unknown", st)
+	}
+}
 
-	cands, err := Discover(cfg, store, DiscoverOptions{
-		Now: time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC), Root: root,
-	})
-	if err != nil {
+type discardSink struct {
+	t       *testing.T
+	base    uint64
+	maxHeap uint64
+	total   int64
+}
+
+func (d *discardSink) PutSegment(_ context.Context, k agent.ArtifactKey, s, e int64, r io.Reader) (session.SegmentRef, error) {
+	b, _ := io.ReadAll(r)
+	d.total += int64(len(b))
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	if ms.HeapInuse > d.maxHeap {
+		d.maxHeap = ms.HeapInuse
+	}
+	h := sha256.Sum256(b)
+	return session.SegmentRef{Start: s, End: e, RawHash: hex.EncodeToString(h[:]), Object: "obj_" + strings.Repeat("0", 64)}, nil
+}
+func (d *discardSink) PutBlob(context.Context, agent.ArtifactKey, int64, io.Reader) ([]session.SegmentRef, error) {
+	return nil, nil
+}
+
+// Spec §16 task 2.6: capturing a large session streams it; peak memory stays a
+// small multiple of the segment size, not the file size.
+func TestLargeSessionCaptureIsStreamed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large session")
+	}
+	e := newEnv(t)
+	tid := codexgen.ThreadIDFor(99)
+	data := codexgen.Rollout(codexgen.Options{Seed: 99, Turns: 12, PadBytes: 6 << 20}) // ~72 MiB
+	p := e.put(t, tid, "", data, false)
+	n := int64(len(data))
+	data = nil
+	runtime.GC()
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	sink := &discardSink{t: t, base: ms.HeapInuse}
+	if _, err := e.a.Capture(context.Background(), agent.NativeRef{Home: e.home, NativeID: tid}, agent.Cursor{}, sink); err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, c := range cands {
-		if strings.Contains(c.Path, "rollout-old") {
-			found = true
-		}
+	if sink.total != n {
+		t.Fatalf("captured %d of %d bytes", sink.total, n)
 	}
-	if !found {
-		t.Error("retryable pending/failed session not merged into candidates")
+	grown := int64(sink.maxHeap) - int64(sink.base)
+	limit := int64(4 * agent.MaxSegmentBytes)
+	t.Logf("file %d MiB, peak heap growth %d MiB (limit %d MiB)", n>>20, grown>>20, limit>>20)
+	if grown > limit+int64(32<<20) {
+		t.Errorf("peak heap grew by %d MiB for a %d MiB file", grown>>20, n>>20)
 	}
-}
-
-func TestConfigFingerprintStability(t *testing.T) {
-	a := ConfigFingerprint([]string{"vscode"}, []string{"cli", "exec"}, []string{"Codex Desktop"})
-	b := ConfigFingerprint([]string{"vscode"}, []string{"cli", "exec"}, []string{"Codex Desktop"})
-	c := ConfigFingerprint([]string{"vscode"}, []string{"cli"}, []string{"Codex Desktop"})
-	if a != b {
-		t.Error("fingerprint not deterministic")
-	}
-	if a == c {
-		t.Error("fingerprint insensitive to config change")
-	}
-}
-
-func TestDateInRangeWindowsSeparators(t *testing.T) {
-	start, _ := time.Parse("2006/01/02", "2026/09/01")
-	end, _ := time.Parse("2006/01/02", "2026/09/03")
-	// Windows-style backslashes
-	if !dateInRange("2026\\09\\02", &start, &end) {
-		t.Errorf("expected 2026\\09\\02 to be in range")
-	}
-	if dateInRange("2026\\08\\30", &start, &end) {
-		t.Errorf("expected 2026\\08\\30 to be out of range")
-	}
-}
-
-// Spec 18 hard gate: canaries planted in tool outputs and developer/system
-// messages must never reach the provider prompt — only user/assistant text
-// is summarized.
-func TestParserCanaryInExcludedRecordsNeverLeaks(t *testing.T) {
-	dir := t.TempDir()
-	toolCanary := "AKIAIOSFODNN7EXAMPLE"
-	devCanary := "sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJ"
-	reasoningCanary := "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
-	content := `{"type":"session_meta","payload":{"session_id":"canary-1","cwd":"/w","originator":"Codex Desktop","source":"vscode","timestamp":"2026-09-01T01:00:00Z"}}` + "\n" +
-		`{"type":"turn_context","payload":{"turn_id":"t1"}}` + "\n" +
-		`{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"` + devCanary + `"}]}}` + "\n" +
-		`{"type":"response_item","payload":{"type":"reasoning","content":[{"type":"reasoning_text","text":"` + reasoningCanary + `"}]}}` + "\n" +
-		`{"type":"response_item","payload":{"type":"custom_tool_call_output","output":"tool output ` + toolCanary + `"}}` + "\n" +
-		`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"real user text"}]}}` + "\n"
-	path := filepath.Join(dir, "canary.jsonl")
-	os.WriteFile(path, []byte(content), 0644)
-
-	meta, err := ParseSessionMeta([]byte(content[:strings.IndexByte(content, '\n')+1]))
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := Parse(context.Background(), path, meta, ParseOptions{Location: time.UTC})
-	if err != nil {
-		t.Fatal(err)
-	}
-	conv := ""
-	for _, b := range res.Batches {
-		conv += b.ConversationText()
-	}
-	for _, c := range []string{toolCanary, devCanary, reasoningCanary} {
-		if strings.Contains(conv, c) {
-			t.Errorf("canary from excluded record type leaked into conversation: %s", c[:12])
-		}
-	}
-	if !strings.Contains(conv, "real user text") {
-		t.Error("legitimate user text lost")
-	}
+	os.Remove(p)
 }

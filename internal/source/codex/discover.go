@@ -1,246 +1,225 @@
 package codex
 
 import (
-	"fmt"
+	"context"
+	"encoding/json"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
-	"session-memory/internal/checkpoint"
+	"session-memory/internal/agent"
 	"session-memory/internal/config"
+	"session-memory/internal/jsonl"
+	"session-memory/internal/session"
 )
 
-// DiscoverOptions controls the discovery window (spec 7.1).
-type DiscoverOptions struct {
-	Now             time.Time
-	Since           *time.Time
-	All             bool
-	Lookback        time.Duration // window when neither Since nor All is set; 0 means 48h
-	IncludeArchived bool
-	// Root overrides cfg.CodexHome() (tests).
-	Root string
-	// SkipRetryable disables merging retryable checkpoints (tests).
-	SkipRetryable bool
+// file is one rollout file on disk.
+type file struct {
+	rel   string // relative to home, slash-separated, as on disk
+	logic string // rel without .zst
+	zst   bool
+	size  int64
+	mtime string
+	mode  os.FileMode
 }
 
-// Candidate is one rollout file to consider.
-type Candidate struct {
-	Path     string
-	Archived bool
-	Size     int64
-	ModTime  time.Time
-}
-
-// Discover returns the candidate set: date directories covered by the
-// lookback window (or --since / --all), archived files by mtime, plus
-// retryable checkpointed paths that still exist. Sorted by path.
-func Discover(cfg config.Config, store *checkpoint.Store, opts DiscoverOptions) ([]Candidate, error) {
-	root := opts.Root
-	if root == "" {
-		root = cfg.CodexHome()
-	}
-	sessionsDir := filepath.Join(root, "sessions")
-
-	var candidates []Candidate
-	seen := map[string]bool{}
-
-	add := func(path string, archived bool) {
-		clean := filepath.Clean(path)
-		if seen[clean] {
-			return
-		}
-		st, err := os.Stat(clean)
-		if err != nil {
-			return // candidate-level miss, not an error
-		}
-		if st.IsDir() {
-			return
-		}
-		seen[clean] = true
-		candidates = append(candidates, Candidate{
-			Path: clean, Archived: archived, Size: st.Size(), ModTime: st.ModTime(),
-		})
-	}
-
-	switch {
-	case opts.All:
-		// every date directory
-		dirs, err := listDateDirs(sessionsDir, nil, nil)
-		if err != nil {
-			return nil, err
-		}
-		for _, d := range dirs {
-			scanDirInto(sessionsDir, d, add)
-		}
-	case opts.Since != nil:
-		dirs, err := listDateDirs(sessionsDir, opts.Since, nil)
-		if err != nil {
-			return nil, err
-		}
-		for _, d := range dirs {
-			scanDirInto(sessionsDir, d, add)
-		}
-	default:
-		lookback := lookbackOrDefault(opts.Lookback)
-		start := opts.Now.Add(-lookback)
-		dirs, err := listDateDirs(sessionsDir, &start, &opts.Now)
-		if err != nil {
-			return nil, err
-		}
-		for _, d := range dirs {
-			scanDirInto(sessionsDir, d, add)
-		}
-	}
-
-	// archived sessions by mtime within the same window
-	if opts.IncludeArchived {
-		archDir := filepath.Join(root, "archived_sessions")
-		archStart := opts.Now.Add(-lookbackOrDefault(opts.Lookback))
-		if opts.Since != nil {
-			archStart = *opts.Since
-		}
-		err := filepath.WalkDir(archDir, func(path string, d os.DirEntry, err error) error {
+// threadFiles scans one home and groups rollout files by thread id.
+func threadFiles(home string) (map[string][]file, error) {
+	out := map[string][]file{}
+	walk := func(sub string, maxDepth int) {
+		root := filepath.Join(home, sub)
+		filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
-				return nil // permission issues are candidate-level warnings
+				return nil
 			}
+			rel, _ := filepath.Rel(root, p)
 			if d.IsDir() {
-				// depth guard (spec 7.2: max 6)
-				rel, _ := filepath.Rel(archDir, path)
-				depth := strings.Count(rel, string(os.PathSeparator))
-				if depth >= 6 {
+				if rel != "." && strings.Count(rel, string(os.PathSeparator))+1 > maxDepth {
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			if filepath.Ext(path) != ".jsonl" {
+			thread, zst, ok := parseName(d.Name())
+			if !ok {
 				return nil
 			}
 			info, err := d.Info()
 			if err != nil {
 				return nil
 			}
-			if !opts.All && info.ModTime().Before(archStart) {
-				return nil
-			}
-			add(path, true)
+			r := filepath.ToSlash(filepath.Join(sub, rel))
+			out[thread] = append(out[thread], file{rel: r, logic: logicalName(r), zst: zst, size: info.Size(),
+				mtime: session.FormatTime(info.ModTime()), mode: info.Mode().Perm()})
 			return nil
 		})
-		if err != nil && !os.IsNotExist(err) {
-			// archived dir missing is fine; anything else surfaces as a warning
-			_ = err
-		}
 	}
-
-	// retryable pending/failed sessions regardless of window
-	if store != nil && !opts.SkipRetryable {
-		states, err := store.ListRetryable(SourceName)
-		if err == nil {
-			for _, st := range states {
-				if st.RolloutPath != "" {
-					add(st.RolloutPath, strings.Contains(st.RolloutPath, "archived_sessions"))
-				}
-			}
-		}
+	walk("sessions", 3)
+	walk("archived_sessions", 6)
+	for _, fs := range out {
+		sort.Slice(fs, func(i, j int) bool { return fs[i].rel < fs[j].rel })
 	}
-
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Path < candidates[j].Path })
-	return candidates, nil
+	return out, nil
 }
 
-// listDateDirs returns YYYY/MM/DD dir triplets intersecting [start, end].
-// Either bound may be nil (unbounded on that side).
-func listDateDirs(sessionsDir string, start, end *time.Time) ([]string, error) {
-	if _, err := os.Stat(sessionsDir); err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("codex_home_missing: %s not found — run 'session-memory agent probe codex'", sessionsDir)
-		}
-		return nil, err
-	}
-	yearEntries, err := os.ReadDir(sessionsDir)
+type metaPayload struct {
+	Cwd           string          `json:"cwd"`
+	Originator    string          `json:"originator"`
+	Source        json.RawMessage `json:"source"`
+	CLIVersion    string          `json:"cli_version"`
+	ModelProvider string          `json:"model_provider"`
+	Timestamp     string          `json:"timestamp"`
+}
+
+// readMeta reads the first record (session_meta) of a rollout.
+func readMeta(home string, f file) (metaPayload, bool) {
+	src, err := jsonl.OpenSource(filepath.Join(home, filepath.FromSlash(f.rel)))
 	if err != nil {
-		return nil, err
+		return metaPayload{}, false
 	}
-	var dirs []string
-	for _, y := range yearEntries {
-		if !isDigits(y.Name(), 4) {
-			continue
+	rc, _, err := src.OpenAt(0)
+	if err != nil {
+		return metaPayload{}, false
+	}
+	r := jsonl.NewReader(rc, 0, jsonl.Options{MaxRecordBytes: 1 << 20})
+	defer r.Close()
+	rec, err := r.Next()
+	if err != nil && err != io.EOF {
+		return metaPayload{}, false
+	}
+	var env struct {
+		Type    string      `json:"type"`
+		Payload metaPayload `json:"payload"`
+	}
+	if json.Unmarshal(rec.Line, &env) != nil || env.Type != "session_meta" {
+		return metaPayload{}, false
+	}
+	return env.Payload, true
+}
+
+func sourceString(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	if len(raw) > 0 && raw[0] == '{' {
+		return "<object>"
+	}
+	return ""
+}
+
+func surfaceOf(m metaPayload) string {
+	src := sourceString(m.Source)
+	switch {
+	case src == "vscode" || strings.Contains(m.Originator, "Desktop"):
+		return "desktop"
+	case src == "cli" || src == "exec":
+		return src
+	case src == "":
+		return "unknown"
+	}
+	return src
+}
+
+func profileOf(m metaPayload) session.AgentProfile {
+	return session.AgentProfile{Agent: AgentName, Surface: surfaceOf(m), Version: m.CLIVersion,
+		Format: "rollout-jsonl", AdapterVersion: AdapterVersion, OS: osName()}
+}
+
+// Adapter implements agent.Adapter for Codex.
+type Adapter struct{ Cfg config.Config }
+
+// New returns the adapter for cfg.
+func New(cfg config.Config) *Adapter { return &Adapter{Cfg: cfg} }
+
+func (a *Adapter) Name() string { return AgentName }
+
+func (a *Adapter) homes(o agent.DiscoverOptions) []string {
+	if len(o.Homes) > 0 {
+		return o.Homes
+	}
+	return a.Cfg.CodexHomes()
+}
+
+// Discover lists threads in every home. It reads only each thread's first
+// record, never message text.
+func (a *Adapter) Discover(ctx context.Context, o agent.DiscoverOptions) ([]agent.NativeSession, error) {
+	want := map[string]bool{}
+	for _, id := range o.NativeIDs {
+		want[strings.ToLower(id)] = true
+	}
+	var out []agent.NativeSession
+	for _, home := range a.homes(o) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		months, err := os.ReadDir(filepath.Join(sessionsDir, y.Name()))
+		threads, _ := threadFiles(home)
+		titles := loadTitles(home)
+		for id, files := range threads {
+			if len(want) > 0 && !want[id] {
+				continue
+			}
+			out = append(out, nativeSession(home, id, files, titles))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
+	return out, nil
+}
+
+func nativeSession(home, id string, files []file, titles map[string]string) agent.NativeSession {
+	ns := agent.NativeSession{Ref: agent.NativeRef{Home: home, NativeID: id}, Title: titles[id]}
+	for _, f := range files {
+		ns.Files = append(ns.Files, agent.FileStat{Path: f.rel, Size: f.size, ModTime: f.mtime})
+		if f.mtime > ns.UpdatedAt {
+			ns.UpdatedAt = f.mtime
+		}
+	}
+	if m, ok := readMeta(home, files[0]); ok {
+		ns.Cwd = m.Cwd
+		ns.Profile = profileOf(m)
+	} else {
+		ns.Profile = session.AgentProfile{Agent: AgentName, Surface: "unknown", Format: "rollout-jsonl", AdapterVersion: AdapterVersion, OS: osName()}
+	}
+	return ns
+}
+
+// loadTitles reads session_index.jsonl (id -> thread_name). Local display
+// text only.
+func loadTitles(home string) map[string]string {
+	out := map[string]string{}
+	src, err := jsonl.OpenSource(filepath.Join(home, "session_index.jsonl"))
+	if err != nil {
+		return out
+	}
+	rc, _, err := src.OpenAt(0)
+	if err != nil {
+		return out
+	}
+	r := jsonl.NewReader(rc, 0, jsonl.Options{})
+	defer r.Close()
+	for {
+		rec, err := r.Next()
 		if err != nil {
-			continue
+			return out
 		}
-		for _, m := range months {
-			if !isDigits(m.Name(), 2) {
-				continue
-			}
-			days, err := os.ReadDir(filepath.Join(sessionsDir, y.Name(), m.Name()))
-			if err != nil {
-				continue
-			}
-			for _, d := range days {
-				if !isDigits(d.Name(), 2) {
-					continue
-				}
-				triplet := filepath.Join(y.Name(), m.Name(), d.Name())
-				if dateInRange(triplet, start, end) {
-					dirs = append(dirs, triplet)
-				}
-			}
+		var e struct {
+			ID   string `json:"id"`
+			Name string `json:"thread_name"`
 		}
-	}
-	return dirs, nil
-}
-
-func dateInRange(triplet string, start, end *time.Time) bool {
-	if start == nil && end == nil {
-		return true
-	}
-	triplet = strings.ReplaceAll(triplet, "\\", "/")
-	t, err := time.Parse("2006/01/02", triplet)
-	if err != nil {
-		return false
-	}
-	dayStart := t.Truncate(24 * time.Hour)
-	if start != nil && dayStart.Before(start.Truncate(24*time.Hour)) {
-		return false
-	}
-	if end != nil && dayStart.After(end.Truncate(24*time.Hour)) {
-		return false
-	}
-	return true
-}
-
-func scanDirInto(sessionsDir, triplet string, add func(string, bool)) {
-	dir := filepath.Join(sessionsDir, triplet)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".jsonl" {
-			continue
+		if json.Unmarshal(rec.Line, &e) == nil && e.ID != "" {
+			out[strings.ToLower(e.ID)] = e.Name
 		}
-		add(filepath.Join(dir, e.Name()), false)
 	}
 }
 
-func isDigits(s string, n int) bool {
-	if len(s) != n {
-		return false
+// Locate finds a thread again by id (after a move, archive or compression).
+func (a *Adapter) Locate(ctx context.Context, ref agent.NativeRef) (agent.NativeSession, bool, error) {
+	threads, _ := threadFiles(ref.Home)
+	files := threads[strings.ToLower(ref.NativeID)]
+	if len(files) == 0 {
+		return agent.NativeSession{}, false, nil
 	}
-	for i := 0; i < n; i++ {
-		if s[i] < '0' || s[i] > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-func lookbackOrDefault(d time.Duration) time.Duration {
-	if d <= 0 || d > 720*time.Hour {
-		return 48 * time.Hour
-	}
-	return d
+	return nativeSession(ref.Home, strings.ToLower(ref.NativeID), files, nil), true, nil
 }

@@ -33,6 +33,13 @@ type AgentConfig struct {
 	// AutoInstall lets the background sync write new revisions into this
 	// agent's native store while its client is not running. Off by default.
 	AutoInstall *bool `json:"auto_install,omitempty"`
+	// Homes are additional agent homes (one per account for Codex). The
+	// effective list is Home followed by Homes, duplicates removed.
+	Homes []string `json:"homes,omitempty"`
+	// DiscoverHomes also looks for sibling homes: directories in the user's
+	// home whose name starts with ".codex" or "codex" and that contain a
+	// "sessions" directory. Only names and that directory are examined.
+	DiscoverHomes *bool `json:"discover_homes,omitempty"`
 }
 
 // IsEnabled reports whether the agent is enabled (default true).
@@ -40,6 +47,9 @@ func (a AgentConfig) IsEnabled() bool { return a.Enabled == nil || *a.Enabled }
 
 // IsAutoInstall reports whether background install is enabled (default false).
 func (a AgentConfig) IsAutoInstall() bool { return a.AutoInstall != nil && *a.AutoInstall }
+
+// IsDiscoverHomes reports whether sibling-home discovery is on (default false).
+func (a AgentConfig) IsDiscoverHomes() bool { return a.DiscoverHomes != nil && *a.DiscoverHomes }
 
 // AgentsConfig holds one block per supported agent.
 type AgentsConfig struct {
@@ -159,10 +169,86 @@ func (c Config) StateDir() string {
 }
 
 // CodexHome returns the expanded Codex home directory.
-func (c Config) CodexHome() string { return expandOr(c.Agents.Codex.Home, "~/.codex") }
+// An explicit non-default setting wins over $CODEX_HOME.
+func (c Config) CodexHome() string {
+	if h := c.Agents.Codex.Home; h != "" && h != "~/.codex" {
+		return ExpandPath(h)
+	}
+	if env := os.Getenv("CODEX_HOME"); env != "" {
+		return env
+	}
+	return expandOr(c.Agents.Codex.Home, "~/.codex")
+}
+
+// CodexHomes lists every Codex home: CodexHome, the configured extra homes,
+// and (when enabled) discovered sibling homes, duplicates removed by
+// directory identity.
+func (c Config) CodexHomes() []string {
+	return c.homes(c.CodexHome(), c.Agents.Codex, func(n string) bool {
+		return strings.HasPrefix(n, ".codex") || strings.HasPrefix(n, "codex")
+	})
+}
+
+// WorkBuddyHomes lists every WorkBuddy home.
+func (c Config) WorkBuddyHomes() []string {
+	return c.homes(c.WorkBuddyHome(), c.Agents.WorkBuddy, nil)
+}
+
+func (c Config) homes(first string, a AgentConfig, siblingName func(string) bool) []string {
+	out := []string{first}
+	for _, h := range a.Homes {
+		out = append(out, ExpandPath(h))
+	}
+	if a.IsDiscoverHomes() && siblingName != nil {
+		if home, err := os.UserHomeDir(); err == nil {
+			if ents, err := os.ReadDir(home); err == nil {
+				for _, e := range ents {
+					if e.IsDir() && siblingName(e.Name()) {
+						p := filepath.Join(home, e.Name())
+						if st, err := os.Stat(filepath.Join(p, "sessions")); err == nil && st.IsDir() {
+							out = append(out, p)
+						}
+					}
+				}
+			}
+		}
+	}
+	var uniq []string
+	for _, p := range out {
+		dup := false
+		for _, q := range uniq {
+			if samePath(p, q) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			uniq = append(uniq, p)
+		}
+	}
+	return uniq
+}
+
+func samePath(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	x, err1 := os.Stat(a)
+	y, err2 := os.Stat(b)
+	return err1 == nil && err2 == nil && os.SameFile(x, y)
+}
 
 // WorkBuddyHome returns the expanded WorkBuddy home directory.
-func (c Config) WorkBuddyHome() string { return expandOr(c.Agents.WorkBuddy.Home, "~/.workbuddy") }
+// $WORKBUDDY_CONFIG_DIR is used when the setting is the default.
+func (c Config) WorkBuddyHome() string {
+	if h := c.Agents.WorkBuddy.Home; h != "" && h != "~/.workbuddy" {
+		return ExpandPath(h)
+	}
+	if env := os.Getenv("WORKBUDDY_CONFIG_DIR"); env != "" {
+		return env
+	}
+	return expandOr(c.Agents.WorkBuddy.Home, "~/.workbuddy")
+}
 
 // ClaudeHome returns the expanded Claude Code configuration and project
 // directory. An explicit non-default setting wins over CLAUDE_CONFIG_DIR.
@@ -201,6 +287,14 @@ func Validate(cfg Config) error {
 		if err := requireAbs(a.key+".home", a.cfg.Home); err != nil {
 			return err
 		}
+		if len(a.cfg.Homes) > 16 {
+			return fmt.Errorf("%s.homes: at most 16 entries", a.key)
+		}
+		for _, h := range a.cfg.Homes {
+			if err := requireAbs(a.key+".homes", h); err != nil {
+				return err
+			}
+		}
 	}
 	if err := requireAbs("home", cfg.Home); err != nil {
 		return err
@@ -233,6 +327,7 @@ const (
 	kindPath
 	kindInt
 	kindBool
+	kindList
 )
 
 type keySpec struct {
@@ -247,6 +342,8 @@ func agentKeys(prefix string, sel func(*Config) *AgentConfig) []keySpec {
 		{prefix + ".home", kindPath, func(c Config) string { return sel(&c).Home }},
 		{prefix + ".max_record_bytes", kindInt, func(c Config) string { return strconv.FormatInt(sel(&c).MaxRecordBytes, 10) }},
 		{prefix + ".auto_install", kindBool, func(c Config) string { return boolStr(sel(&c).AutoInstall, false) }},
+		{prefix + ".homes", kindList, func(c Config) string { return strings.Join(sel(&c).Homes, ",") }},
+		{prefix + ".discover_homes", kindBool, func(c Config) string { return boolStr(sel(&c).DiscoverHomes, false) }},
 	}
 }
 
@@ -344,6 +441,17 @@ func parseValue(spec keySpec, value string) (interface{}, error) {
 			return false, nil
 		}
 		return nil, fmt.Errorf("%s: must be true or false", spec.name)
+	case kindList:
+		var out []string
+		for _, v := range strings.Split(value, ",") {
+			if v = strings.TrimSpace(v); v != "" {
+				out = append(out, v)
+			}
+		}
+		if out == nil {
+			out = []string{}
+		}
+		return out, nil
 	case kindPath:
 		if value != "" && !strings.HasPrefix(value, "~") && !filepath.IsAbs(value) {
 			abs, err := filepath.Abs(value)

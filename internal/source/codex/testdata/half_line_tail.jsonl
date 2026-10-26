@@ -1,4 +1,0 @@
-{"timestamp":"2026-09-01T04:00:00.000Z","ordinal":0,"type":"session_meta","payload":{"session_id":"01fff111-2222-3333-4444-555566667777","id":"01fff111-2222-3333-4444-555566667777","timestamp":"2026-09-01T04:00:00.000Z","cwd":"/Users/dev/demo/halftail","originator":"Codex Desktop","source":"vscode","thread_source":"user"}}
-{"timestamp":"2026-09-01T04:00:01.000Z","type":"turn_context","payload":{"turn_id":"turn-half"}}
-{"timestamp":"2026-09-01T04:00:02.000Z","type":"response_item","payload":{"type":"message","id":"m1","role":"user","content":[{"type":"input_text","text":"完整的一行"}]}}
-{"timestamp":"2026-09-01T04:00:03.000Z","type":"response_item","payload":{"type":"message","id":"m2","role":"assistant","content":[{"type":"output_text","text":"这行是完整的"}]}}

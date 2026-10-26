@@ -1,0 +1,151 @@
+package engine
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+
+	"session-memory/internal/agent"
+	"session-memory/internal/errcode"
+	"session-memory/internal/session"
+	"session-memory/internal/store"
+)
+
+// RestoreOptions configures Restore.
+type RestoreOptions struct {
+	Home         string // target agent home
+	PathMap      agent.PathMap
+	ClientClosed bool // the user states the client is not running
+	PlanOnly     bool
+	RevisionID   string // default: the effective head
+	Cwd          string
+}
+
+type closedWriter interface{ WriterWith(bool) agent.Writer }
+
+// Restore installs a synced revision into this device's agent home (spec §4.4,
+// design §6.2). It refuses conflicts and non-fast-forward landings.
+func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string, opt RestoreOptions) (agent.Plan, *agent.Receipt, error) {
+	g, err := e.Store.Graph(sessionID)
+	if err != nil {
+		return agent.Plan{}, nil, err
+	}
+	ch, _ := e.Store.Choices(sessionID)
+	res := session.Resolve(g, ch)
+	if len(res.Heads) == 0 {
+		return agent.Plan{}, nil, errcode.New(errcode.NotFound, "no revisions for this session")
+	}
+	target := opt.RevisionID
+	if target == "" {
+		if res.Conflict {
+			return agent.Plan{}, nil, errcode.New(errcode.Conflict, "the session has more than one live head; run choose first").With("heads", len(res.Heads))
+		}
+		target = res.Effective
+	}
+	revs, _ := e.Store.Revisions(sessionID)
+	var rev *session.Revision
+	for i := range revs {
+		if revs[i].RevisionID == target {
+			rev = &revs[i]
+		}
+	}
+	if rev == nil {
+		return agent.Plan{}, nil, errcode.New(errcode.NotFound, "revision not found")
+	}
+	bs, _ := e.Store.Bindings(sessionID)
+	var bnd *session.Binding
+	for i := range bs {
+		if bs[i].State == session.StateActive && bs[i].DeviceID == e.DeviceID && bs[i].AgentProfile.Agent == ad.Name() {
+			bnd = &bs[i]
+		}
+	}
+	if bnd != nil {
+		switch session.LandingFor(g, bnd.InstalledRevisionID, target) {
+		case session.LandUpToDate:
+			return agent.Plan{}, nil, errcode.New(errcode.NotFound, "already installed at this revision")
+		case session.LandNeedsAction:
+			return agent.Plan{}, nil, errcode.New(errcode.NeedsAction, "the installed version is not an ancestor of the chosen revision")
+		}
+	}
+	src, err := e.Store.SnapshotReader(ctx, rev.NativeSnapshotRef)
+	if err != nil {
+		return agent.Plan{}, nil, err
+	}
+	var w agent.Writer
+	if cw, ok := ad.(closedWriter); ok {
+		w = cw.WriterWith(opt.ClientClosed)
+	} else {
+		w = ad.Writer()
+	}
+	in := agent.WriteInput{SessionID: sessionID, RevisionID: target, Mode: agent.ModeNative, Source: src, SourceProfile: rev.AgentProfile,
+		PathMap: opt.PathMap, Target: rev.AgentProfile, TargetState: agent.TargetState{Home: opt.Home}, Cwd: opt.Cwd}
+	if bnd != nil {
+		in.BindingID = bnd.BindingID
+	}
+	plan, err := w.Plan(ctx, in)
+	if err != nil || opt.PlanOnly {
+		return plan, nil, err
+	}
+	if len(plan.Writes) == 0 {
+		return plan, nil, errcode.New(errcode.NotFound, "the target already matches this revision")
+	}
+	tx, err := e.Store.Begin(ctx, store.KindInstall, sessionID, in.BindingID)
+	if err != nil {
+		return plan, nil, err
+	}
+	if err := tx.SetState(store.StPlanned, store.InstallData{PlanDigest: plan.Digest, Mode: plan.Mode, Route: plan.Route, Home: opt.Home}); err != nil {
+		return plan, nil, err
+	}
+	rec, err := w.Apply(ctx, in, plan, tx)
+	if err != nil {
+		if tx.State() == store.StBackedUp || tx.State() == store.StWritten || tx.State() == store.StStaged {
+			if rerr := e.Store.RollbackTx(tx); rerr != nil {
+				return plan, nil, errcode.Wrap(errcode.RecoveryNeeded, "install failed and rollback did not finish", rerr)
+			}
+		} else {
+			tx.Finish()
+		}
+		return plan, nil, err
+	}
+	// adopt the installed files as the binding's capture state (no revision)
+	ref := agent.NativeRef{Home: opt.Home, NativeID: rec.NativeSessionID}
+	adopt, err := ad.Capture(ctx, ref, agent.Cursor{}, e.Store.Sink())
+	if err != nil {
+		return plan, &rec, err
+	}
+	nb := session.Binding{BindingID: session.NewBindingID(), SessionID: sessionID, DeviceID: e.DeviceID, AgentProfile: rev.AgentProfile,
+		NativeSessionID: rec.NativeSessionID, NativeHome: opt.Home, InstallMode: session.InstallNative, State: session.StateActive,
+		BaseRevisionID: target, Artifacts: adopt.Cursor.Artifacts}
+	if bnd != nil {
+		nb = *bnd
+		nb.Artifacts = adopt.Cursor.Artifacts
+	}
+	nb.InstalledRevisionID = target
+	nb.ImportReceipt = rec.Import
+	var d store.InstallData
+	tx.Data(&d)
+	d.NewBinding = &nb
+	d.Receipt = &rec
+	// verified = files verified AND the binding to commit is fully prepared, so
+	// recovery can roll forward from here (spec §4.3 install row)
+	if err := tx.SetState(store.StVerified, d); err != nil {
+		return plan, &rec, err
+	}
+	if err := e.Store.SaveBinding(tx, nb); err != nil {
+		return plan, &rec, err
+	}
+	if err := tx.SetState(store.StBindingCommitted, nil); err != nil {
+		return plan, &rec, err
+	}
+	now := session.FormatTime(e.now())
+	if err := (&deviceOutbox{root: e.Store.Root}).add(
+		session.Entry{Type: session.EntryReceipt, Receipt: &session.ReceiptEntry{SessionID: sessionID, RevisionID: target, DeviceID: e.DeviceID,
+			Status: session.ReceiptInstalled, InstallMode: session.InstallNative, BindingID: nb.BindingID, At: now}},
+	); err != nil {
+		return plan, &rec, err
+	}
+	return plan, &rec, tx.Finish()
+}
+
+var _ = os.Remove
+var _ = filepath.Join

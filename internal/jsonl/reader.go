@@ -71,7 +71,7 @@ func (e *InvalidRecordError) Error() string {
 // After Next returns any error the Reader is finished and keeps returning that
 // error. To read data appended later, open a new Reader at Offset().
 type Reader struct {
-	f       *os.File
+	c       io.Closer
 	br      *bufio.Reader
 	opts    Options
 	offset  int64
@@ -106,7 +106,16 @@ func Open(path string, start int64, opts Options) (*Reader, error) {
 		f.Close()
 		return nil, err
 	}
-	return &Reader{f: f, br: bufio.NewReaderSize(f, 1<<16), opts: opts, offset: start}, nil
+	return &Reader{c: f, br: bufio.NewReaderSize(f, 1<<16), opts: opts, offset: start}, nil
+}
+
+// NewReader reads records from r, whose first byte is at stream offset start
+// (a decompressed offset for zstd sources). Close closes r.
+func NewReader(r io.ReadCloser, start int64, opts Options) *Reader {
+	if opts.MaxRecordBytes <= 0 {
+		opts.MaxRecordBytes = DefaultMaxRecordBytes
+	}
+	return &Reader{c: r, br: bufio.NewReaderSize(r, 1<<16), opts: opts, offset: start}
 }
 
 // Next returns the next complete record.
@@ -165,4 +174,4 @@ func (r *Reader) Offset() int64 { return r.offset }
 func (r *Reader) Pending() int64 { return r.pending }
 
 // Close releases the file.
-func (r *Reader) Close() error { return r.f.Close() }
+func (r *Reader) Close() error { return r.c.Close() }

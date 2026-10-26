@@ -744,8 +744,9 @@ func ManifestFileName(sequence int64, fileSHA256Hex string) string {
 ```text
 $SM_HOME/
 ├── device/
-│   ├── device.json            {schema_version, device_id, created_at}
-│   └── sequence.json          {schema_version, last_published}   # 本设备已发布的最大 manifest 序号
+│   ├── device.json            {schema_version, device_id, vault_id, created_at}   # vault_id 用于在凭据存储里找钥匙（实现时新增）
+│   ├── sequence.json          {schema_version, last_published}   # 本设备已发布的最大 manifest 序号
+│   └── outbox.json            {entries}   # 等待下一个 manifest 的 receipt/choice/convert-request 条目（实现时新增）
 ├── projects/<project_ref>.json        session.ProjectMap（设备本地，不同步）
 ├── bindings/<binding_id>.json         session.Binding（设备状态的事实源）
 ├── journal/<tx_id>.json               store.JournalRecord（进行中的事务）
@@ -1090,7 +1091,7 @@ type RecoveryReport struct {
 | `staged` | 要写的文件已在 `staging/<tx>/` 构建完成 | Discard |
 | `backed_up` | 所有将被替换/追加的目标文件已复制到 `backups/<tx>/`（`Data.Backed`），新建文件已列入 `Data.Created` | **Undo** |
 | `written` | 目标文件已写入（`Data.Written`），尚未验证 | **Undo** |
-| `verified` | 已读回并校验通过；`Data.Receipt` 已记 | Resume：保存 binding |
+| `verified` | 文件已读回并校验通过，**且要提交的 binding 已完整准备好**（`Data.Receipt`、`Data.NewBinding` 已记；由 engine 在采纳已安装文件后写入，Writer 自己不写这个状态）。实现时据崩溃矩阵测试修正：若 `verified` 时 binding 尚未准备，恢复无法前滚 | Resume：保存 binding |
 | `binding_committed` | binding 已更新 | Resume：发布 receipt/binding 条目，`Finish` |
 | `rolling_back` | 回滚进行中 | Undo（继续） |
 | `rolled_back` | 已回滚 | Archive |
@@ -2713,6 +2714,8 @@ func within(child, parent string) bool {
 所有 dev 命令支持 `--json`。实验的执行要点与通过标准见 dev §9 与设计 §15。
 
 ## 16. 编码任务清单
+
+> 实施状态与已知偏差见 [status.md](status.md)。本节保留为任务定义。
 
 每个任务给出：要创建/修改的文件、依据的章节、完成标准。顺序即建议的提交顺序；**标 ★ 的可与 P0 并行，不依赖实验结论**。
 

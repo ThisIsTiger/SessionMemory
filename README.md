@@ -7,7 +7,7 @@ SessionMemory 是个人使用的单会话同步工具，以“一个会话”为
 
 会话数据通过加密的不可变对象，经微云等同步文件夹在设备间传输。同项目下多个会话的合并暂不实现，每个会话独立同步。
 
-当前状态是“设计 + 可复用采集基础代码”。产品设计见 [`doc/unified-agent-session-sync-design.md`](doc/unified-agent-session-sync-design.md)（v0.6）。开发计划见 [`doc/dev.md`](doc/dev.md)，实现规格（类型、格式、算法、编码任务）见 [`doc/spec.md`](doc/spec.md)。CLI、Session Store、Canonical Transcript、Native Writer（原生恢复与跨 Agent 转换）、加密同步与微云 FolderTransport、Resume Pack 兜底和 MCP server 均尚未实现。
+当前状态：设计（v0.6）、开发计划、实现规格已定；同 Agent 同步（Codex ↔ Codex）的整条链路已实现并有测试（采集、加密、传输、发布/接收、冲突保护、原生恢复，默认路线），P0 实验工具已就绪，真实客户端行为待 P0 验证；跨 Agent 的转换规则、Canonical 提取、WorkBuddy 读取侧与 Resume Pack 已实现，写入目标 Agent 待 P0。详见 [`doc/status.md`](doc/status.md)。产品设计见 [`doc/unified-agent-session-sync-design.md`](doc/unified-agent-session-sync-design.md)（v0.6）。开发计划见 [`doc/dev.md`](doc/dev.md)，实现规格（类型、格式、算法、编码任务）见 [`doc/spec.md`](doc/spec.md)。尚未实现：MCP server、跨 Agent 的写入（Writer）、Claude Code 适配，以及依赖 P0 实验结论的部分。
 
 ## 已复制的基础代码
 

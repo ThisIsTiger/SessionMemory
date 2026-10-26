@@ -356,3 +356,68 @@ func TestLoadSourcesTracksOrigin(t *testing.T) {
 		t.Errorf("home = %+v", s)
 	}
 }
+
+func TestHomesEnvAndDedup(t *testing.T) {
+	h := withTempHome(t)
+	cfg := DefaultConfig()
+	t.Setenv("CODEX_HOME", filepath.Join(h, "envcodex"))
+	if cfg.CodexHome() != filepath.Join(h, "envcodex") {
+		t.Errorf("CODEX_HOME ignored: %s", cfg.CodexHome())
+	}
+	cfg.Agents.Codex.Home = "~/explicit"
+	if cfg.CodexHome() != filepath.Join(h, "explicit") {
+		t.Errorf("explicit must win: %s", cfg.CodexHome())
+	}
+	t.Setenv("WORKBUDDY_CONFIG_DIR", "/wb")
+	if DefaultConfig().WorkBuddyHome() != "/wb" {
+		t.Error("WORKBUDDY_CONFIG_DIR ignored")
+	}
+
+	a := filepath.Join(h, "a")
+	os.MkdirAll(a, 0700)
+	link := filepath.Join(h, "link")
+	if err := os.Symlink(a, link); err == nil {
+		cfg.Agents.Codex.Home = a
+		cfg.Agents.Codex.Homes = []string{a, link, filepath.Join(h, "b")}
+		got := cfg.CodexHomes()
+		if len(got) != 2 || got[0] != a || got[1] != filepath.Join(h, "b") {
+			t.Errorf("homes = %v", got)
+		}
+	}
+}
+
+func TestDiscoverHomesOnlyLooksAtNames(t *testing.T) {
+	h := withTempHome(t)
+	t.Setenv("CODEX_HOME", "")
+	for _, d := range []string{".codex-work/sessions", "codex-x/sessions", ".codex-empty", "other/sessions"} {
+		os.MkdirAll(filepath.Join(h, d), 0700)
+	}
+	secret := filepath.Join(h, ".codex-work", "auth.json")
+	os.WriteFile(secret, []byte("x"), 0000)
+	cfg := DefaultConfig()
+	if len(cfg.CodexHomes()) != 1 {
+		t.Errorf("discovery must be off by default: %v", cfg.CodexHomes())
+	}
+	on := true
+	cfg.Agents.Codex.DiscoverHomes = &on
+	got := cfg.CodexHomes()
+	if len(got) != 3 {
+		t.Errorf("want default + 2 siblings, got %v", got)
+	}
+}
+
+func TestSetHomesList(t *testing.T) {
+	h := withTempHome(t)
+	if err := Set("agents.codex.homes", "/a, /b"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil || len(cfg.Agents.Codex.Homes) != 2 {
+		t.Fatalf("%v %v", cfg.Agents.Codex.Homes, err)
+	}
+	_ = h
+	if err := Set("agents.codex.homes", "rel"); err == nil {
+		// relative values in a list are rejected by validation
+		t.Error("relative home accepted")
+	}
+}
