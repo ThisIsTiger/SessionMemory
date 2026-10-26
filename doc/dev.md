@@ -1,6 +1,6 @@
 # SessionMemory 开发文档
 
-> 对应设计：[unified-agent-session-sync-design.md](unified-agent-session-sync-design.md)（v0.5）  
+> 对应设计：[unified-agent-session-sync-design.md](unified-agent-session-sync-design.md)（v0.6）  
 > 状态：Draft / 待实施  
 > 日期：2026-10-26
 
@@ -9,6 +9,7 @@
 - 设计文档回答“做什么、为什么”，本文回答“怎么做、按什么顺序做、怎么验证”。两者冲突时以设计文档为准；P0 实验结论会同时回写两份文档。
 - 本文中的 Go 接口、磁盘布局、字节格式都是**草案**。其中依赖 Codex / WorkBuddy 实际行为的部分（Writer、转换规则、客户端运行检测）在 P0 结束前不冻结，文中以“待 E#”标注对应的实验。
 - 本文只写工程决策，不重复设计文档里的产品规则。
+- 参考实现：yetone/magpie（MIT，Go）读取多个 Agent 的会话，并做 Claude Code ↔ Codex 转换；设计 §3.3“参考实现”记录了从其源码得到的线索。本项目只借鉴事实与行为，不复制代码（如需复制须保留其 MIT 声明），结论以自己的 P0 实验为准。
 
 ## 1. 开发原则
 
@@ -26,16 +27,15 @@
 | 语言 | Go（与 `go.mod` 一致，目前为 1.25；CI 已使用 `go-version-file: go.mod`） | 单二进制，跨平台 |
 | CLI | `github.com/spf13/cobra` | 命令数量多，需子命令与补全；若想零依赖可换标准库 `flag`，不影响其他模块 |
 | 本地索引 | `modernc.org/sqlite`（纯 Go） | 避免 Windows 上的 CGO；只存**可重建**的视图（见 §5） |
-| 对象加密 | 标准库 `crypto/aes` + `crypto/cipher`（AES-256-GCM）、`crypto/rand` | 每对象随机 data key，由 vault key 包装；单个对象的明文受 segment 大小上限约束（设计 §8.2），单次 AEAD 即可，不需要分块 AEAD |
-| 设备签名 | 标准库 `crypto/ed25519` | 若设计文档“待决策”中的简化方案被采纳，则此项可去掉 |
+| 对象加密 | 标准库 `crypto/aes` + `crypto/cipher`（AES-256-GCM）、`crypto/rand` | 每对象用随机 salt 经 HKDF-SHA256 从 vault key 派生对象密钥（`golang.org/x/crypto/hkdf`）；单个对象的明文受 segment 大小上限约束（设计 §8.2），单次 AEAD 即可，不需要分块 AEAD |
 | 口令派生 | `golang.org/x/crypto/argon2`（argon2id） | 保护设备加入包 |
-| 凭据存储 | `github.com/zalando/go-keyring` | macOS Keychain / Windows 凭据管理器 / Linux Secret Service；不可用时拒绝落盘私钥，不回退到明文文件 |
+| 凭据存储 | `github.com/zalando/go-keyring` | macOS Keychain / Windows 凭据管理器 / Linux Secret Service；存放 vault key，不可用时拒绝落盘，不回退到明文文件 |
 | 文件监听 | `github.com/fsnotify/fsnotify` | 只用于降低延迟；正确性靠定期 reconcile |
-| zstd 解压 | `github.com/klauspost/compress/zstd`（纯 Go，只读解压） | Codex 的旧会话是 `.jsonl.zst`（单帧、无校验和，本机占 87% 的线程）；不依赖外部 `zstd` 命令，保证 Windows 可用；不写压缩文件 |
+| zstd 解压 | `github.com/klauspost/compress/zstd`（纯 Go，只读解压） | Codex 的旧会话是 `.jsonl.zst`（单帧、无校验和，本机占 87% 的线程）；不依赖外部 `zstd` 命令，保证 Windows 可用；不写压缩文件；magpie 也用同一个库读取 Codex 的 `.zst` |
 | 日志 | 标准库 `log/slog` | 统一经 `internal/logx` 做脱敏封装 |
 | 测试 | 标准库 `testing`，不引入断言库 | 保持依赖少 |
 
-依赖原则：新增第三方依赖需在 PR 描述里说明理由；加密、签名一律用标准库或 `x/crypto`，不自己实现算法。
+依赖原则：新增第三方依赖需在 PR 描述里说明理由；加密一律用标准库或 `x/crypto`，不自己实现算法。
 
 ## 3. 目录结构与依赖方向
 
@@ -51,7 +51,7 @@ internal/
   convert/                 # Canonical → 目标原生条目的规则、保真度报告
   session/                 # SyncSession / Revision / Binding / 分歧检测（纯逻辑，无 IO）
   store/                   # 本地对象库、journal、sessions.db、绑定文件
-  vault/                   # 密封（Seal/Open）、设备身份、加入包
+  vault/                   # 密封（Seal/Open）、加入包、device_id
   transport/               # Transport 接口与 FolderTransport
   sync/                    # manifest、receipt、reconcile、push/pull
   bridge/                  # Resume Pack（兜底）、注入边界
@@ -155,7 +155,7 @@ type RuntimeDetector interface {
 - `Plan` 无副作用，但不是纯函数：它要读取目标状态。目标状态以 `WriteInput.TargetState`（只读快照）显式传入，同样的输入产出同样的计划，便于测试和 `--plan` 展示。
 - `Apply` 之前由调用方重新校验基线（`baseline_changed` 错误）。
 - Writer 契约（设计 §6.3）：目标路径只由已校验的 ID 与固定模板生成，不使用归档携带的路径；拒绝 `..`、绝对路径、盘符、符号链接组件；设单会话大小与文件数上限；写入前按适配器的 schema 白名单校验记录；权限、模型、账号类字段取自目标配置而不是归档（E1c 之前以“不覆盖”为准）；安装前取目标互斥锁，写入后、提交前再检测一次运行状态，客户端在写入期间启动视为回滚触发（设计 §6.4）。
-- Codex 目标的 Writer 另负责：新线程不得同时留下 `.jsonl` 与 `.jsonl.zst`；若 E4 证明需要，生成 UI 层记录与连续 `ordinal`（等于从 0 起的行号）。
+- Codex 目标的 Writer 另负责：新线程不得同时留下 `.jsonl` 与 `.jsonl.zst`；若 E4 证明需要，生成 UI 层记录与连续 `ordinal`（等于从 0 起的行号）。新线程的文件名与元数据按 `rollout-<本地时间>-<uuid v7>.jsonl`、`session_meta`（含目标当前的 `model_provider`）写入；转换约定的默认值见设计 §3.3“参考实现”。
 
 ### 4.3 Canonical Item
 
@@ -218,7 +218,7 @@ type Sealer interface {
 
 ```text
 $SM_HOME/
-├── device/                  # device_id、公钥；私钥在系统凭据存储，不落盘
+├── device/                  # device_id（每设备唯一，不含密钥材料）；vault key 在系统凭据存储，不落盘
 ├── bindings/<binding_id>.json   # 绑定、cursor、receipt：设备状态的事实源
 ├── journal/<tx_id>.json     # 事务意图记录（见 §6.2），启动时扫描恢复
 ├── store/
@@ -250,11 +250,11 @@ $SM_HOME/
 ### 5.2 加密对象信封（草案，M4 冻结）
 
 ```text
-magic "SMOB" | version u8 | type u8 | wrapped_key_len u16 | wrapped_key | nonce[12] | ciphertext+tag
+magic "SMOB" | version u8 | type u8 | salt[32] | nonce[12] | ciphertext+tag
 ```
 
 - AAD = vault_id ‖ schema_version ‖ object_type；被篡改或换类型时 `Open` 失败。
-- data key 随机生成，用 vault key 以 AEAD 包装；vault key 与设备私钥只在内存和系统凭据存储中。
+- 对象密钥 = HKDF-SHA256(vault key, salt, info = vault_id ‖ object_type)，每对象随机 salt 与 nonce；vault key 只在内存和系统凭据存储中。manifest 用同一机制，AAD 另含 device_id ‖ sequence ‖ 前一 manifest hash，真实性由 AEAD 保证，不另做签名。
 
 ## 6. 关键机制实现要点
 
@@ -337,7 +337,7 @@ Writer 在 `Apply` 时产出 `import_receipt`：
 | 进程存在 | 按平台枚举进程名/路径；注意多个客户端形态（Desktop/CLI） |
 | 打开的文件句柄 | 目标会话文件或客户端数据库是否被持有（`lsof` / Windows Handle API）；跨平台成本高 |
 | 官方接口 | 如 Codex App Server 的线程状态；若存在优先使用 |
-| 客户端自身的锁文件 | 本机 `~/.codex` 下有 `*-locks` 类目录，用途待确认 |
+| Codex 线程写锁 | `~/.codex/thread-writer-locks/<线程 ID>.lock` 与 `.coordination.lock` 是 Codex 自己发布 rollout 时用的锁（设计 §3.3“参考实现”：先取协调锁，再尝试取线程锁，取不到说明 Codex 正持有该线程）；Writer 写入前后用同一协议检测，是线程级信号，比进程名可靠；没有该目录的旧版 Codex 退回其他信号 |
 
 任何信号不确定或互相矛盾，返回 `Unknown`。
 
@@ -350,12 +350,12 @@ Writer 在 `Apply` 时产出 `import_receipt`：
 - choice 记录引用选择时看到的 head 集合；之后出现该集合之外的新 head，重新进入 `conflict`（设计 §9.2 第 5 条）。
 - 分歧下禁止：自动安装、自动转换、自动选择“最新”。
 - 这部分是纯函数，用表驱动测试覆盖设计 A5、A6，包括跨 Agent 的分歧。
-- `choose` 之后的落地（设计 §9.2 第 6 点）也在纯逻辑里判定：输入“设备 D 的已安装 revision 是否为所选 head 的祖先”，输出 `fast_forward` 或 `needs_action`；`needs_action` 不自动执行，由用户确认。binding 带 `state`（active / superseded / detached），同一 (session, 设备, Agent) 最多一个 active，由 store 层保证；覆盖设计 A13。
+- `choose` 之后的落地（设计 §9.2 第 6 点）也在纯逻辑里判定：输入“设备 D 的已安装 revision 是否为所选 head 的祖先”，输出 `fast_forward` 或 `needs_action`；`needs_action` 不自动执行，由用户确认；确认后默认走“备份 + 原位替换为选定 head（同一原生 ID）”，前提是该设备的本地分支已完整采集为 revision，替换在 journal 保护下进行、失败回滚（设计 §9.2 第 6 点，已定为 A）；只有 E1b 证明 Codex 无法重新投影被替换的文件时才改为新建原生会话。binding 带 `state`（active / superseded / detached），同一 (session, 设备, Agent) 最多一个 active，由 store 层保证；覆盖设计 A13。
 
 ### 6.7 Sync 引擎
 
-- 每设备 sequence 由本机锁保护，分配后先写 journal 再发布；manifest 外层字段与设计 §11.1 一致。
-- Pull：扫描 → 验证成员与签名/哈希 → 依赖未齐则 `pending-objects` → 解密校验 → 原子提交 → 分歧检测。
+- 每设备 sequence 由本机锁保护，分配后先写 journal 再发布；manifest 外层字段与设计 §11.1 一致；启动时若同步目录里本设备 ID 已有比本地记录更大的 sequence，视为 ID 被克隆或状态回退，拒绝发布并要求重新生成 device ID。
+- Pull：扫描 → 验证 AEAD 与哈希 → 依赖未齐则 `pending-objects` → 解密校验 → 原子提交 → 分歧检测。
 - watcher 只触发一次提前 reconcile；定时完整 reconcile（默认 60 秒）是正确性的来源。
 - 本地记录每个设备已处理的最大 manifest sequence，reconcile 只处理更大的；活跃会话只在稳定边界且超过最小间隔时生成 revision（设计 §11.3），避免 manifest 无限增长。
 - 乱序、重复、冲突副本按内容校验去重；校验失败进入 `quarantine/`，不删除。
@@ -380,7 +380,7 @@ Writer 在 `Apply` 时产出 `import_receipt`：
 | `internal/config/` | 已完成（M0） | 日报遗留字段（Summary/Report/Blog/Schedule/Provider，含 `api_key`）已清除；后续按需新增 agents、transport、auto_install 等 |
 | `internal/jsonl/` | 已完成（M0），待接入 | reader、cursor、`PrefixHash`、文件身份及截断/半行/损坏行/同长度重写测试已就绪，但尚无任何包 import；M2 让 Codex 采集改用它，并加入 plain/zstd 的 `Source` |
 | `internal/source/codex/parser.go` | 拆（M2） | 完整行读取与偏移推进改用 `internal/jsonl`（现仍有私有的 `readFullLine` 和“文件大小变小”判定）；按日期生成 Batch 和丢弃工具调用的逻辑不保留，由新的采集与 Canonical `Extract` 取代；其 `event_msg` 回退（`user_message`/`agent_message` 等）针对旧版记录形态，本机 189 个线程中均不存在，旧 fixture 用的是该旧形态，需补当前版本的脱敏样本（含 `item_completed`、`ordinal`、`compacted`、`custom_tool_call`） |
-| `internal/source/codex/discover.go` | 改 | 去掉“最近 N 小时”窗口；以用户选中的会话为准；按线程 ID（`threads` 表或文件名中的 ID）定位而非路径，同时识别 `.jsonl` 与 `.jsonl.zst`（现只认 `.jsonl`，本机约 87% 的线程因此发现不到），处理 `archived_sessions/` 迁移；按线程 ID 定位后不再依赖日期目录扫描，UTC 截断日期的问题随之消失 |
+| `internal/source/codex/discover.go` | 改 | 去掉“最近 N 小时”窗口；以用户选中的会话为准；按线程 ID（`threads` 表或文件名中的 ID）定位而非路径，同时识别 `.jsonl` 与 `.jsonl.zst`（现只认 `.jsonl`，本机约 87% 的线程因此发现不到），处理 `archived_sessions/` 迁移；按线程 ID 定位后不再依赖日期目录扫描，UTC 截断日期的问题随之消失；同一线程的 `.jsonl` 与 `.jsonl.zst` 孪生文件、`_<分段 ID>` 分段文件按线程合并（逐块比较内容后算一份）；支持配置多个 `CODEX_HOME`（据 magpie，一个账号一个目录） |
 | `internal/source/codex/classify.go` | 改 | 只记录 source/originator 信息，不再作为产品边界；默认不排除 `cli`/`exec`，改为用户选择与支持矩阵决定；子代理（`<object>` 来源）不再被排除：同步路径上去掉 `ClassExcluded` 的“内容重复父会话必须跳过”规则，改为作为父会话的依赖列出，是否一并采集待 E1c |
 | `internal/source/codex/probe.go` | 改 | 扩展为 `agent probe codex`：版本、存储形式（含 `.jsonl`/`.jsonl.zst`）、登记/投影文件存在性、兼容性结论；保持“输出不含标题/正文/cwd”；顺手改掉头部注释里的旧命令名 `session-memory codex probe` 和 `ProbeResult` 里遗留的 scratch 字段注释 |
 | `internal/source/claude/*` | 保留不动（P3 前冻结） | 不扩展，新代码不 import；仍依赖 `checkpoint`、`conversation`（故这两个包保留到 P3）。`install.go`（改写 `~/.claude/settings.json`）与 `hook.go`（写 `$SM_HOME/queue/claude/`）不接入任何命令，P3 前不得启用：它们是设计 §6.2 写入底线之外的厂商配置写入路径。P3 时再改：手写字符串查找可改用 `strings`，Hook 路径应尊重 `CLAUDE_CONFIG_DIR` |
@@ -450,9 +450,9 @@ Canonical 的 `Extract` 与 `Validate` 不在 M2：它们移到 M6。`canonical`
 
 ### M4：Vault、传输与同步
 
-- `vault`：密封/打开、设备身份、加入包、系统凭据存储；
+- `vault`：密封/打开、加入包、系统凭据存储（vault key）；device_id 生成与克隆检测；
 - 命令：`init`、`transport attach-folder`、`device invite`、`device join`；
-- 信封冻结前必须定稿：加密协议是否简化（设计 §17）、manifest 条目类型（设计 §11.4）、对象信封与 segment 上限的配合（设计 §8.2）；
+- 信封冻结前必须定稿：manifest 条目类型（设计 §11.4）、对象信封与 segment 上限的配合（设计 §8.2）；加密协议已定为简化方案（设计 §12），不再是待定项；
 - `transport.FolderTransport`、`sync`：manifest、receipt、reconcile、quarantine、重试；
 - 去掉测试 `Sealer`，所有跨设备对象加密；
 - 在真实微云同步目录上做手动验证（E7 的延续）。
@@ -495,7 +495,7 @@ Canonical 的 `Extract` 与 `Validate` 不在 M2：它们移到 M6。`canonical`
 写入类实验不得使用日常数据。可选方式，按可靠性从高到低：
 
 1. 独立的系统用户（macOS 上再建一个用户账户即可）或虚拟机；
-2. 通过环境变量/启动参数让客户端使用独立数据目录（据已知用法 Codex CLI 支持 `CODEX_HOME`；Desktop 与 WorkBuddy 是否遵循待实测，优先试 `CODEX_HOME` 与 Electron 的 `--user-data-dir`）；
+2. 通过环境变量/启动参数让客户端使用独立数据目录（`CODEX_HOME`、`WORKBUDDY_CONFIG_DIR`、`CODEBUDDY_CONFIG_DIR` 是 magpie 读取各 Agent 目录时采用的环境变量，说明配置层遵循它们；Desktop 应用本身是否遵循待实测，另可试 Electron 的 `--user-data-dir`）；
 3. 对日常目录做完整备份后在原位实验——仅在前两种不可行时使用，且实验前必须验证备份可还原。
 
 **路线 3（行级登记写入，如向 `workbuddy.db` 插入行）的实验只允许在选项 1 或 2 的隔离环境中进行，不得使用选项 3。**若某个客户端没有任何隔离手段，则该客户端的路线 3 实验不做，并在报告中标注“未验证”。
@@ -519,13 +519,13 @@ Canonical 的 `Extract` 与 `Validate` 不在 M2：它们移到 M6。`canonical`
 
 | 实验 | 要点 |
 |---|---|
-| E1a Codex 新线程的最小恢复材料 | 先只放会话文件（未压缩 `.jsonl`），看客户端是否回填 `threads` 行、历史投影、项目归属；逐项记录 rollout、`threads`、`thread_history_1` 投影表、`session_index.jsonl`、`.codex-global-state.json` 中哪些由 Codex 自行补齐；失败再试补 `session_index.jsonl`；仍失败才评估最小行级登记写入（须备份、客户端关闭、事务内、隔离环境） |
-| E1b Codex 原地追加 | 先装一个较短的线程，让 Codex 打开并完成投影；再安装更长的 rollout（追加与整体替换两种做法），检查历史完整性、尾部是否残缺或重复、项目归属、重开持久性；加一轮非恒等路径映射（改变字节长度）；再让该文件被压缩为 `.zst`（Codex 自行压缩的时机不明；触发不了就手工用 zstd 压缩来模拟，并在报告中标注为模拟；或以已压缩的线程为目标），看绑定与历史是否仍有效；确认新线程不同时留下 `.jsonl` 与 `.zst` |
+| E1a Codex 新线程的最小恢复材料 | 先只放会话文件（未压缩 `.jsonl`），看客户端是否回填 `threads` 行、历史投影、项目归属；逐项记录 rollout、`threads`、`thread_history_1` 投影表、`session_index.jsonl`、`.codex-global-state.json` 中哪些由 Codex 自行补齐；失败再试补 `session_index.jsonl`；仍失败才评估最小行级登记写入（须备份、客户端关闭、事务内、隔离环境）；写入 `session_meta.model_provider` 时取目标 Codex 当前使用的提供商（据 magpie，否则历史不列出），用命令行 `codex resume` 与 Desktop 分别验证 |
+| E1b Codex 原地追加 | 先装一个较短的线程，让 Codex 打开并完成投影；再安装更长的 rollout（追加与整体替换两种做法），检查历史完整性、尾部是否残缺或重复、项目归属、重开持久性；加一轮非恒等路径映射（改变字节长度）；再让该文件被压缩为 `.zst`（Codex 自行压缩的时机不明；触发不了就手工用 zstd 压缩来模拟，并在报告中标注为模拟；或以已压缩的线程为目标），看绑定与历史是否仍有效；确认新线程不同时留下 `.jsonl` 与 `.zst`；再试线程已有 `.jsonl` / `.jsonl.zst` 孪生文件、有多个 `_<分段 ID>` 分段文件的情形；原地改写按 Codex 的发布协议做（先取 `thread-writer-locks/.coordination.lock`，再尝试取该线程的锁，取不到就放弃；改写后保持权限与修改时间），并验证 Codex 持有线程时我们会放弃改写 |
 | E1c 账号与子线程 | 用另一个账号登录的客户端恢复同一会话并继续一轮，确认推理加密内容、创建者账号字段不导致失败，并核对恢复后生效的权限/沙箱策略取自目标配置；恢复一个带子线程的父会话（本机 7 个顶层线程有子线程），观察缺子线程时的显示与继续；对 `session_meta`、`turn_context`、`response_item/reasoning` 中需剔除或改写的字段给出清单（只列键名） |
-| E2a 运行检测 | 对“窗口打开 / 进程存活 / 仅后台辅助进程 / 未运行”四种状态逐一验证 §6.5 各信号；Codex Desktop 以应用包路径或 `--user-data-dir` 识别；“ChatGPT.app 打开但 Codex 视图未开”的判定；WorkBuddy 的自动化任务能否在无窗口时运行 |
+| E2a 运行检测 | 对“窗口打开 / 进程存活 / 仅后台辅助进程 / 未运行”四种状态逐一验证 §6.5 各信号；Codex Desktop 以应用包路径或 `--user-data-dir` 识别；“ChatGPT.app 打开但 Codex 视图未开”的判定；WorkBuddy 的自动化任务能否在无窗口时运行；`thread-writer-locks/<线程 ID>.lock` 与 `.coordination.lock` 能否作为 Codex“线程被持有”的可靠信号（打开线程、关闭线程、窗口关闭但进程存活三种状态下分别看锁是否被持有） |
 | E2b 运行中可见性矩阵 | 客户端运行中放入新会话 / 向已登记线程追加：看是否自动出现、刷新或重新聚焦后出现、切换项目后出现、还是需重启；Codex 用 App Server 的 `thread/list`、`thread/read` 看能否读到外部放置的 rollout；WorkBuddy 仅在隔离环境中做最小登记行插入再看列表。每个客户端输出“无需重启 / 仅需刷新 / 需退出重开”结论 |
 | E3 Codex → WorkBuddy | 用朴素转换器写一个小会话（纯文本）→ 加入工具调用 → 加入长历史，逐级验证“显示/打开/继续/重开”；先仅放文件，再在隔离环境插入 `workbuddy.db.sessions` 最小行（`user_id` 取目标安装当前登录用户；读取该库用 `immutable=1` 或 `mode=ro` 的 URI）；记录必需列与 `.meta.json` 的必要字段；退出并重启 WorkBuddy，隔一天再复查一次：文件与行仍在、未被 `agent_dirty` 或云同步流程改写、无重复会话；确认 `summary` 记录的语义（供 E6） |
-| E4 WorkBuddy → Codex | 同 E3 反向；重点看 Codex 对缺失字段的容忍度；核对转换后的用户消息数与源端人类输入数一致；判定 Desktop 分页历史是否需要 `item_completed` 记录与连续 `ordinal`（只写 `response_item` 时历史是否为空） |
+| E4 WorkBuddy → Codex | 同 E3 反向；重点看 Codex 对缺失字段的容忍度；核对转换后的用户消息数与源端人类输入数一致；判定 Desktop 分页历史是否需要 `item_completed` 记录与连续 `ordinal`（只写 `response_item` 时历史是否为空；对照 magpie 的写法：`response_item` 之外再写 `event_msg` 的 `user_message` / `agent_message`） |
 | E5 回采与边界 | 在转换会话里继续对话，验证采集器能划出边界、不重复收录；在导入的消息上编辑/重发（WorkBuddy 分支），确认不判为异常；再转换回另一端，比较“来源段落原样回放 + 外来段落转换”与“整体转换”的结果 |
 | E6 模型接受度 | 对含工具调用/推理被丢弃/文本渲染的会话继续提问，观察是否报错、是否“知道”前情；记录目标实际发送的 token 数；用超长会话观察上下文窗口的处理；对含 compaction 的 Codex 会话，试映射到目标的原生摘要边界（若有）并比较 |
 | E7 微云行为 | 在目标系统上测乱序到达、冲突副本命名、按需下载、占用与 rename 行为 |
@@ -554,7 +554,7 @@ fixture 规范：脱敏后入库；含一条“应被保留的敏感样式字符
 - 保真度报告、probe 输出、诊断信息不得含标题、cwd、正文、secret。
 - 明文只允许出现在 `store/staging/` 与内存；staging 用完即清，崩溃遗留由启动恢复清理。
 - 备份（`backups/`）含客户端原始数据，0700，设保留期限，`verify` 可列出并清理。
-- 密钥与设备私钥只在系统凭据存储；凭据存储不可用时拒绝，不落明文。
+- vault key 只在系统凭据存储；凭据存储不可用时拒绝，不落明文。
 - secret 风险扫描（设计 §12）放在首次发布之前，并在跨 Agent 转换前对来源 revision 复扫；命中时暂停、提示，不上传、不转换（转换须用户明确确认）。扫描接口（规则集 + 熵检测、对超大会话的流式处理）在 M4 前定义。
 - Writer 的路径与 ID 校验、大小上限、运行状态复检见 §4.2 的 Writer 契约。
 - 任何新增的“写厂商目录”代码路径，PR 必须附：写入范围说明、备份与回滚说明、崩溃测试。
@@ -599,7 +599,7 @@ CLI 对外使用稳定的错误码（`--json` 时输出），便于脚本与测�
 | 外部写入的 WorkBuddy 会话需要登记行，且可能被其自身同步改写 | E3 先测仅文件，再在隔离环境测最小行；记录必需列并隔一天复查；路线 3 逐 Agent 由用户启用 |
 | 同步对象体积大、revision 过多 | segment 大小上限、revision 合并、manifest sequence 游标（设计 §8.2、§11.3） |
 
-待设计层决策（见设计文档 §17）：第三级登记写入是否启用（逐 Agent）、加密协议是否简化、冲突后非后代 head 的落地方式、原生 ID 保留策略。这些在 M1 决策点一并确认；协议试点已定为 Codex。
+待设计层决策（见设计文档 §17）：第三级登记写入是否启用（逐 Agent）、原生 ID 保留策略。这些在 M1 决策点一并确认；协议试点已定为 Codex；冲突后非后代 head 的落地方式已定为 A（备份后原位替换，E1b 不可行时改 B），加密协议已定为简化方案（共享 vault key，无设备签名）。
 
 ## 15. 工作方式
 

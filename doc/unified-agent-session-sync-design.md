@@ -1,11 +1,11 @@
 # SessionMemory：单会话跨电脑同步与跨 Agent 原生转换设计
 
 > 状态：Draft / 待实施  
-> 版本：v0.5  
+> 版本：v0.6  
 > 日期：2026-10-26  
 > 项目：`SessionMemory/`，独立 Go module 与二进制  
 > 代码来源：`../summarize/agent-daily/`，仅复用采集基础代码，复制后独立演进  
-> 本次调整：采纳评审意见——校正本机事实（Codex 旧会话是 zstd 压缩的 `.jsonl.zst`、同一段对话有模型层与 UI 层两套记录；WorkBuddy 的会话登记在 `workbuddy.db`）；Canonical Transcript 改为由 Native Snapshot 在使用端提取、不再是同步对象；P0 的 E1 拆为 E1a/E1b/E1c（新线程、原地追加、跨账号与子线程），E2 拆为 E2a/E2b（运行检测、运行中可见性矩阵）；补充冲突选择后的落地规则、后台运行与安装竞态、manifest 条目类型、revision 合并与 segment 大小上限，以及兼容矩阵口径。  
+> 本次调整：落实三项决定——冲突后非后代 head 采用“备份后原位替换”（E1b 证明不可行时才改为新建原生会话）；加密协议简化为共享 vault key，取消设备签名与授权记录；WorkBuddy 等 Agent 的会话读取参照 magpie 项目（§3.3“参考实现”），并据此补充 Codex 线程写锁、多 `CODEX_HOME`、`.jsonl` 与 `.jsonl.zst` 并存及分段 rollout、CodeBuddy Code 与 WorkBuddy 的关系、转换约定的默认值。  
 > 实现状态：本文描述目标方案；现有复制代码不代表下述功能已经实现。
 
 ## 1. 产品定位与优先级
@@ -127,9 +127,35 @@ SessionMemory 是个人使用的会话同步工具。个人用户的客户端数
 | WorkBuddy 会话文件 | `~/.workbuddy/projects/<编码后的目录>/<会话id>.jsonl`；本机 93 个会话文件中只有 14 个有 `<会话id>.meta.json`（meta 并非通用）。另有旁路文件：`<会话id>.file-rollback.ndjson`、`<会话id>/tool-results/`（溢出的工具输出）、`<会话id>/subagents/`（子代理会话），以及 `~/.workbuddy/file-history/<会话id>/`。目录名是 cwd 的有损编码，cwd 必须取自记录或登记，不能从目录名反推 |
 | WorkBuddy 记录类型 | `message`、`reasoning`、`function_call`、`function_call_result`、`file-history-snapshot`、`ai-title`，另有 `session-meta`、`custom-title`、`summary`、`resend-fork-notice`；条目含 `sessionId`、`cwd`、`parentId`、`callId`、`providerData` 等字段。绝大多数条目带 `parentId`，历史是带编辑/重发分支的消息树而不是单链；`summary` 的语义未确认 |
 | WorkBuddy meta | 含 `createdAt`、`updatedAt`、`cwd`、`itemCount`、`messageCount`、`migratedFrom`、`sourceConversationId` 等，说明它自身存在“迁移会话”的概念 |
-| WorkBuddy 会话登记 | `~/.workbuddy/workbuddy.db`（SQLite，WAL；用普通 `-readonly` 会打不开，需用 `immutable=1` 或 `mode=ro` 的 URI 只读打开）的 `sessions` 表：含 `id`、`cwd`、`user_id`（非空）、`title`、`status`、`created_at`/`updated_at`、`deleted_at`（软删除）、`transport`（`local`/`cloud`）、`agent_dirty`、`agent_last_synced` 等列；本机 102 行，其中 63 行已软删除；93 个会话文件全部有对应登记行，没有“只有文件、没有登记行”的会话。该库有按版本递增的迁移脚本（`.workbuddy-sqlite-migrations/`）。同库还有 `session_usage` 表；`~/.workbuddy/edge-sync-mapping-v4.db` 的用途未知。`~/Library/Application Support/WorkBuddy/codebuddy-sessions.vscdb`（键值表，仅 2 行，最近修改在 2026-04，早于 `workbuddy.db`）看起来是遗留存储；本机同时存在 `~/.codebuddy/projects/`，与 `~/.workbuddy` 的关系待确认。WorkBuddy 的会话列表是否由 `workbuddy.db` 驱动、仅放文件是否可见，**未验证**，由 E3 判定 |
+| WorkBuddy 会话登记 | `~/.workbuddy/workbuddy.db`（SQLite，WAL；用普通 `-readonly` 会打不开，需用 `immutable=1` 或 `mode=ro` 的 URI 只读打开）的 `sessions` 表：含 `id`、`cwd`、`user_id`（非空）、`title`、`status`、`created_at`/`updated_at`、`deleted_at`（软删除）、`transport`（`local`/`cloud`）、`agent_dirty`、`agent_last_synced` 等列；本机 102 行，其中 63 行已软删除；93 个会话文件全部有对应登记行，没有“只有文件、没有登记行”的会话。该库有按版本递增的迁移脚本（`.workbuddy-sqlite-migrations/`）。同库还有 `session_usage` 表；`~/.workbuddy/edge-sync-mapping-v4.db` 的用途未知。`~/Library/Application Support/WorkBuddy/codebuddy-sessions.vscdb`（键值表，仅 2 行，最近修改在 2026-04，早于 `workbuddy.db`）看起来是遗留存储；`~/.codebuddy` 是同族命令行产品 CodeBuddy Code 的数据目录，会话格式与 WorkBuddy 相同（据 magpie，见下文“参考实现”）；二者可以是同一个目录，读取时须按目录身份去重。WorkBuddy 的会话列表是否由 `workbuddy.db` 驱动、仅放文件是否可见，**未验证**，由 E3 判定 |
 
 两个 Agent 的会话都以 JSONL 为主体，但并不是简单的一一对应：Codex 同一段对话有模型层与 UI 层两套记录，WorkBuddy 是带分支的消息树，并依赖旁路文件和登记行。这使“经统一中间格式做转换”仍是可行的候选路线，但以下都需要 P0 实验确认：外部写入的会话是否被客户端认可，是否需要同时写登记或索引，以及转换后的条目是否被目标模型接受。
+
+#### 参考实现：yetone/magpie
+
+magpie（MIT 许可，Go）是一个读取多个 Agent 会话的本地工具：它只读各 Agent 的目录，并带有 Claude Code ↔ Codex 的会话转换。以下是 2026-10-26 阅读其源码得到的线索，**来自他人代码，未在本机验证行为**，且它的转换只在同一台电脑上进行，不涉及跨设备同步和路径映射。本项目把它当作事实线索和行为参考，不复制代码（如需复制须保留其 MIT 声明），结论以自己的 P0 实验为准。
+
+| 对象 | 线索 |
+|---|---|
+| Codex 目录 | `$CODEX_HOME`，否则 `~/.codex`。一个 ChatGPT 账号对应一个 `CODEX_HOME`，会话写进它所属账号的目录（可有 `~/.codex-work` 之类的多个目录）。rollout 文件名为 `rollout-<YYYY-MM-DDTHH-MM-SS>-<线程 ID>[_<分段 ID>].jsonl[.zst]`，同一线程可有多个分段文件 |
+| Codex 压缩 | `.jsonl.zst` 由 Codex 应用的“压缩本地聊天历史”设置产生，整文件写入；同一线程的 `.jsonl` 与 `.jsonl.zst` 可能并存（“孪生”文件），magpie 逐块比较内容后只算一份；用 `klauspost/compress/zstd` 解压 |
+| Codex 线程写锁 | `~/.codex/thread-writer-locks/<线程 ID>.lock` 与 `.coordination.lock` 是 Codex 自己发布 rollout 的写入协议。magpie 改写 rollout 时先取协调锁，再尝试取该线程的锁，取不到说明 Codex 正持有该线程，就放弃；改写前后还比较文件大小和修改时间，改写后保持文件权限和修改时间；没有 `thread-writer-locks` 目录的旧版 Codex 一律不改 |
+| Codex 会话名 | `session_index.jsonl` 被当作线程名称（改名）记录读取，不是完整登记 |
+| WorkBuddy 目录 | `$WORKBUDDY_CONFIG_DIR`，否则 `~/.workbuddy`；会话在 `projects/**/<会话 ID>.jsonl`，子代理会话在 `<会话 ID>/subagents/` 下；`<会话 ID>.meta.json` 只为迁移自旧历史的会话提供 cwd |
+| WorkBuddy 记录 | OpenAI Agents SDK 风格的条目：`message`、`reasoning`、`function_call`、`function_call_result`，另有 `ai-title`、`custom-title`（用户自拟标题优先于 AI 标题）；时间字段 `timestamp` 为毫秒；用量在 `providerData.usage`，用 `providerData.messageId` 归并同一次回复的多行，迁移自旧历史的会话用旧字段名（`input_tokens` 等） |
+| CodeBuddy Code | 命令行同族产品，`$CODEBUDDY_CONFIG_DIR`，否则 `~/.codebuddy`，会话格式与 WorkBuddy 相同；它的目录就是 WorkBuddy 的目录时只读一次，否则会重复列出 |
+| WorkBuddy 的限制 | 它是桌面应用，没有从终端恢复会话的方式；magpie 只读它的文件（没有用到 `workbuddy.db`），也**没有任何写入 WorkBuddy 的做法**，所以“外部写入的会话能否显示”没有先例，仍由 E3 判定 |
+| 其他 Agent（P3 参考） | Claude Code（`$CLAUDE_CONFIG_DIR`，`projects/*/<id>.jsonl`）、OpenCode（数据库或旧 JSON 文件）、Pi / omp、Cline、Droid、Cursor CLI、Kimi Code、Grok Build 等各有目录与格式；P3 扩展时先看 magpie 的 `internal/sessions` 对应实现 |
+
+magpie 的 Claude Code ↔ Codex 转换约定，可作为本项目转换规则的默认值，仍须经 E3–E6 验证：
+
+- 来源只读；按用户请求才转换；结果写入目标 Agent 自己的目录，由目标自己的恢复命令打开；同一份来源内容（路径、大小、修改时间）重复请求，返回已转换的结果，不产生第二个会话；
+- 不携带推理（Claude Code 的 thinking 用签名校验，Codex 的用 `encrypted_content`，对方厂商都读不了）；
+- shell 命令及其输出转为目标自己的工具调用与结果（Claude Code 的 Bash ↔ Codex 的 `exec_command`），其他工具的调用与结果转为一段带围栏的文本（`[工具名]`、`[result]` / `[error]`）；单个工具输出截断到 64 KiB 并标注；
+- 图片按 data URL 携带；来源是消息树（Claude Code 的 `parentUuid`）时，从最后一个叶子沿父链取活动分支，压缩边界之前的内容由压缩摘要代替；
+- Codex 的 `compacted` 记录带 `replacement_history` 或 `message`，转换时据此重建压缩后的历史；Codex 自带压缩项的 `encrypted_content` 只有 OpenAI 能读，不能转换；
+- 非人类输入的判定起点：Codex 的 user 消息以 `<` 或 `# AGENTS.md` 开头，是 Codex 自己写入的上下文；WorkBuddy 的 user 消息以 `<` 开头（如 `<system-reminder>`），或匹配 `^@[\w-]+:\S*$`（场景标记）；
+- 写入 Codex：新建 `sessions/YYYY/MM/DD/rollout-<本地时间>-<uuid v7>.jsonl`，`session_meta` 含 `session_id`、`id`、`timestamp`、`cwd`、`originator`、`cli_version`、`source`、`model_provider`，其中 `model_provider` 取 Codex 当前使用的提供商（否则历史列表不显示）；每条用户消息和回答在 `response_item` 之外再写一条 `event_msg`（`user_message`、`agent_message`）。据 magpie 的注释，命令行 TUI 靠它显示恢复后的历史，且 Codex 打开该线程时会自己把它登记进状态库——这只证明命令行恢复，Desktop 是否如此由 E1a 判定。
 
 Codex 的“恢复已存在的线程”不等于“任意机器导入接口”。官方资料还描述了分页历史，不能假定所有版本只靠一个 JSONL 就能完整恢复。现有 JSONL parser 只是待适配的基础。
 
@@ -256,7 +282,7 @@ Item
 - 不同 Agent 的归一化字段取并集的最小公共语义，Agent 私有字段放在 `raw_ref` 之后，不污染公共字段。
 - **主流与链接**：同一段对话在来源里有多套记录时（如 Codex 的模型层 `response_item` 与 UI 层 `item_completed`），适配器声明一个主流作为 Canonical 条目的来源，另一套以 `raw_ref` 列表链接到对应条目，不重复产出，也不丢弃。`tool_call` 需覆盖各来源的变体（如 Codex 的 `custom_tool_call` 自由格式输入）。
 - **活动路径**：来源是消息树时（如 WorkBuddy 的 `parentId`、编辑/重发分支），适配器选定活动叶子并给出 `active_path`；转换只写活动路径，其他分支留在 Canonical 中并计入保真度报告。
-- **人类输入**：不能仅凭 `role = user` 判定人类输入（Codex 的 rollout 中存在注入或继承的 user 角色消息，需要看记录的 metadata）；适配器须声明“人类输入”的判定规则，规则由 M2 的真实样本与 E4 确定。
+- **人类输入**：不能仅凭 `role = user` 判定人类输入（Codex 的 rollout 中存在注入或继承的 user 角色消息，需要看记录的 metadata）；适配器须声明“人类输入”的判定规则，规则由 M2 的真实样本与 E4 确定；起点是 magpie 使用的启发式（Codex：以 `<` 或 `# AGENTS.md` 开头的 user 消息是客户端自己写入的上下文；WorkBuddy：以 `<` 开头，或匹配 `^@[\w-]+:\S*$` 的场景标记），见 §3.3“参考实现”。
 
 ## 6. 同 Agent 原生同步流程
 
@@ -353,6 +379,8 @@ R3 只新增 WorkBuddy 的真实后续记录；转换导入的 R1/R2 内容通�
 5. 验证：目标会话出现在历史列表、能打开、条目数与计划一致、关闭重开仍在。
 6. 记录 binding、`install_mode = converted` 和包含条目边界的 import receipt。
 
+同一个 revision 对同一目标设备和同一 Writer 版本只转换一次：重复发出请求时返回已有的转换结果，不产生第二个会话。
+
 转换规则（原则；具体字段映射由 P0 实验确定，并随 Writer 版本发布）：
 
 | Canonical 条目 | 转换原则 |
@@ -360,7 +388,7 @@ R3 只新增 WorkBuddy 的真实后续记录；转换导入的 R1/R2 内容通�
 | `message`（user/assistant） | 写为目标原生消息，保序保时间戳；user 消息中注入或继承的上下文类内容是否写入，按 §5.4 的人类输入规则和 E4 结果决定 |
 | `message`（system/developer 等指令类角色） | **不写入**目标，仅保留在 Canonical 中；源 Agent 的权限、项目指令不能被当作目标 Agent 的指令 |
 | `reasoning` | 默认**不写入**目标（推理内容常为厂商私有或加密，跨厂商无法回放）；保留在 Canonical 中，报告中计数 |
-| `tool_call` + `tool_result` | 工具名与参数能映射到目标已知工具，且通过目标格式校验时，写为目标原生调用与结果；否则渲染为带标记的文本消息（如“[来自 Codex 的工具调用]”），保证历史可读；文本渲染对工具输出设大小上限，超出部分截断并标注“已截断，完整内容见 session_id/item_id”，不把超大输出整段写入目标 |
+| `tool_call` + `tool_result` | 工具名与参数能映射到目标已知工具，且通过目标格式校验时，写为目标原生调用与结果；否则渲染为带标记的文本消息（如“[来自 Codex 的工具调用]”），保证历史可读；文本渲染对工具输出设大小上限（默认 64 KiB，magpie 采用同一数值，可调），超出部分截断并标注“已截断，完整内容见 session_id/item_id”，不把超大输出整段写入目标 |
 | 孤立的 `tool_call` 或 `tool_result` | **不写为原生条目**，避免目标客户端或模型拒绝；渲染为文本并在报告中列出 |
 | `compaction` | 写为摘要类消息并标注来源，不伪装成原始对话；目标若有原生的压缩/摘要边界，能否做到“历史可见 = 全部、模型上下文 = 摘要 + 尾部”由 E6 判定（WorkBuddy 的 `summary` 记录语义尚未确认），做不到时在报告中注明上下文容量风险 |
 | `attachment_ref` | 附件可传输则一并写入；否则保留引用并在报告中列出缺失 |
@@ -412,7 +440,7 @@ Resume Pack
 优先实现 WorkBuddy 的 Native Writer 与采集适配器，使 Codex ↔ WorkBuddy 能走转换写入并往返。
 
 - WorkBuddy 能读取 MCP，不意味着它能导入外部会话，也不意味着新对话会自动回传；转换写入和回采都要单独验证。
-- 本机同时存在 `~/.workbuddy` 和 `~/.codebuddy` 两处存储，需先确认哪一处承载 WorkBuddy 的会话，是否随版本变化。
+- `~/.workbuddy` 是 WorkBuddy（桌面应用）的目录，`~/.codebuddy` 是 CodeBuddy Code（命令行）的目录，两者会话格式相同；用户可以把二者指到同一目录，所以按目录身份去重，并让会话归属取决于使用它的产品，不取决于目录名（§3.3“参考实现”）。
 - 外部写入的会话是否需要同时登记到 `~/.workbuddy/workbuddy.db` 的 `sessions` 表（`codebuddy-sessions.vscdb` 看起来是遗留存储，不作首选候选），由 P0 实验 E3 决定，路线按 §6.2 的优先级选择。本机观察到每个文件型会话都有登记行，所以需要登记行的可能性较大，但未验证。E3 须记录所需的最小行内容（`user_id` 取目标安装当前登录的用户，另有 `deleted_at`、`status` 等），以及 WorkBuddy 自身的同步/脏标记（`agent_dirty`、`transport`）在重启后的行为。WorkBuddy 采集适配器的 `Discover` 须识别 `deleted_at`，已软删除的会话不当作活跃会话。
 - WorkBuddy 采集适配器需要识别 import receipt 划定的边界，回采边界之后的真实新记录。
 
@@ -506,7 +534,7 @@ Resume Pack（兜底）的注入同理：通过 pack ID、来源 revision 和精
 5. 离线旧设备之后上传新后代，或两台设备作出不一致选择，重新显示冲突，不自动认定此前选择涵盖未知版本。
 6. `choose` 之后，各设备按下列方式落地：
    - 选定的 head 是该设备已安装 revision 的后代：按 §9.3 快进；
-   - 否则（例如公司选了 R3A，而家里已安装 R3B）：不能快进，也不自动覆盖。该设备的状态显示“需要处理”，须用户显式确认后才落地：要么在备份和 journal 保护下，把该原生会话替换为选定 head（同一原生 ID，要求该设备本地分支已完整采集为 revision），要么新建一个原生会话（原绑定标记为 `superseded`，需要新原生 ID 时按 §2.1 显示映射）。v1 采用哪种见 §17 待决策，E1b 的结果决定哪些可行；决策之前不自动选择。
+   - 否则（例如公司选了 R3A，而家里已安装 R3B）：不能快进，也不自动覆盖。该设备的状态显示“需要处理”，须用户显式确认后才落地：要么在备份和 journal 保护下，把该原生会话替换为选定 head（同一原生 ID，要求该设备本地分支已完整采集为 revision），要么新建一个原生会话（原绑定标记为 `superseded`，需要新原生 ID 时按 §2.1 显示映射）。**v1 采用前者（已定）**：备份并替换为选定 head，保持同一原生 ID；仅当 E1b 证明 Codex 无法对被替换或追加的文件重新投影、且没有已验证的补救写法时，才改为后者（新建原生会话，新 ID，原绑定 `superseded`）。两种方式都须用户显式确认，不自动执行。
 
 分歧发生在跨 Agent 的情形下同样适用：一个来自公司 Codex 原生会话，另一个来自家里 WorkBuddy 转换会话，两个都从 R2 继续，则按同样规则保留两个 head。
 
@@ -543,15 +571,15 @@ SessionMemoryVault/v1/
 └── manifests/<device-id>/<sequence>-<hash>.manifest
 ```
 
-全部发布文件不可变；没有多台电脑共同覆盖的 `latest.json`，也不同步本地 SQLite。每设备 sequence 分配、签名和发布需本机互斥锁及 journal；恢复系统备份不得让两个活跃设备共用同一个 device ID。
+全部发布文件不可变；没有多台电脑共同覆盖的 `latest.json`，也不同步本地 SQLite。每设备 sequence 分配和发布需本机互斥锁及 journal；恢复系统备份不得让两个活跃设备共用同一个 device ID：设备启动时若发现同步目录里本设备 ID 已有比本地记录更大的 sequence，视为 ID 被克隆或本地状态回退，拒绝发布并要求重新生成 device ID。
 
-manifest 的加密 payload 由 §11.4 列出的条目类型组成，并带前一 manifest hash。外层只暴露验证所需的格式版本、设备/密钥标识、sequence 和密文 hash/签名。
+manifest 的加密 payload 由 §11.4 列出的条目类型组成，并带前一 manifest hash。外层只暴露格式版本、device_id、sequence 和密文 hash；内容的真实性由 AEAD 保证（关联数据绑定 vault、device_id、sequence 和前一 manifest hash），没有单独的签名。
 
 ### 11.2 Push / Pull
 
 Push：安全采集并提交本地 revision → 加密对象 → 临时文件 fsync/close → 发布最终文件 → 发布 manifest → 记录本地 published。
 
-Pull：扫描 manifest → 验证成员身份、签名、链和密文 hash → 等待依赖到齐 → 解密并检查 schema、revision 父链和对象内容 → 原子提交本地副本 → 检测分歧 → 按需准备恢复或转换。
+Pull：扫描 manifest → 验证 AEAD（只有持有 vault key 的设备能产生）、链和密文 hash → 等待依赖到齐 → 解密并检查 schema、revision 父链和对象内容 → 原子提交本地副本 → 检测分歧 → 按需准备恢复或转换。
 
 - 用 `.partial-<uuid>` 写临时文件，importer 忽略未完成文件。
 - manifest 可以先于 object 到达，保持 `pending-objects`，不导入半份会话。
@@ -585,17 +613,16 @@ manifest 的加密 payload 由下列条目组成。字段在 M4 冻结信封之�
 | `choice` | continuation choice：用户已看到的 head 集合和所选 head（§9.2） | 做出选择的设备 | choice 内容的 hash |
 | `convert-request` | `continue --device` 生成的转换请求：来源 revision、目标 Agent、目标设备（§13） | 发起设备 | 请求 ID |
 | `binding` | `session_id` 与各设备原生会话的映射摘要、import receipt 摘要，用于设备重装后重建绑定（E8）；不含本地路径和 cursor | 绑定所在设备 | `binding_id` + 版本 |
-| `device-auth` | 设备授权记录（§12）；若 §17 的简化方案被采纳则取消 | 已授权设备 | 设备公钥 hash |
 
 项目目录映射（§10）是设备本地数据，不发布；`project_ref` 只作为标签出现在 revision 中。
 
 ## 12. 加密与数据边界
 
 - 首个跨电脑版本即对同步目录中的原始快照、repo 状态和私有 metadata 加密。Canonical Transcript、转换产物和 Resume Pack 都是派生数据，不进入同步目录。
-- 使用成熟库提供的 AES-256-GCM 等 AEAD；每对象随机 data key/nonce，data key 由 vault key 包装，关联数据绑定 vault、schema 和对象类型。
-- 每设备持有签名身份和授权记录；接收端只接受授权设备发布的 manifest。
-- 初始版本通过可信线下渠道传递一次性设备加入包，包含加密的 vault key 和设备授权材料；加入包用独立高强度口令保护，口令与包分开传递，不放在同步目录。
-- vault key 和设备私钥保存在本机凭据存储，提供离线加密恢复包；两台电脑各自登录 Agent，不同步 token、cookie、认证数据库或 keychain。
+- 使用成熟库提供的 AES-256-GCM 等 AEAD；每对象用随机 salt 经 HKDF 从 vault key 派生对象密钥，并用随机 nonce；关联数据绑定 vault、schema 和对象类型。
+- 所有持有 vault key 的设备同等受信，不设每设备签名身份和授权记录；`device_id` 只是标签，不是经过认证的身份。manifest 的真实性来自 AEAD（§11.1），云端或第三方无法伪造或篡改。
+- 初始版本通过可信线下渠道传递一次性设备加入包，内含加密的 vault key；加入包用独立高强度口令保护（argon2id 派生密钥），口令与包分开传递，不放在同步目录。加入成功后新设备生成自己的 `device_id`。
+- vault key 保存在本机凭据存储，提供离线加密恢复包；两台电脑各自登录 Agent，不同步 token、cookie、认证数据库或 keychain。
 - 不遍历打包整个 workspace、完整环境变量、`.env` 或凭据文件。会话引用外部文件不意味着默认上传文件正文。
 - transcript 本身可能包含用户粘贴的 secret：不能保证“完整原文”和“自动脱敏”同时成立。风险扫描命中时暂停该会话的首次发布，允许排除会话，或选择另行脱敏的上下文导出；脱敏副本不能标为字节保真的原生副本，也不能作为转换写入的来源冒充完整历史。跨 Agent 转换前对来源 revision 复扫一次（§7.2 报告的“数据去向”）；同一用户自己设备之间的后续增量不逐个扫描。
 - 本地明文暂存（staging、转换产物、备份）使用私有权限，安装日志不输出正文、secret 和密钥；跨 Agent 读取范围限于用户选择的会话及允许的本地目录。
@@ -675,7 +702,7 @@ internal/session/         # identity、revision、binding、分歧检测
 internal/store/           # immutable objects、SQLite 视图、事务 journal
 internal/sync/            # manifest、receipt、reconcile
 internal/transport/       # FolderTransport
-internal/vault/           # 加密、设备身份、加入包
+internal/vault/           # 加密、加入包、device_id
 internal/bridge/          # Resume Pack（兜底）、注入基线
 internal/mcp/             # 可选本地读取接口
 ```
@@ -698,13 +725,13 @@ P0 是一组带明确通过标准的实验，产出支持矩阵、脱敏 fixture
 
 | 编号 | 问题 | 通过标准 | 失败时 |
 |---|---|---|---|
-| E1a | Codex 新线程的最小恢复材料：仅放一个新的会话文件（未压缩 `.jsonl`），客户端能否自行回填登记（`threads`）、历史投影（`thread_history_1`）和项目归属；是否还需要 `session_index.jsonl`、`.codex-global-state.json` 或最小登记写入 | 目标 Codex 的历史入口出现会话，在正确的项目下、可继续、重开仍在，且不复制数据库文件；逐项记录 rollout、`threads` 行、投影表、`session_index.jsonl`、`.codex-global-state.json` 中哪些由 Codex 自行补齐、哪些必须写入 | 记录具体阻塞；评估路线 3（最小行级写入）；仍无路线则第一优先需求标为阻塞 |
-| E1b | Codex 原地追加：向**已登记**的线程安装更长的 rollout（A2 的第二跳），含路径映射改变字节长度的情形，以及存储形式两种情形——安装后 Codex 把它压缩为 `.zst`、目标已有该线程的 `.zst` | 追加后历史完整，无重复或残缺的尾部，项目归属不变，重开仍在；Codex 对被追加/替换的文件重新投影（或有已验证的补救写法）；压缩后绑定与历史仍有效；新线程不同时留下 `.jsonl` 与 `.zst` | 记录失败形态；改用“替换式安装”或新建线程（需要新 ID，见 §9.2 第 6 点），并更新 §17 待决策；都不可行则第一优先需求标为阻塞 |
-| E1c | Codex 账号与子线程：在另一个账号登录的客户端上恢复同一会话；恢复一个带子线程的父会话 | 首个继续的 turn 成功（推理加密内容、创建者账号字段不导致拒绝），且恢复后生效的权限/沙箱策略等于目标设备配置而非源端值；父会话在子线程未安装时可打开、显示缺口并继续；得出子线程是否必须随父会话安装、哪些字段需要剔除或改写（只列键名） | 需要剔除/改写字段时，由 Writer 声明并下调保真度表述（§6.3）；子线程必须随装时，纳入原生快照的文件集合（§6.3） |
-| E2a | 客户端“是否运行”的检测信号：能否区分“窗口打开 / 进程存活 / 仅后台辅助进程 / 未运行”；进程身份能否以应用包路径或用户数据目录判定 | 得出可靠信号；四种状态各有明确的“可否安装”结论；信号矛盾时落入 `Unknown` | 采用“要求关闭客户端”，并在支持矩阵标注 |
+| E1a | Codex 新线程的最小恢复材料：仅放一个新的会话文件（未压缩 `.jsonl`），客户端能否自行回填登记（`threads`）、历史投影（`thread_history_1`）和项目归属；是否还需要 `session_index.jsonl`、`.codex-global-state.json` 或最小登记写入；写入的 `session_meta.model_provider` 是否须等于目标 Codex 当前使用的提供商，会话才在历史里列出（magpie 的做法，待验证）；用命令行 `codex resume` 与 Desktop 分别测 | 目标 Codex 的历史入口出现会话，在正确的项目下、可继续、重开仍在，且不复制数据库文件；逐项记录 rollout、`threads` 行、投影表、`session_index.jsonl`、`.codex-global-state.json` 中哪些由 Codex 自行补齐、哪些必须写入 | 记录具体阻塞；评估路线 3（最小行级写入）；仍无路线则第一优先需求标为阻塞 |
+| E1b | Codex 原地追加：向**已登记**的线程安装更长的 rollout（A2 的第二跳），含路径映射改变字节长度的情形，以及存储形式两种情形——安装后 Codex 把它压缩为 `.zst`、目标已有该线程的 `.zst`，以及同一线程的 `.jsonl` 与 `.jsonl.zst` 并存、线程有多个分段 rollout（`_<分段 ID>`）的情形；原地改写按 Codex 自己的发布方式进行：先取 `thread-writer-locks/.coordination.lock`，再尝试取该线程的锁，取不到就放弃，改写后保持权限与修改时间（据 magpie，待验证） | 追加后历史完整，无重复或残缺的尾部，项目归属不变，重开仍在；Codex 对被追加/替换的文件重新投影（或有已验证的补救写法）；压缩后绑定与历史仍有效；新线程不同时留下 `.jsonl` 与 `.zst` | 记录失败形态；改用“替换式安装”或新建线程（需要新 ID，见 §9.2 第 6 点），并更新 §17 待决策；都不可行则第一优先需求标为阻塞 |
+| E1c | Codex 账号与子线程：在另一个账号登录的客户端上恢复同一会话（据 magpie，一个账号对应一个 `CODEX_HOME`，会话写进它所属账号的目录，所以这也是跨目录的恢复）；恢复一个带子线程的父会话 | 首个继续的 turn 成功（推理加密内容、创建者账号字段不导致拒绝），且恢复后生效的权限/沙箱策略等于目标设备配置而非源端值；父会话在子线程未安装时可打开、显示缺口并继续；得出子线程是否必须随父会话安装、哪些字段需要剔除或改写（只列键名） | 需要剔除/改写字段时，由 Writer 声明并下调保真度表述（§6.3）；子线程必须随装时，纳入原生快照的文件集合（§6.3） |
+| E2a | 客户端“是否运行”的检测信号：能否区分“窗口打开 / 进程存活 / 仅后台辅助进程 / 未运行”；进程身份能否以应用包路径或用户数据目录判定；Codex 的线程写锁（`thread-writer-locks/<线程 ID>.lock` 与 `.coordination.lock`）能否作为“该线程正被 Codex 持有”的可靠信号，以及没有该目录的旧版 Codex 如何处理 | 得出可靠信号；四种状态各有明确的“可否安装”结论；信号矛盾时落入 `Unknown` | 采用“要求关闭客户端”，并在支持矩阵标注 |
 | E2b | 运行中的可见性矩阵：客户端运行中放入新会话或向已登记线程追加记录后，是否出现（自动 / 刷新或重新聚焦 / 切换项目 / 需重启）；Codex App Server 的 `thread/list`、`thread/read` 能否读到外部放置的 rollout；WorkBuddy 仅在隔离环境中插入最小登记行后列表是否出现 | 每个客户端得出并写入支持矩阵的结论：“无需重启 / 仅需刷新 / 需退出重开” | 采用 `open` 与 `waiting-client-close`，如实告知需要重启 |
 | E3 | Codex → WorkBuddy：转换写入后，WorkBuddy 能否显示、打开、继续、重开；是否需要同时在 `workbuddy.db` 的 `sessions` 表登记（先测仅放文件，再仅在隔离环境测最小行）；WorkBuddy 重启及隔一天后，文件与行是否保留、是否被其自身同步改写或产生云端重复 | 完整历史在 WorkBuddy 会话列表可见并可继续，继续时模型不报错；记录所需的最小行内容；重启后文件与行保持完整，无重复会话 | 区分原因：文件被忽略、需要索引、格式校验失败、被自身同步改写；决定登记写入或降级为 `context-only` |
-| E4 | WorkBuddy → Codex：反向转换写入；判定 Desktop 的分页历史是否需要 UI 层 `item_completed` 记录和连续 `ordinal` | 同 E3，在 Codex 历史入口（分页历史）可见并可继续；转换后的用户消息数与源端的人类输入数一致 | 同 E3；需要 UI 层记录时由 Writer 生成（§7.2） |
+| E4 | WorkBuddy → Codex：反向转换写入；判定 Desktop 的分页历史是否需要 UI 层 `item_completed` 记录和连续 `ordinal`（magpie 写的是 `event_msg` 的 `user_message` / `agent_message`，据其注释命令行 TUI 靠它显示恢复后的历史） | 同 E3，在 Codex 历史入口（分页历史）可见并可继续；转换后的用户消息数与源端的人类输入数一致 | 同 E3；需要 UI 层记录时由 Writer 生成（§7.2） |
 | E5 | 转换并继续后的回采：边界之后的新记录能否被采集，边界之前不重复收录；在导入的消息上编辑/重发（WorkBuddy 分支）是否被正确当作新记录；回到来源 Agent 时，“来源段落原样回放 + 外来段落转换”与“整体转换”的结果对比 | 新记录进入 revision 链，导入部分不重复，分支不被判为异常，往返后再转换仍一致；给出两种回放方式的结论 | 无法划定边界则不开放往返续写 |
 | E6 | 模型对转换条目的接受度：工具调用/结果、推理被丢弃后、孤立条目被渲染为文本时，目标模型能否正常继续；长会话超出目标上下文窗口时目标客户端如何处理；含 compaction 的会话能否映射到目标的原生摘要边界（若有）；WorkBuddy `summary` 记录的语义 | 转换后会话可正常继续一轮，无格式拒绝；保真度报告各类计数与实际写入计数一致；记录目标实际发送的 token 数，超窗时客户端行为与报告所述一致 | 调整转换规则（更多转为文本、移除不支持条目），并在报告中注明上下文容量风险 |
 | E7 | 微云实际文件行为：乱序、冲突副本、按需下载、文件占用 | 同步逻辑在真实环境中靠完整 reconcile 达到最终一致 | 调整重试与稳定判定，不改协议 |
@@ -715,7 +742,7 @@ P0 是一组带明确通过标准的实验，产出支持矩阵、脱敏 fixture
 
 **实验轴**：P0 在开发机上进行，Windows 与第二台真实电脑留到 P1 验收。每个写入类实验至少记录：①客户端版本对（含“新版本产生、旧版本恢复”的方向）；②账号对（E1c）；③Desktop 与 CLI 形态分开记录；④路径映射取非恒等映射（E1b）。P0 覆盖不到的轴，在支持矩阵中标为“未验证”，不推断为通过。隔离环境的选择见开发文档 §9.1；行级登记写入（路线 3）的实验只允许在隔离环境中进行。
 
-**P0 决策点**：实验报告交给项目负责人（用户）审阅，按结果决定：第一优先需求走哪条写入路线；第二优先需求按 `history-visible`、`roundtrip-supported` 还是 `context-only` 交付；是否按 Agent 逐个启用路线 3；冲突选择后非后代 head 的落地方式（§17）；加密协议是否简化（§17）。结论写入本文档，再进入 P1。
+**P0 决策点**：实验报告交给项目负责人（用户）审阅，按结果决定：第一优先需求走哪条写入路线；第二优先需求按 `history-visible`、`roundtrip-supported` 还是 `context-only` 交付；是否按 Agent 逐个启用路线 3；E1b 的结果还决定 §9.2 第 6 点是否需要改用新建原生会话。结论写入本文档，再进入 P1。
 
 **门槛：**
 
@@ -765,7 +792,7 @@ P0 是一组带明确通过标准的实验，产出支持矩阵、脱敏 fixture
 | A10 | 目标客户端还在写入 | 等待安全关闭，不因文件暂时稳定就覆盖 |
 | A11 | 目标客户端未运行时有新版本到达 | 已启用自动安装时，后台完成安装并验证；用户打开客户端即看到最新，无需手动操作 |
 | A12 | 目标客户端运行中有新版本到达 | 显示 `waiting-client-close`，不写入；客户端关闭后自动继续，或用 `open` 完成安装并启动 |
-| A13 | 冲突后选择一个 head | 已安装版本是所选 head 的祖先的设备快进；否则显示“需要处理”，经用户确认后替换或新建原生会话，旧绑定标记 `superseded`，不自动覆盖，不丢弃任一分支 |
+| A13 | 冲突后选择一个 head | 已安装版本是所选 head 的祖先的设备快进；否则显示“需要处理”，经用户确认后备份并替换为所选 head（同一原生 ID；E1b 证明不可行时改为新建原生会话，旧绑定标记 `superseded`），不自动覆盖，不丢弃任一分支 |
 | B1 | 用户选择 Codex → WorkBuddy | 完整历史出现在 WorkBuddy 会话列表，可打开、可继续、重开仍在；附保真度报告；其他 session 不被写入 |
 | B2 | WorkBuddy 继续 → 切回 Codex | 采集真实新增记录，转换回 Codex 后完整历史可见，不重复收录导入部分 |
 | B3 | 转换写入不可用或被拒绝 | 降级为 `context-only` 并标注原因，不标记 `history-visible` 或往返支持，不算第二优先目标完成 |
@@ -791,9 +818,9 @@ P0 是一组带明确通过标准的实验，产出支持矩阵、脱敏 fixture
 | 事项 | 当前默认 | 说明 |
 |---|---|---|
 | 写入路线 3（最小行级登记写入）是否启用 | 默认关闭，P0 证明路线 1、2 不可行后再议 | 见 §6.2，需用户按 Agent 显式启用；WorkBuddy 的会话列表很可能由 `workbuddy.db` 驱动，E3 结果出来后在 P0 决策点逐 Agent 决定 |
-| 加密协议的复杂度 | 沿用 §12 的设备签名与授权记录 | 个人场景设备少、且无吊销能力，可评估简化为共享 vault key + 每设备追加式 manifest，不做签名链；P1 前决定 |
+| 加密协议的复杂度 | **已定：简化**——共享 vault key，取消设备签名与授权记录（§12） | 设备身份只是标签；移除设备等于迁移到新 vault；设备 ID 被克隆用 sequence 回退检测（§11.1） |
 | 协议试点 Agent | Codex（已定） | Claude Code 不作为协议试点，保持在 P3；协议与 Writer 边界逻辑用 Codex 与本地双设备模拟验证 |
 | 厂商原生 ID 保留策略 | 尽量保留；要求新 ID 时显示映射 | 具体取决于 E1a/E1b、E3 的实验结果；Codex 记录内嵌大量 `thread_id`，新 ID 意味着整体改写，不是廉价操作 |
-| 冲突后非后代 head 的落地方式 | 不自动落地，显示“需要处理”，经用户显式确认 | 候选：A 备份后原位替换为选定 head（同一原生 ID）；B 新建原生会话（新 ID，原绑定 `superseded`）；见 §9.2 第 6 点，E1b 结果决定可行性，P0 决策点由用户选择 |
+| 冲突后非后代 head 的落地方式 | **已定：A**——显示“需要处理”，经用户显式确认后，备份并原位替换为选定 head（同一原生 ID，要求本地分支已完整采集为 revision） | 仅当 E1b 证明 Codex 无法对被替换/追加的文件重新投影且无补救写法时，改为 B（新建原生会话，新 ID，原绑定 `superseded`）；见 §9.2 第 6 点 |
 
-v0.5 的交付顺序固定为：**先把一个 Codex 会话可靠地带到另一台电脑并带回来；再让用户选择把它以完整历史的形式转换到 WorkBuddy 等 Agent 继续，并能带回来。**转换写入是第二优先需求的主路径，Resume Pack 只是兜底。项目级多 session 合并单独后置。
+v0.6 的交付顺序固定为：**先把一个 Codex 会话可靠地带到另一台电脑并带回来；再让用户选择把它以完整历史的形式转换到 WorkBuddy 等 Agent 继续，并能带回来。**转换写入是第二优先需求的主路径，Resume Pack 只是兜底。项目级多 session 合并单独后置。
