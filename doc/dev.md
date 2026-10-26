@@ -9,6 +9,7 @@
 - 设计文档回答“做什么、为什么”，本文回答“怎么做、按什么顺序做、怎么验证”。两者冲突时以设计文档为准；P0 实验结论会同时回写两份文档。
 - 本文中的 Go 接口、磁盘布局、字节格式都是**草案**。其中依赖 Codex / WorkBuddy 实际行为的部分（Writer、转换规则、客户端运行检测）在 P0 结束前不冻结，文中以“待 E#”标注对应的实验。
 - 本文只写工程决策，不重复设计文档里的产品规则。
+- 规范性细节（类型、字段、文件格式、算法、命令输出、测试夹具、P0 工具、文件级编码任务）在 [spec.md](spec.md)，并附有经编译和测试验证的参考代码（[spec/_reference/](spec/_reference/)）。本文 §4（接口草案）和 §5（本地布局）已被 spec §2–§10 取代，保留仅作导读，**不一致时以 spec 为准**。
 - 参考实现：yetone/magpie（MIT，Go）读取多个 Agent 的会话，并做 Claude Code ↔ Codex 转换；设计 §3.3“参考实现”记录了从其源码得到的线索。本项目只借鉴事实与行为，不复制代码（如需复制须保留其 MIT 声明），结论以自己的 P0 实验为准。
 
 ## 1. 开发原则
@@ -27,8 +28,8 @@
 | 语言 | Go（与 `go.mod` 一致，目前为 1.25；CI 已使用 `go-version-file: go.mod`） | 单二进制，跨平台 |
 | CLI | `github.com/spf13/cobra` | 命令数量多，需子命令与补全；若想零依赖可换标准库 `flag`，不影响其他模块 |
 | 本地索引 | `modernc.org/sqlite`（纯 Go） | 避免 Windows 上的 CGO；只存**可重建**的视图（见 §5） |
-| 对象加密 | 标准库 `crypto/aes` + `crypto/cipher`（AES-256-GCM）、`crypto/rand` | 每对象用随机 salt 经 HKDF-SHA256 从 vault key 派生对象密钥（`golang.org/x/crypto/hkdf`）；单个对象的明文受 segment 大小上限约束（设计 §8.2），单次 AEAD 即可，不需要分块 AEAD |
-| 口令派生 | `golang.org/x/crypto/argon2`（argon2id） | 保护设备加入包 |
+| 对象加密 | 标准库 `crypto/aes` + `crypto/cipher`（AES-256-GCM）、`crypto/rand` | 每对象用随机 salt 经 HKDF-SHA256 从 vault key 派生对象密钥（标准库 `crypto/hkdf`，Go ≥ 1.24）；单个对象的明文受 segment 大小上限约束（设计 §8.2），单次 AEAD 即可，不需要分块 AEAD |
+| 口令派生 | `golang.org/x/crypto/argon2`（argon2id；固定 `v0.46.0`，已验证与 `go 1.25.0` 兼容） | 保护设备加入包 |
 | 凭据存储 | `github.com/zalando/go-keyring` | macOS Keychain / Windows 凭据管理器 / Linux Secret Service；存放 vault key，不可用时拒绝落盘，不回退到明文文件 |
 | 文件监听 | `github.com/fsnotify/fsnotify` | 只用于降低延迟；正确性靠定期 reconcile |
 | zstd 解压 | `github.com/klauspost/compress/zstd`（纯 Go，只读解压） | Codex 的旧会话是 `.jsonl.zst`（单帧、无校验和，本机占 87% 的线程）；不依赖外部 `zstd` 命令，保证 Windows 可用；不写压缩文件；magpie 也用同一个库读取 Codex 的 `.zst` |
@@ -214,15 +215,17 @@ type Sealer interface {
 
 ## 5. 本地数据布局
 
-状态目录默认 `~/.session-memory`，可由 `--home` 或 `SM_HOME` 覆盖（测试和双设备模拟必须使用）。全局配置沿用 `~/.config/session-memory/config.json`。
+状态目录默认 `~/.session-memory`，可由 `--home` 或 `SM_HOME` 覆盖（测试和双设备模拟必须使用）。全局配置沿用 `~/.config/session-memory/config.json`。规范性定义（文件格式、权限、锁）见 spec §3，下图为导读。
 
 ```text
 $SM_HOME/
 ├── device/                  # device_id（每设备唯一，不含密钥材料）；vault key 在系统凭据存储，不落盘
+├── projects/<project_ref>.json  # 项目映射（设备本地，不同步）
 ├── bindings/<binding_id>.json   # 绑定、cursor、receipt：设备状态的事实源
 ├── journal/<tx_id>.json     # 事务意图记录（见 §6.2），启动时扫描恢复
 ├── store/
 │   ├── objects/ab/<sha256>.obj  # 已验证的密文对象
+│   ├── manifests/<device_id>/   # 已验证的 manifest 密文副本（重建 sessions.db 的依据）
 │   ├── staging/                 # 0700，唯一允许出现明文的临时区
 │   └── sessions.db              # SQLite 视图：可由 objects + bindings 重建
 ├── backups/<tx_id>/         # 写入厂商目录前的备份，0700，有保留期限
@@ -275,8 +278,8 @@ magic "SMOB" | version u8 | type u8 | salt[32] | nonce[12] | ciphertext+tag
 跨“本地对象、revision、cursor、SQLite、厂商目录”的操作都走同一套事务：
 
 ```text
-采集：  planned → objects_staged → objects_published → revision_committed → cursor_advanced → done
-发布：  planned → objects_uploaded → manifest_published → marked_published → done
+采集：  planned → staged → stored → revision_committed → cursor_advanced → done
+发布：  planned → sealed → uploaded → manifest_published → marked → done
 安装：  planned → staged → backed_up → written → verified → binding_committed → done
                                   └─ 任一步失败 → rolling_back → rolled_back
 ```
@@ -295,7 +298,7 @@ magic "SMOB" | version u8 | type u8 | salt[32] | nonce[12] | ciphertext+tag
 | 发布 | 对象上传一半、对象齐全但 manifest 未发布、manifest 发布后未标记 |
 | 安装 | 备份后、写入一半、写完未验证、验证后未提交 binding |
 
-用 `internal/failpoint` 注入：`SM_FAILPOINTS=store.after_stage=crash`（仅测试构建可用）。
+用 `internal/failpoint` 注入（`-tags failpoint` 构建才生效）。状态流与恢复动作的唯一来源是 `store.Flow`（spec §4），注入点命名与完整矩阵见 spec §13.2、§14.4。
 
 ### 6.3 Canonical 采集与转换（`canonical`、`convert`）
 
@@ -398,6 +401,8 @@ M0 ──► M1 (P0 实验与决策点)
 ```
 
 M2–M4 中与 P0 结论无关的部分可以在 M1 进行期间并行；所有 Writer 实现（M3 的 Codex Writer、M6 的 Writer 与转换规则）等 M1 的决策点之后。M6 只依赖 M2、M3（本机转换不需要 vault 与传输），可与 M4/M5 并行；M6 先交付“同机验收门”：在一台电脑上不经同步传输完成 Codex → WorkBuddy 的 `convert --plan`、写入与回采，再接入同步。
+
+各里程碑的文件级任务清单与完成标准见 [spec.md §16](spec.md)；本节保留里程碑目标与依赖。
 
 ### 8.1 通用完成标准
 
