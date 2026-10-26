@@ -312,7 +312,7 @@ magic "SMOB" | version u8 | type u8 | salt[32] | nonce[12] | ciphertext+tag
   4. `reasoning` 默认不写入；
   5. 转换结果写入前后各做一次自检：目标格式校验 + 条目数与计划一致。
   6. 来源里有多套记录时（Codex 的 `response_item` 与 `item_completed`）只产出一次，另一套经 `Links` 链接。
-- Codex Writer 的 UI 层记录与 `ordinal` 生成、compaction 的原生边界映射均待 E4/E6，不预先实现。
+- 转换写入由目标适配器的 `Serializer` 生成原生文件（Codex 含 `item_completed` UI 层与 `ordinal`），再交原生 Writer 安装，见 spec §9.3；compaction 的原生边界映射待 E6，当前仅作为带标注的助手消息。
 - 保真度报告是结构化 JSON（`schema_version`、各类条目的 kept/rendered/dropped 计数、上下文容量估算、环境缺口、写入路线），再由 CLI 渲染成文本；报告不含正文。
 
 ### 6.4 导入边界（设计 §8.3）

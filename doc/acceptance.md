@@ -22,7 +22,8 @@
 - [ ] Codex Desktop GUI 的侧边栏、点开、真实模型续写与重开（CLI / app-server 成功不能代替 GUI 验收）。
 - [ ] 两台物理电脑之间的同 Agent 原生同步；当前是同一台 Mac 的独立配置模拟。
 - [ ] WorkBuddy Writer 扩大支持范围：其他版本/路径编码/更大容量、厂商协作锁、无人值守自动安装及真实跨账号切换。
-- [ ] Codex ↔ WorkBuddy 完整原生转换写入（当前 CLI 明确 unsupported）。
+- [x] Codex ↔ WorkBuddy 转换写入（命令行/app-server 级）：见 [p0-convert-report.md](p0-convert-report.md)。
+- [ ] 转换后的会话在 Codex Desktop 与 WorkBuddy 图形界面里的显示、继续与重开（只验证了 app-server/CLI 与测试）；WorkBuddy 目标尚无真实客户端续写验证；原生工具记录、附件、压缩边界仍按文本/丢弃处理。
 - [ ] 跨账号隔离、工具调用与结果、附件、子代理、编辑分支、摘要/压缩的真实客户端样本。
 - [ ] 微云真实传输：乱序、延迟、冲突副本、离线恢复与重连（E7）；共享本地目录不替代该验收。
 - [ ] Windows / Linux 实机和相应客户端上的操作系统锁与凭据存储行为。

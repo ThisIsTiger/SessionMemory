@@ -48,6 +48,7 @@
 | M4 | vault 加解密与加入包、凭据存储接口（系统钥匙串）、FolderTransport、发布/接收算法、隔离与 `device_id` 克隆检测、发布崩溃矩阵 | `internal/{vault,transport,sync,device}` |
 | M5 | `init`、`transport attach-folder`、`device invite/join/regenerate-id`、`discover`、`track`、`list`、`status`、`checkpoint`、`sync [--watch] [--auto-install]`、`revisions`、`choose`、`project map`、`restore [--plan]`、`open`、`verify [--deep]`、`auto-install`；冲突检测与落地 | `cmd/session-memory`、`internal/session` |
 | M6（读取侧与规则） | WorkBuddy 适配器（发现含软删除、采集含旁路文件与 blob、探测）；Canonical 提取（Codex 主流/链接、WorkBuddy 活动路径）；`convert.Convert` 全部规则与保真度报告；`convert --plan`、`fidelity`、`continue` | `internal/{source/workbuddy,convert,canonical}` |
+| M6（跨 Agent 转换写入） | `convert.Serializer`、`agent.MemSnapshot`、`engine.ConvertRestore`（与 `Restore` 共用 `runInstall`）、binding supersede、Codex/WorkBuddy 序列化、`convert` 命令；Codex 目标已用真实 app-server 与 CLI（本地桩模型）验证 | `internal/{convert,engine,agent}`、`internal/source/{codex,workbuddy}/convert*.go` |
 | M6（WorkBuddy 原生写入） | 手动路线 3、版本/schema 白名单、目标本地账号、文件及行级回滚、路径映射与续写往返；默认 opt-out | `internal/source/workbuddy/{writer,registry,runtime}.go` |
 | M7（兜底） | Resume Pack（确定性，不依赖 LLM）、`resume-pack` | `internal/bridge` |
 | P0 工具 | `dev sandbox/inventory/scrub/codex write/codex append/codex locks/report`（`-tags dev`，发布构建没有），沙箱安全守卫 | `internal/p0`、`cmd/session-memory/dev_*.go` |
@@ -66,15 +67,15 @@
 - 对象先写成最终名（临时文件 + rename，内容寻址、幂等），采集事务的 `staged` 与 `stored` 两个状态因此实际上紧挨着；崩溃矩阵对两个状态点都验证。
 - 原有故障注入主要用 error；新增 WorkBuddy 矩阵用 panic 保留中断现场、关闭并重开 store 后恢复。二者都不是 OS 断电实验；点位与 spec §13.2 对齐，另加 install.after_registry。
 - Codex Writer 按 spec §8.3 的默认行为实现（只写会话文件、不碰数据库、仅未压缩 `.jsonl`），已通过真实 CLI / app-server 往返验证，Desktop GUI 仍未验收。存在厂商线程锁目录时，按线程锁判定运行状态；旧版缺锁目录时返回 `Unknown`，需显式 `--client-closed`；线程锁被持有时即使声明关闭也拒绝。
-- 转换写入目标 Agent（`convert` 不带 `--plan`）仍返回 unsupported（退出码 5）；WorkBuddy 原生恢复已开放版本受限的手动 opt-in，自动安装仍关闭。
-- 工具名映射（`engine.ToolMaps`）是临时值，E3/E4 修正。
+- 跨 Agent 转换写入（`convert` 不带 `--plan`）已实现：Serializer + 原生 Writer，见 spec §9.3 与 [p0-convert-report.md](p0-convert-report.md)；WorkBuddy 目标仍是版本受限的手动 opt-in，自动安装关闭。
+- `engine.ToolMaps` 对两个目标都为空：所有工具调用/结果渲染为文本，直到外来工具名与参数形状经 E3/E4 验证。
 
 ## 3. 未完成及原因
 
 | 项 | 原因 |
 |---|---|
 | Codex Desktop GUI 上的显示/继续/重开验证 | CLI / app-server 已通过；仍需独立 GUI 配置，不把日常客户端用于实验 |
-| WorkBuddy 更广版本/路径/容量、跨 Agent 转换写入 | 原生 Writer 已限量接通；E4/E5/E6 的转换工具/附件/压缩等仍待完成 |
+| WorkBuddy 更广版本/路径/容量；转换的原生工具记录、附件、压缩边界 | 原生 Writer 已限量接通；转换写入已通（文本渲染）；原生工具记录/附件/压缩（E4/E6）及 WorkBuddy GUI 显示转换会话仍待验证 |
 | 客户端运行检测与无人值守安装 | Codex 线程锁与 macOS WorkBuddy 进程检测已实现；WorkBuddy 没有已证实的厂商协作写锁，不允许无人值守安装；Windows/Linux 仍未实测 |
 | 后台常驻（登录项注册、钥匙串解锁策略） | 设计 §6.4 第 6 点，M5 的系统集成部分 |
 | `mcp serve`（兜底路径的只读 MCP） | M7，低优先级；Resume Pack 文件已可用 |

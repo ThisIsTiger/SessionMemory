@@ -29,32 +29,11 @@ type rollbackGuard interface {
 // Restore installs a synced revision into this device's agent home (spec §4.4,
 // design §6.2). It refuses conflicts and non-fast-forward landings.
 func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string, opt RestoreOptions) (agent.Plan, *agent.Receipt, error) {
-	g, err := e.Store.Graph(sessionID)
+	g, rev, err := e.resolveRevision(sessionID, opt.RevisionID)
 	if err != nil {
 		return agent.Plan{}, nil, err
 	}
-	ch, _ := e.Store.Choices(sessionID)
-	res := session.Resolve(g, ch)
-	if len(res.Heads) == 0 {
-		return agent.Plan{}, nil, errcode.New(errcode.NotFound, "no revisions for this session")
-	}
-	target := opt.RevisionID
-	if target == "" {
-		if res.Conflict {
-			return agent.Plan{}, nil, errcode.New(errcode.Conflict, "the session has more than one live head; run choose first").With("heads", len(res.Heads))
-		}
-		target = res.Effective
-	}
-	revs, _ := e.Store.Revisions(sessionID)
-	var rev *session.Revision
-	for i := range revs {
-		if revs[i].RevisionID == target {
-			rev = &revs[i]
-		}
-	}
-	if rev == nil {
-		return agent.Plan{}, nil, errcode.New(errcode.NotFound, "revision not found")
-	}
+	target := rev.RevisionID
 	if rev.AgentProfile.Agent != ad.Name() {
 		return agent.Plan{}, nil, errcode.New(errcode.Unsupported, "native restore requires the same source and target agent; use conversion for a different agent")
 	}
@@ -77,7 +56,7 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 	if err != nil {
 		return agent.Plan{}, nil, err
 	}
-	cwd, pmap, gaps, checkEnvironment, err := e.restoreWorkspace(ctx, ad, src, *rev, bnd, opt)
+	cwd, pmap, gaps, checkEnvironment, err := e.restoreWorkspace(ctx, ad, src, rev, bnd, opt)
 	if err != nil {
 		return agent.Plan{}, nil, err
 	}
@@ -108,6 +87,32 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 	if len(plan.Writes) == 0 {
 		return plan, nil, errcode.New(errcode.NotFound, "the target already matches this revision")
 	}
+	return e.runInstall(ctx, installSpec{sessionID: sessionID, revisionID: target, ad: ad, w: w, in: in, plan: plan, opt: opt, cwd: cwd, gaps: gaps, bnd: bnd,
+		mode: session.InstallNative, profile: rev.AgentProfile})
+}
+
+// installSpec is everything the shared install tail needs.
+type installSpec struct {
+	sessionID  string
+	revisionID string // the revision this install represents (source revision for a conversion)
+	ad         agent.Adapter
+	w          agent.Writer
+	in         agent.WriteInput
+	plan       agent.Plan
+	opt        RestoreOptions
+	cwd        string
+	gaps       []string
+	bnd        *session.Binding // existing binding being advanced (native only)
+	mode       string           // session.InstallNative | session.InstallConverted
+	profile    session.AgentProfile
+	supersede  []string // active bindings retired when the new binding commits
+	boundary   func(*session.ImportReceipt)
+}
+
+// runInstall executes a planned install under the journal: locks, apply,
+// adoption, verification, then the binding commit (spec §4.3 install row).
+func (e *Engine) runInstall(ctx context.Context, sp installSpec) (agent.Plan, *agent.Receipt, error) {
+	sessionID, target, ad, w, in, plan, opt, cwd, gaps, bnd := sp.sessionID, sp.revisionID, sp.ad, sp.w, sp.in, sp.plan, sp.opt, sp.cwd, sp.gaps, sp.bnd
 	tx, err := e.Store.Begin(ctx, store.KindInstall, sessionID, in.BindingID)
 	if err != nil {
 		return plan, nil, err
@@ -135,6 +140,9 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 		return tx.Rollback()
 	}
 	rec, err := w.Apply(ctx, in, plan, tx)
+	if err == nil {
+		rec.InstallMode = sp.mode
+	}
 	if err != nil {
 		if tx.State() == store.StRollingBack || errcode.CodeOf(err) == errcode.RecoveryNeeded {
 			return plan, nil, err // preserve the rollback journal for startup recovery
@@ -172,8 +180,11 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 	if opt.AllowCodeMismatch && rec.Import != nil {
 		rec.Import.CodeStateOverride = gaps
 	}
-	nb := session.Binding{BindingID: session.NewBindingID(), SessionID: sessionID, DeviceID: e.DeviceID, AgentProfile: rev.AgentProfile,
-		NativeSessionID: rec.NativeSessionID, NativeHome: opt.Home, InstallMode: session.InstallNative, State: session.StateActive,
+	if sp.boundary != nil && rec.Import != nil {
+		sp.boundary(rec.Import)
+	}
+	nb := session.Binding{BindingID: session.NewBindingID(), SessionID: sessionID, DeviceID: e.DeviceID, AgentProfile: sp.profile,
+		NativeSessionID: rec.NativeSessionID, NativeHome: opt.Home, InstallMode: sp.mode, State: session.StateActive,
 		BaseRevisionID: target, Artifacts: adopt.Cursor.Artifacts}
 	if bnd != nil {
 		nb = *bnd
@@ -185,10 +196,14 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 	var d store.InstallData
 	tx.Data(&d)
 	d.NewBinding = &nb
+	d.Superseded = sp.supersede
 	d.Receipt = &rec
 	// verified = files verified AND the binding to commit is fully prepared, so
 	// recovery can roll forward from here (spec §4.3 install row)
 	if err := tx.SetState(store.StVerified, d); err != nil {
+		return plan, &rec, err
+	}
+	if err := e.Store.Supersede(tx, sp.supersede); err != nil {
 		return plan, &rec, err
 	}
 	if err := e.Store.SaveBinding(tx, nb); err != nil {
@@ -200,9 +215,36 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 	now := session.FormatTime(e.now())
 	if err := (&deviceOutbox{root: e.Store.Root}).add(
 		session.Entry{Type: session.EntryReceipt, Receipt: &session.ReceiptEntry{SessionID: sessionID, RevisionID: target, DeviceID: e.DeviceID,
-			Status: session.ReceiptInstalled, InstallMode: session.InstallNative, BindingID: nb.BindingID, At: now}},
+			Status: session.ReceiptInstalled, InstallMode: sp.mode, BindingID: nb.BindingID, At: now}},
 	); err != nil {
 		return plan, &rec, err
 	}
 	return plan, &rec, tx.Finish()
+}
+
+// resolveRevision picks the revision to install: the requested one, else the
+// effective head (refusing a conflict).
+func (e *Engine) resolveRevision(sessionID, want string) (*session.Graph, session.Revision, error) {
+	g, err := e.Store.Graph(sessionID)
+	if err != nil {
+		return nil, session.Revision{}, err
+	}
+	ch, _ := e.Store.Choices(sessionID)
+	res := session.Resolve(g, ch)
+	if len(res.Heads) == 0 {
+		return nil, session.Revision{}, errcode.New(errcode.NotFound, "no revisions for this session")
+	}
+	if want == "" {
+		if res.Conflict {
+			return nil, session.Revision{}, errcode.New(errcode.Conflict, "the session has more than one live head; run choose first").With("heads", len(res.Heads))
+		}
+		want = res.Effective
+	}
+	revs, _ := e.Store.Revisions(sessionID)
+	for _, r := range revs {
+		if r.RevisionID == want {
+			return g, r, nil
+		}
+	}
+	return nil, session.Revision{}, errcode.New(errcode.NotFound, "revision not found")
 }

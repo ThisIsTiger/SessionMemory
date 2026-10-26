@@ -226,11 +226,37 @@ func TestCrossAgentPlanAndResumePack(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &rep); err != nil {
 		t.Fatal(err)
 	}
-	if rep.Counts["message"].Kept != 2 || rep.Counts["reasoning"].Dropped != 1 || rep.Counts["tool_call"].Kept != 1 {
+	if rep.Counts["message"].Kept != 2 || rep.Counts["reasoning"].Dropped != 1 || rep.Counts["tool_call"].Rendered != 1 {
 		t.Errorf("report: %s", out)
 	}
-	if code, _, _ := A.run("convert", tr.SessionID, "--agent", "codex"); code != 5 {
-		t.Errorf("writing a conversion must be unsupported (exit 5), got %d", code)
+	// writing the conversion: a missing local project directory refuses, a plan
+	// writes nothing, the real run creates a new native Codex thread
+	cx := filepath.Join(A.home, "codex")
+	os.MkdirAll(cx, 0700)
+	A.must("config", "set", "agents.codex.home", cx)
+	proj := filepath.Join(root, "proj")
+	os.MkdirAll(proj, 0700)
+	if code, _, _ := A.run("convert", tr.SessionID, "--agent", "codex", "--client-closed"); code == 0 {
+		t.Error("a conversion without an existing local project directory must be refused")
+	}
+	planOut := A.must("convert", tr.SessionID, "--agent", "codex", "--plan", "--cwd", proj, "--client-closed")
+	if !strings.Contains(planOut, "would create sessions/") {
+		t.Errorf("plan does not show the install: %s", planOut)
+	}
+	if m, _ := filepath.Glob(filepath.Join(cx, "sessions", "*", "*", "*", "*.jsonl")); len(m) != 0 {
+		t.Fatalf("--plan wrote %v", m)
+	}
+	A.must("convert", tr.SessionID, "--agent", "codex", "--cwd", proj, "--client-closed", "--allow-code-mismatch")
+	m, _ := filepath.Glob(filepath.Join(cx, "sessions", "*", "*", "*", "rollout-*.jsonl"))
+	if len(m) != 1 {
+		t.Fatalf("converted thread files: %v", m)
+	}
+	conv, _ := os.ReadFile(m[0])
+	if !strings.Contains(string(conv), "list files") || !strings.Contains(string(conv), "here they are") || !strings.Contains(string(conv), proj) {
+		t.Errorf("converted thread lacks history or project: %s", conv)
+	}
+	if code, _, _ := A.run("convert", tr.SessionID, "--agent", "codex", "--cwd", proj, "--client-closed", "--allow-code-mismatch"); code == 0 {
+		t.Error("the same revision must not be converted twice")
 	}
 	pack := filepath.Join(root, "pack.md")
 	A.must("resume-pack", tr.SessionID, "--out", pack)

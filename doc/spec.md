@@ -1871,7 +1871,7 @@ rollout-<YYYY-MM-DDTHH-MM-SS>-<线程 UUID>[_<分段 UUID>].jsonl[.zst]
 - 目标线程已存在且只有 `.zst` 形式时：返回 `needs_action`，不处理，直到 E1b 给出结论；
 - 账号、权限、模型类字段取自目标配置，不取自归档（E1c 之前以“不覆盖”为准：Writer 不修改这些字段，也不声称覆盖了它们）。
 
-### 8.4 WorkBuddy 适配器（读取侧与手动原生 Writer；转换写入待 E4）
+### 8.4 WorkBuddy 适配器（读取侧、手动原生 Writer 与转换写入目标）
 
 **目录**：`config.WorkBuddyHome()`（环境变量 `WORKBUDDY_CONFIG_DIR`，否则 `~/.workbuddy`）。CodeBuddy Code 的目录（`CODEBUDDY_CONFIG_DIR` 或 `~/.codebuddy`）格式相同；两者指向同一目录时只读一次（按目录身份 `os.SameFile` 判定）。
 
@@ -1892,7 +1892,7 @@ rollout-<YYYY-MM-DDTHH-MM-SS>-<线程 UUID>[_<分段 UUID>].jsonl[.zst]
 - 软删除：`workbuddy.db` 的 `sessions.deleted_at` 非空的会话不当作活跃会话。读取该库一律用 URI `file:<path>?mode=ro&immutable=1`；读不到时不排除任何会话并在 Diag 记 `registry_unreadable`；
 - 子代理文件的键归属父会话（`NativeID` 取其上级会话目录名）；
 - 采集算法同 §8.2；
-- **Writer**：原生模式使用路线 3，默认关闭；`agents.workbuddy.allow_registry_write=true` 后支持手动 `restore --agent workbuddy --client-closed`。仅允许 macOS、安装在 `/Applications/WorkBuddy.app` 的 5.8.3，以及 PRAGMA table_info 指纹 `884179348b27ff0de44059fc1483fb289a6edf29f5ae5a310428495a21eb928f` 的 sessions 表；拒绝未知列/类型/默认值、额外触发器、符号链接和未纳管的同 ID 数据。转换模式仍 unsupported。
+- **Writer**：原生模式使用路线 3，默认关闭；`agents.workbuddy.allow_registry_write=true` 后支持手动 `restore --agent workbuddy --client-closed`。仅允许 macOS、安装在 `/Applications/WorkBuddy.app` 的 5.8.3，以及 PRAGMA table_info 指纹 `884179348b27ff0de44059fc1483fb289a6edf29f5ae5a310428495a21eb928f` 的 sessions 表；拒绝未知列/类型/默认值、额外触发器、符号链接和未纳管的同 ID 数据。转换写入（§9.3）以新原生会话经同一 Writer 安装，沿用全部限制。
 - 目标目录编码目前只接受已验证的无空格 ASCII 绝对路径；只改主流/旁路 JSONL 及 meta.json 已知顶层 `cwd` 字符串，保留其他字节以支持映射后往返；不推断历史工具参数。单个 artifact 超过 64 MiB 或单次安装超过 128 MiB 时明确返回 unsupported。
 - 新登记从目标 schema 默认值构造，仅设 ID/cwd/title/status/时间与本地唯一非删除账号的 user_id；不复制源账号、模型、权限或专家设置。目标配置需专用于一个账号且已有本地会话；多账号或空库返回 needs_action。已有登记仅在受管理 binding 下更新，并保留目标私有字段；不复活软删除。
 - 安装要求客户端完全退出并显式声明 client-closed；macOS 进程及 SingletonLock PID 检测为运行中时不能用声明覆盖。home 下的安装锁只串行化 SessionMemory 写入，不是假设厂商会遵守的锁；安装过程中反复检查进程、文件和行基线，禁止自动安装。若写入后发现客户端启动，保留 recovery_needed，等退出后由恢复守卫处理，不在客户端运行中撤销。
@@ -2132,6 +2132,38 @@ const errNotImplemented = constError("convert: not implemented")
 | 同一事件的两层记录（`Links` 非空） | 只输出主流那一条（Convert 的输入已是主流） |
 
 **确定性与一致性**：`Convert` 是确定性函数；`Report.Counts` 必须与实际输出的记录数完全一致（单元测试逐类型断言）；报告不含任何文本。
+
+### 9.3 转换写入（`convert.Serializer` 与 `engine.ConvertRestore`）
+
+`convert` 只出规则（§9.2），不写文件。转换写入由目标适配器的 `Serializer` 和引擎配合完成，**安装本身复用目标 Agent 自己的原生 Writer**：
+
+```go
+// internal/convert/serialize.go
+type Target struct{ Home, Cwd, Title string; Now time.Time; SourceAgent, SourceRevision string }
+type Serialized struct {
+	NativeID string; Profile session.AgentProfile; Snapshot *agent.MemSnapshot
+	Records int; Last string; WriterVersion string
+}
+type Serializer interface { SerializeConverted(out Output, t Target) (Serialized, error) }
+```
+
+`agent.MemSnapshot` 是内存中的 `SnapshotReader`。流程（`engine.ConvertRestore(ctx, from, dst, sessionID, RestoreOptions)`）：
+
+1. 取要转换的 revision（默认有效头；冲突则拒绝），来源 Agent 必须与 revision 的 `AgentProfile.Agent` 一致，且与目标不同；
+2. 幂等：本设备上同目标 Agent 已有 `ImportReceipt.SourceRevision == 该 revision` 的 converted binding → 返回 `not_found`（附已有 `native_session_id`），不产生第二个会话；已有的 active binding 若包含本 revision 没有的进展（`LandingFor` = NeedsAction）→ `needs_action`，若落后则在本次提交时 **superseded**；
+3. `ConversionReport` 得到 `Output`（`ToolMaps` 当前对两个目标都为空：所有工具调用/结果渲染成文本，因为外来工具的名称与参数形状未经验证，E3/E4）；
+4. `restoreWorkspace`（沿用原生恢复的 cwd、路径映射、代码状态缺口与 `--allow-code-mismatch`），目标 cwd 必须是本机已存在的绝对目录；
+5. `Serializer` 生成**新的**原生会话（新原生 ID）的文件，放入 `MemSnapshot`；目标原生 Writer 的 `Plan`/`Apply`/`Verify` 照原样处理它（`Mode` 在 Writer 内为 native，`Plan.Mode` 随后改为 `ModeConvert` 并附上 `Report`，重新计算 `Digest`）；
+6. 共用的 `runInstall`（`Restore` 与 `ConvertRestore` 同一条尾部）完成锁、备份、journal、适配采集（adoption）、校验、binding 提交；崩溃矩阵与原生恢复相同；
+7. 新 binding：`install_mode = converted`，`AgentProfile` = 目标原生会话的 profile，`BaseRevisionID` = `InstalledRevisionID` = 来源 revision，`ImportReceipt{WriterVersion, SourceRevision, LastMarker, WrittenCount, BoundaryOffset, BoundaryHash}`；被替换的同 Agent active binding 写入 `InstallData.Superseded`，在 `binding_committed` 一并置为 `superseded`（恢复前滚时同样执行，保证任何时刻恰有一个 active）；发布的 receipt 带 `install_mode=converted`。
+
+**回采**：adoption 的游标指向整个已写入文件，因此 `checkpoint` 不会把导入内容当作新记录；用户在目标里继续后，新记录形成下一个 revision，`ParentRevisionID` 为来源 revision（同一 `session_id` 的链），`AgentProfile` 为目标 Agent。再次转换回来源 Agent 时转换的是整条链的最新 revision（整体转换，不是“来源段落原样回放”）。
+
+**Codex 序列化**（`source/codex/convert.go`，Codex CLI 0.162.1 实测）：新线程 UUIDv7；文件 `sessions/YYYY/MM/DD/rollout-<本地时间>-<id>.jsonl`；记录带连续 `ordinal`；`session_meta` 含 `session_id/id/timestamp/cwd/runtime_workspace_roots/originator("Codex Desktop")/cli_version/source("vscode")/thread_source("user")/model_provider(取目标 `config.toml`，缺省 openai)/history_mode("paginated")/context_window`；每条用户消息开一个 turn（`task_started`，上一个以 `task_complete` 收尾）；用户/助手消息各写两层：`response_item`（模型可见）与 `event_msg item_completed`（`UserMessage` 的 `content:[{type:"text",...}]`、`AgentMessage` 的 `content:[{type:"Text",...}]`，含 `thread_id/turn_id/started_at_ms/completed_at_ms`）。**不要**写旧式 `user_message`/`agent_message` 事件：0.162.1 只从 `item_completed` 重建 turn，只写旧事件会得到“模型看得到、界面 turn 为空”的会话（实测）。compaction 摘要作为带来源标注的助手消息。
+
+**WorkBuddy 序列化**（`source/workbuddy/convert.go`）：新会话 UUID；`projects/<编码目录>/<id>.jsonl`；首条 `session-meta`；消息按 `parentId` 链接，每条带 `sessionId`、`cwd`；用户消息用 WorkBuddy 自己的 `<user_query>…</user_query>` 包装；第一条用户消息后写 `ai-title`（标题取首条用户消息前 40 字）；不写 `file-history-snapshot`、推理、工具原生记录（遇到 `OutToolCall` 返回 unsupported）。写入走 §8.4 的原生 Writer（登记行等同原生恢复，默认关闭、版本受限）。
+
+**命令**：`convert SESSION_ID --agent A [--cwd DIR | --project REF] [--home-dir DIR] [--client-closed] [--allow-code-mismatch] [--rule FROM=TO] [--revision REV] [--plan]`。`--plan` 输出保真度报告与（可行时）将创建的文件，不写任何内容；不带 `--plan` 才安装。输出提示“继续对话时完整历史会发给目标 Agent 的模型服务”。
 
 ## 10. 冲突与落地
 
@@ -2406,7 +2438,7 @@ JSON 输出统一为“包内类型的 JSON”，类型名在括号里；未列�
 | `restore SESSION_ID --agent A --mode native [--plan] [--cwd DIR] [--allow-code-mismatch]` | 原生恢复；覆盖代码状态检查时记录审计信息，目录缺失仍拒绝 | M3/M5 |
 | `open SESSION_ID --agent A` | 先 pull、等待客户端关闭、安装、启动客户端 | M5 |
 | `continue SESSION_ID --agent A --device D [--mode context]` | 发布 `convert-request` | M6 |
-| `convert SESSION_ID --agent A [--plan]` | 转换写入 | M6 |
+| `convert SESSION_ID --agent A [--plan]` | 转换写入（§9.3） | M6，已实现 |
 | `fidelity SESSION_ID --agent A` | 显示保真度报告（`agent.FidelityReport`） | M6 |
 | `resume-pack SESSION_ID --revision R --out FILE` | 兜底的上下文包 | M7 |
 | `revisions SESSION_ID` | revision 图与 heads | M5 |
@@ -2807,8 +2839,8 @@ M5–M7 的任务在各自里程碑开始前按同样格式补充（依赖 P0 �
 | 账号/权限/沙箱字段是否需要剔除或改写 | §8.3 | E1c | 不修改这些字段，也不声称覆盖 |
 | 子线程是否随父会话一并采集安装 | §8.3、`Options.IncludeSubagents` | E1c | 作为依赖列出缺口，不一并安装 |
 | 运行检测的最终信号与“运行中是否需重启”矩阵 | §8.3 运行检测 | E2a、E2b | **已定（命令行级）**：线程锁；运行中的 app-server 无需重启即可看见新文件；Desktop 界面刷新待肉眼确认 |
-| WorkBuddy 是否需要登记行及最小行内容 | §8.4 Writer | E3 | **5.8.3 手动原生模式已定**：文件与最小登记；默认关闭、版本/schema 白名单、目标本地账号；真实续写回传与 28 项恢复矩阵通过。转换待 E4 |
-| Codex Desktop 是否需要 UI 层记录与连续 `ordinal` | §9.2、Codex Writer | E4 | 不生成 |
+| WorkBuddy 是否需要登记行及最小行内容 | §8.4 Writer | E3 | **5.8.3 手动原生模式已定**：文件与最小登记；默认关闭、版本/schema 白名单、目标本地账号；真实续写回传与 28 项恢复矩阵通过。转换写入见 §9.3（合成会话测试与 14+13 个崩溃点通过，WorkBuddy GUI 上的转换会话显示待肉眼确认） |
+| Codex Desktop 是否需要 UI 层记录与连续 `ordinal` | §9.3、Codex 序列化 | E4 | **已定（0.162.1 app-server 级）**：转换写入必须带 `item_completed` UI 层记录与连续 `ordinal`，否则 turn 为空；同 Agent 原生恢复仍原样安装不生成 |
 | 导入边界与回采 | `ImportReceipt`、§8.2 | E5 | 无法划定边界则不开放往返续写 |
 | 转换后模型的接受度、上下文容量、compaction 映射 | §9.2 | E6 | 规则按表；报告注明容量风险 |
 | 微云的冲突副本命名与文件行为 | §7.2 | E7 | 通用模式 + `Suspect` + 内容校验 |

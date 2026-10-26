@@ -279,12 +279,19 @@ func (s *FS) resumeInstall(t *tx) error {
 		return err
 	}
 	if d.NewBinding != nil {
+		if err := s.Supersede(t, d.Superseded); err != nil {
+			return err
+		}
 		if err := s.SaveBinding(t, *d.NewBinding); err != nil {
 			return err
 		}
 		if r := d.Receipt; r != nil {
+			mode := d.NewBinding.InstallMode
+			if mode == "" {
+				mode = session.InstallNative
+			}
 			e := session.Entry{Type: session.EntryReceipt, Receipt: &session.ReceiptEntry{SessionID: r.SessionID, RevisionID: r.RevisionID,
-				DeviceID: d.NewBinding.DeviceID, Status: session.ReceiptInstalled, InstallMode: session.InstallNative, BindingID: d.NewBinding.BindingID, At: r.At}}
+				DeviceID: d.NewBinding.DeviceID, Status: session.ReceiptInstalled, InstallMode: mode, BindingID: d.NewBinding.BindingID, At: r.At}}
 			if err := device.At(s.Root).AppendOutbox(e); err != nil {
 				return err
 			}

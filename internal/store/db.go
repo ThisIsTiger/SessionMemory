@@ -448,6 +448,25 @@ func (s *FS) mirrorBinding(b session.Binding) error {
 	return err
 }
 
+// Supersede retires active bindings (a cross-agent conversion replaces the
+// session's binding for that agent). It is idempotent.
+func (s *FS) Supersede(tx Tx, ids []string) error {
+	for _, id := range ids {
+		b, err := s.LoadBinding(id)
+		if err != nil {
+			return err
+		}
+		if b.State != session.StateActive {
+			continue
+		}
+		b.State = session.StateSuperseded
+		if err := s.SaveBinding(tx, b); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Bindings lists the bindings of a session ("" = all).
 func (s *FS) Bindings(sessionID string) ([]session.Binding, error) {
 	files, _ := filepath.Glob(s.path("bindings", "*.json"))

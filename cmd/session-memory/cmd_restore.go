@@ -94,55 +94,24 @@ func newRestoreCmd(a *App) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, _ := cmd.Flags().GetString("agent")
 			mode, _ := cmd.Flags().GetString("mode")
-			home, _ := cmd.Flags().GetString("home-dir")
-			planOnly, _ := cmd.Flags().GetBool("plan")
-			closed, _ := cmd.Flags().GetBool("client-closed")
-			allowMismatch, _ := cmd.Flags().GetBool("allow-code-mismatch")
-			cwd, _ := cmd.Flags().GetString("cwd")
-			rev, _ := cmd.Flags().GetString("revision")
-			proj, _ := cmd.Flags().GetString("project")
-			rules, _ := cmd.Flags().GetStringArray("rule")
 			if mode != "native" {
-				return errcode.New(errcode.Unsupported, "only --mode native is available")
+				return errcode.New(errcode.Unsupported, "only --mode native is available; use the convert command for another agent's session")
 			}
 			ad, err := a.adapter(name)
 			if err != nil {
 				return err
 			}
-			if home == "" {
-				if name == "workbuddy" {
-					home = a.Cfg.WorkBuddyHome()
-				} else {
-					home = a.Cfg.CodexHome()
-				}
-			}
-			if name == "workbuddy" && !a.Cfg.Agents.WorkBuddy.AllowRegistryWrite {
-				return errcode.New(errcode.Unsupported, "enable agents.workbuddy.allow_registry_write to use the version-limited native writer")
-			}
-			rj, err := parseRules(rules)
+			opt, err := installOptions(a, cmd, name)
 			if err != nil {
 				return err
 			}
-			if proj != "" {
-				pm, err := loadProject(a.Cfg.StateDir(), proj)
-				if err != nil {
-					return err
-				}
-				rj = append(rj, pm.Rules...)
-				if cwd == "" {
-					cwd = pm.LocalPath
-				}
-			}
-			var pmap agent.PathMap
-			for _, r := range rj {
-				pmap.Rules = append(pmap.Rules, agent.PathRule{From: r.From, To: r.To})
-			}
+			planOnly := opt.PlanOnly
 			r, err := a.openRT(cmd.Context(), false)
 			if err != nil {
 				return err
 			}
 			defer r.Close()
-			plan, rec, err := r.Eng.Restore(cmd.Context(), ad, args[0], engine.RestoreOptions{Home: home, PathMap: pmap, ClientClosed: closed, PlanOnly: planOnly, RevisionID: rev, Cwd: cwd, AllowCodeMismatch: allowMismatch})
+			plan, rec, err := r.Eng.Restore(cmd.Context(), ad, args[0], opt)
 			if err != nil {
 				return err
 			}
@@ -164,6 +133,12 @@ func newRestoreCmd(a *App) *cobra.Command {
 		}}
 	c.Flags().String("agent", "codex", "agent name")
 	c.Flags().String("mode", "native", "native")
+	addInstallFlags(c)
+	return c
+}
+
+// addInstallFlags registers the flags shared by restore and convert.
+func addInstallFlags(c *cobra.Command) {
 	c.Flags().String("home-dir", "", "target agent home (default: the configured one)")
 	c.Flags().Bool("plan", false, "show what would be written")
 	c.Flags().Bool("client-closed", false, "confirm the client is not running")
@@ -172,7 +147,47 @@ func newRestoreCmd(a *App) *cobra.Command {
 	c.Flags().String("revision", "", "install this revision instead of the effective head")
 	c.Flags().String("project", "", "project_ref whose path rules to apply")
 	c.Flags().StringArray("rule", nil, "FROM=TO path prefix rewrite (repeatable)")
-	return c
+}
+
+// installOptions turns the shared flags into engine options for target agent name.
+func installOptions(a *App, cmd *cobra.Command, name string) (engine.RestoreOptions, error) {
+	home, _ := cmd.Flags().GetString("home-dir")
+	planOnly, _ := cmd.Flags().GetBool("plan")
+	closed, _ := cmd.Flags().GetBool("client-closed")
+	allowMismatch, _ := cmd.Flags().GetBool("allow-code-mismatch")
+	cwd, _ := cmd.Flags().GetString("cwd")
+	rev, _ := cmd.Flags().GetString("revision")
+	proj, _ := cmd.Flags().GetString("project")
+	rules, _ := cmd.Flags().GetStringArray("rule")
+	if home == "" {
+		if name == "workbuddy" {
+			home = a.Cfg.WorkBuddyHome()
+		} else {
+			home = a.Cfg.CodexHome()
+		}
+	}
+	if name == "workbuddy" && !a.Cfg.Agents.WorkBuddy.AllowRegistryWrite {
+		return engine.RestoreOptions{}, errcode.New(errcode.Unsupported, "enable agents.workbuddy.allow_registry_write to use the version-limited native writer")
+	}
+	rj, err := parseRules(rules)
+	if err != nil {
+		return engine.RestoreOptions{}, err
+	}
+	if proj != "" {
+		pm, err := loadProject(a.Cfg.StateDir(), proj)
+		if err != nil {
+			return engine.RestoreOptions{}, err
+		}
+		rj = append(rj, pm.Rules...)
+		if cwd == "" {
+			cwd = pm.LocalPath
+		}
+	}
+	var pmap agent.PathMap
+	for _, r := range rj {
+		pmap.Rules = append(pmap.Rules, agent.PathRule{From: r.From, To: r.To})
+	}
+	return engine.RestoreOptions{Home: home, PathMap: pmap, ClientClosed: closed, PlanOnly: planOnly, RevisionID: rev, Cwd: cwd, AllowCodeMismatch: allowMismatch}, nil
 }
 
 func newVerifyCmd(a *App) *cobra.Command {

@@ -176,6 +176,7 @@ type InstallData struct {
 	Landing         string               `json:"landing,omitempty"` // "choice" for a §9.2 landing
 	Receipt         *agent.Receipt       `json:"receipt,omitempty"` // set at StVerified
 	NewBinding      *session.Binding     `json:"new_binding,omitempty"`
+	Superseded      []string             `json:"superseded,omitempty"` // active bindings retired by a cross-agent conversion
 }
 
 // Tx is an open transaction. Every method that changes state writes the

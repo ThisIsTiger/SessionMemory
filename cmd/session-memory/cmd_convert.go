@@ -9,6 +9,7 @@ import (
 
 	"session-memory/internal/agent"
 	"session-memory/internal/bridge"
+	"session-memory/internal/engine"
 	"session-memory/internal/errcode"
 	"session-memory/internal/session"
 )
@@ -53,19 +54,19 @@ func extractorFor(a *App, name string) (agent.Extractor, error) {
 }
 
 func newConvertCmd(a *App, use string) *cobra.Command {
-	c := &cobra.Command{Use: use + " <session_id>", Short: "Show the conversion plan and fidelity report for a target agent", Args: cobra.ExactArgs(1),
+	c := &cobra.Command{Use: use + " <session_id>", Short: "Convert a session for a target agent (--plan shows the fidelity report)", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target, _ := cmd.Flags().GetString("agent")
 			planOnly, _ := cmd.Flags().GetBool("plan")
 			revID, _ := cmd.Flags().GetString("revision")
-			if use == "convert" && !planOnly {
-				return errcode.New(errcode.Unsupported, "writing converted sessions is not available until the P0 experiments E3/E4 decide the target write route; use --plan")
-			}
 			r, err := a.openRT(cmd.Context(), false)
 			if err != nil {
 				return err
 			}
 			defer r.Close()
+			if use == "convert" && !planOnly {
+				return runConvertInstall(a, cmd, r, args[0], target)
+			}
 			rev, err := effectiveRevision(r, args[0], revID)
 			if err != nil {
 				return err
@@ -90,13 +91,67 @@ func newConvertCmd(a *App, use string) *cobra.Command {
 				fmt.Fprintf(a.Out, "note: %s\n", n)
 			}
 			fmt.Fprintln(a.Out, "data egress: the full history would be sent to the target agent's model service")
+			if use == "convert" {
+				printInstallPlan(a, cmd, r, args[0], target)
+			}
 			return nil
 		}}
 	c.Flags().String("agent", "", "target agent")
-	c.Flags().Bool("plan", false, "show only; write nothing")
-	c.Flags().String("revision", "", "revision id (default: effective head)")
 	c.MarkFlagRequired("agent")
+	if use == "convert" {
+		addInstallFlags(c)
+	} else {
+		c.Flags().Bool("plan", false, "show only; write nothing")
+		c.Flags().String("revision", "", "revision id (default: effective head)")
+	}
 	return c
+}
+
+// runConvertInstall writes the full converted history of a session into the
+// target agent's native store as a new native session (design §7.2).
+func runConvertInstall(a *App, cmd *cobra.Command, r *rt, sessionID, target string) error {
+	dst, err := a.adapter(target)
+	if err != nil {
+		return err
+	}
+	opt, err := installOptions(a, cmd, target)
+	if err != nil {
+		return err
+	}
+	rev, err := effectiveRevision(r, sessionID, opt.RevisionID)
+	if err != nil {
+		return err
+	}
+	from, err := a.adapter(rev.AgentProfile.Agent)
+	if err != nil {
+		return err
+	}
+	plan, rec, err := r.Eng.ConvertRestore(cmd.Context(), from, dst, sessionID, opt)
+	if err != nil {
+		return err
+	}
+	if a.JSON {
+		return a.printJSON(map[string]any{"plan": plan, "receipt": rec})
+	}
+	for _, w := range plan.Writes {
+		fmt.Fprintf(a.Out, "%s %s (%d bytes)\n", w.Op, w.Path, w.Size)
+	}
+	for _, warning := range plan.Warnings {
+		fmt.Fprintf(a.Out, "warning: %s\n", warning)
+	}
+	if plan.Report != nil {
+		fmt.Fprintf(a.Out, "fidelity: %d visible items, ~%d tokens\n", plan.Report.VisibleItems, plan.Report.TokenEstimate)
+		for _, n := range plan.Report.ContextNotes {
+			fmt.Fprintf(a.Out, "note: %s\n", n)
+		}
+	}
+	if opt.PlanOnly {
+		fmt.Fprintf(a.Out, "plan %s (nothing written)\n", plan.Digest[:16])
+	} else if rec != nil {
+		fmt.Fprintf(a.Out, "converted revision %s into a new %s session %s\n", plan.RevisionID[:16], target, rec.NativeSessionID)
+		fmt.Fprintln(a.Out, "data egress: the full history is sent to the target agent's model service once you continue it")
+	}
+	return nil
 }
 
 func newResumePackCmd(a *App) *cobra.Command {
@@ -184,4 +239,33 @@ func newContinueCmd(a *App) *cobra.Command {
 	c.MarkFlagRequired("agent")
 	c.MarkFlagRequired("device")
 	return c
+}
+
+// printInstallPlan shows, best effort, what installing the conversion would
+// write; a missing project directory or an unavailable target only yields a note.
+func printInstallPlan(a *App, cmd *cobra.Command, r *rt, sessionID, target string) {
+	dst, err := a.adapter(target)
+	if err == nil {
+		var opt engine.RestoreOptions
+		if opt, err = installOptions(a, cmd, target); err == nil {
+			opt.PlanOnly = true
+			var rev session.Revision
+			if rev, err = effectiveRevision(r, sessionID, opt.RevisionID); err == nil {
+				var from agent.Adapter
+				if from, err = a.adapter(rev.AgentProfile.Agent); err == nil {
+					var plan agent.Plan
+					if plan, _, err = r.Eng.ConvertRestore(cmd.Context(), from, dst, sessionID, opt); err == nil {
+						for _, w := range plan.Writes {
+							fmt.Fprintf(a.Out, "would %s %s (%d bytes)\n", w.Op, w.Path, w.Size)
+						}
+						for _, warning := range plan.Warnings {
+							fmt.Fprintf(a.Out, "warning: %s\n", warning)
+						}
+						return
+					}
+				}
+			}
+		}
+	}
+	fmt.Fprintf(a.Out, "install plan unavailable: %v\n", err)
 }

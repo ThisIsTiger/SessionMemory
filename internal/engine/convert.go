@@ -10,11 +10,15 @@ import (
 	"session-memory/internal/session"
 )
 
-// ToolMaps are the provisional shell-tool mappings per TARGET agent (spec §9.2
-// default; names are refined by experiments E3/E4).
+// ToolMaps lists, per TARGET agent, the origin tool names that may be written
+// as native tool records (spec §9.2).
 var ToolMaps = map[string]map[string]string{
-	"codex":     {"Bash": "exec_command", "shell": "exec_command", "bash": "exec_command"},
-	"workbuddy": {"exec_command": "shell", "Bash": "shell"},
+	// Empty on purpose: a native tool call needs both the target's tool name and
+	// its argument shape, and neither has been verified for a foreign origin
+	// (experiments E3/E4). Until then every tool exchange is rendered as text,
+	// which keeps the history readable to the target model.
+	"codex":     {},
+	"workbuddy": {},
 }
 
 // RevisionItems extracts the Canonical items of a revision on this device.
