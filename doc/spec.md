@@ -1840,18 +1840,18 @@ rollout-<YYYY-MM-DDTHH-MM-SS>-<线程 UUID>[_<分段 UUID>].jsonl[.zst]
 
 `Compatibility`：`ok`＝`sessions_dir` 存在且至少一个 `session_meta` 可解析；`partial`＝部分不可解析；`unsupported`＝其余。`Notes` 只放固定文案。
 
-**运行检测（默认实现，E2a 前保持保守）**：
+**运行检测（E2a 已定，p0-report.md）**：Codex 只为“已加载”的线程保留 `thread-writer-locks/<线程 ID>.lock`，加载期间持有，之后移除。因此：
 
-1. `thread-writer-locks/` 不存在 → `Unknown`；
-2. 打开 `thread-writer-locks/<线程 ID>.lock`（只读）并 `TryLock`：取不到 → `Running`，`DetailWindowOpen`；
-3. 取到（随即释放）→ 再看是否有该 home 的 Codex 进程（进程身份按应用包路径或 `--user-data-dir` 判定，不按进程名；`platform` 需新增枚举函数，M5）：有或无法判断 → `Unknown`；确无 → `NotRunning`；
-4. E2a 若证明“线程锁未被持有”已足以保证无人写该线程且无过期界面，则放宽第 3 步。
+1. 目录 `thread-writer-locks/` 不存在（旧版 Codex）→ `Unknown`；
+2. 该线程的锁被持有 → `Running`；
+3. 锁文件不存在或空闲 → `NotRunning`（没有 Codex 进程加载该线程）；
+4. 未给出线程 ID → `Unknown`。窗口已关但后台进程仍加载线程、Windows 上的行为尚未实测。
 
 **Writer（待 E1a/E1b/E4）**：行为边界已固定：
 
 - `RouteFiles`（只写会话文件）是默认路线；`RouteRegistry` 默认关闭，仅在配置显式启用且版本在白名单内时可用；
 - 新线程：目标文件名按 `rollout-<本地时间>-<uuid v7>.jsonl` 生成（新 ID 时）或沿用源文件名（同 ID 恢复）；放在 `sessions/YYYY/MM/DD/`；格式始终是未压缩 `.jsonl`，**绝不写 `.zst`**；
-- 路径变换只作用于已知的结构化字段：`session_meta.payload.cwd`、`turn_context.payload.cwd`（其余字段待 E1b/E1c 逐项确认）。变换必须在**原始字节**层面替换该 JSON 字符串的值，不重新序列化整行；若新旧路径字节长度不同，且目标线程已被 Codex 投影过，则该会话不得原地应用（设计 §6.3）；
+- 路径变换只作用于已知的结构化字段：`session_meta.payload.cwd`、`turn_context.payload.cwd`、`session_meta.payload.runtime_workspace_roots`（P0 实验发现：该字段必须是本机合法绝对路径，否则 `thread/resume` 拒绝；见 p0-report.md）。变换必须在**原始字节**层面替换该 JSON 字符串的值，不重新序列化整行；若新旧路径字节长度不同，且目标线程已被 Codex 投影过，则该会话不得原地应用（设计 §6.3）；
 - 目标线程已存在且只有 `.zst` 形式时：返回 `needs_action`，不处理，直到 E1b 给出结论；
 - 账号、权限、模型类字段取自目标配置，不取自归档（E1c 之前以“不覆盖”为准：Writer 不修改这些字段，也不声称覆盖了它们）。
 
@@ -2777,13 +2777,13 @@ M5–M7 的任务在各自里程碑开始前按同样格式补充（依赖 P0 �
 
 | 项 | 位置 | 由谁决定 | 实验前的默认 |
 |---|---|---|---|
-| Codex 新线程是否只放文件就够（需否登记/索引写入） | §8.3 Writer | E1a | `RouteFiles`；不写任何数据库 |
+| Codex 新线程是否只放文件就够（需否登记/索引写入） | §8.3 Writer | E1a | **已定（app-server 级）**：`RouteFiles` 足够，Codex 自行登记与投影；Desktop 界面待肉眼确认 |
 | 对已登记线程的原地追加做法、路径变换改变字节长度的处理 | §4.4、§8.3 | E1b | 先备份、同目录 rename、取 Codex 写锁；长度改变的变换对已投影线程拒绝 |
 | 目标线程只有 `.zst`、孪生文件如何处理；是否会被 Codex 压缩 | §8.2、§8.3 | E1b | `needs_action`，不处理 |
 | `model_provider` 取值与历史可见性 | §8.3 | E1a | 取目标当前提供商 |
 | 账号/权限/沙箱字段是否需要剔除或改写 | §8.3 | E1c | 不修改这些字段，也不声称覆盖 |
 | 子线程是否随父会话一并采集安装 | §8.3、`Options.IncludeSubagents` | E1c | 作为依赖列出缺口，不一并安装 |
-| 运行检测的最终信号与“运行中是否需重启”矩阵 | §8.3 运行检测 | E2a、E2b | 线程锁 + 进程的保守组合；未知按运行中 |
+| 运行检测的最终信号与“运行中是否需重启”矩阵 | §8.3 运行检测 | E2a、E2b | **已定（命令行级）**：线程锁；运行中的 app-server 无需重启即可看见新文件；Desktop 界面刷新待肉眼确认 |
 | WorkBuddy 是否需要登记行及最小行内容 | §8.4 Writer | E3 | `Unsupported` |
 | Codex Desktop 是否需要 UI 层记录与连续 `ordinal` | §9.2、Codex Writer | E4 | 不生成 |
 | 导入边界与回采 | `ImportReceipt`、§8.2 | E5 | 无法划定边界则不开放往返续写 |

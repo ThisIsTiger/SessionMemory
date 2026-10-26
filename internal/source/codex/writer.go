@@ -75,16 +75,48 @@ func mapLine(line []byte, pm agent.PathMap) ([]byte, bool) {
 	if !ok || mapped == old {
 		return line, false
 	}
-	var enc bytes.Buffer
-	e := json.NewEncoder(&enc)
-	e.SetEscapeHTML(false)
-	e.Encode(mapped)
-	val := bytes.TrimRight(enc.Bytes(), "\n")
+	val := jsonString(mapped)
 	out := make([]byte, 0, len(line)+len(val))
 	out = append(out, line[:pi+loc[2]-1]...)
 	out = append(out, val...)
 	out = append(out, line[pi+loc[3]+1:]...)
-	return out, true
+	return mapRoots(out, pm), true
+}
+
+func jsonString(s string) []byte {
+	var enc bytes.Buffer
+	e := json.NewEncoder(&enc)
+	e.SetEscapeHTML(false)
+	e.Encode(s)
+	return bytes.TrimRight(enc.Bytes(), "\n")
+}
+
+var rootsRe = regexp.MustCompile(`"runtime_workspace_roots":\[((?:[^\]"\\]|"(?:[^"\\]|\\.)*")*)\]`)
+var rootItemRe = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"`)
+
+// mapRoots rewrites session_meta.payload.runtime_workspace_roots entries: Codex
+// refuses to resume a thread whose roots are not valid absolute paths on the
+// host (experiment E1a).
+func mapRoots(line []byte, pm agent.PathMap) []byte {
+	loc := rootsRe.FindSubmatchIndex(line)
+	if loc == nil {
+		return line
+	}
+	inner := line[loc[2]:loc[3]]
+	mappedInner := rootItemRe.ReplaceAllFunc(inner, func(m []byte) []byte {
+		var old string
+		if json.Unmarshal(m, &old) != nil {
+			return m
+		}
+		if mp, ok := pm.Apply(old); ok {
+			return jsonString(mp)
+		}
+		return m
+	})
+	out := make([]byte, 0, len(line)+len(mappedInner))
+	out = append(out, line[:loc[2]]...)
+	out = append(out, mappedInner...)
+	return append(out, line[loc[3]:]...)
 }
 
 // buildTarget streams the artifact through mapLine and returns the bytes.

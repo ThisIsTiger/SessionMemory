@@ -15,6 +15,7 @@ import (
 
 	"session-memory/internal/agent"
 	"session-memory/internal/config"
+	"session-memory/internal/platform"
 	"session-memory/internal/session"
 	"session-memory/internal/testutil/codexgen"
 )
@@ -389,4 +390,36 @@ func TestLargeSessionCaptureIsStreamed(t *testing.T) {
 		t.Errorf("peak heap grew by %d MiB for a %d MiB file", grown>>20, n>>20)
 	}
 	os.Remove(p)
+}
+
+func TestRuntimeFromThreadLocks(t *testing.T) {
+	e := newEnv(t)
+	locks := filepath.Join(e.home, "thread-writer-locks")
+	os.MkdirAll(locks, 0700)
+	tid := codexgen.ThreadIDFor(5)
+	det := e.a.Runtime()
+	if st, _, _ := det.Running(context.Background(), e.home, tid); st != agent.NotRunning {
+		t.Errorf("no lock file: %v, want NotRunning", st)
+	}
+	lf, _ := platform.Touch(filepath.Join(locks, tid+".lock"))
+	defer lf.Close()
+	if st, _, _ := det.Running(context.Background(), e.home, tid); st != agent.NotRunning {
+		t.Errorf("free lock file: %v, want NotRunning", st)
+	}
+	platform.LockExclusiveNonBlocking(lf)
+	if st, _, _ := det.Running(context.Background(), e.home, tid); st != agent.Running {
+		t.Errorf("held lock: %v, want Running", st)
+	}
+	if st, _, _ := det.Running(context.Background(), e.home, ""); st != agent.Unknown {
+		t.Errorf("no thread id: %v, want Unknown", st)
+	}
+}
+
+func TestMapRootsAndCwdTogether(t *testing.T) {
+	line := []byte(`{"type":"session_meta","payload":{"cwd":"/work/app","runtime_workspace_roots":["/work/app","/work/app/sub","/other"],"x":"/work/app"}}`)
+	got, ok := mapLine(line, agent.PathMap{Rules: []agent.PathRule{{From: "/work/app", To: "/Users/me/app"}}})
+	want := `{"type":"session_meta","payload":{"cwd":"/Users/me/app","runtime_workspace_roots":["/Users/me/app","/Users/me/app/sub","/other"],"x":"/work/app"}}`
+	if !ok || string(got) != want {
+		t.Errorf("got  %s\nwant %s", got, want)
+	}
 }

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -124,6 +125,16 @@ func registerDev(root *cobra.Command, a *App) {
 		data, err := os.ReadFile(rollout)
 		if err != nil {
 			return err
+		}
+		if tid == "" {
+			var first struct {
+				Payload struct {
+					ID string `json:"id"`
+				} `json:"payload"`
+			}
+			if i := bytes.IndexByte(data, '\n'); i > 0 && json.Unmarshal(data[:i], &first) == nil {
+				tid = first.Payload.ID
+			}
 		}
 		if tid == "" {
 			tid = threadRe.FindString(string(data[:min(len(data), 4096)]))

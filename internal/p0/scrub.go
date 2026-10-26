@@ -23,7 +23,7 @@ var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[
 
 // keepKeys hold structural values that are safe to keep as they are (spec §14.2).
 var keepKeys = map[string]bool{"type": true, "role": true, "status": true, "name": true, "originator": true, "cli_version": true,
-	"source": true, "model_provider": true, "kind": true, "phase": true, "model": true}
+	"source": true, "model_provider": true, "history_mode": true, "thread_source": true, "approval_policy": true, "effort": true, "reasoning_effort": true, "mode": true, "personality": true, "kind": true, "phase": true, "model": true}
 
 // Scrub copies a JSONL stream keeping every key and the structure but
 // replacing string values with same-length filler, UUIDs with mapped UUIDs and
