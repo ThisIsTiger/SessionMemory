@@ -1,0 +1,12 @@
+{"timestamp":"2026-09-01T01:46:53.416Z","ordinal":0,"type":"session_meta","payload":{"session_id":"01aaa111-2222-3333-4444-555566667777","id":"01aaa111-2222-3333-4444-555566667777","timestamp":"2026-09-01T01:46:53.416Z","cwd":"/Users/dev/demo/project","originator":"Codex Desktop","cli_version":"0.150.0-test","source":"vscode","thread_source":"user","model_provider":"openai"}}
+{"timestamp":"2026-09-01T01:47:00.000Z","type":"turn_context","payload":{"turn_id":"turn-001","timestamp":"2026-09-01T01:47:00.000Z","model":"gpt-test","cwd":"/Users/dev/demo/project"}}
+{"timestamp":"2026-09-01T01:47:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"帮我看一下为什么解析器在边界条件下崩溃"}}
+{"timestamp":"2026-09-01T01:47:02.000Z","type":"response_item","payload":{"type":"message","id":"msg_01","role":"user","content":[{"type":"input_text","text":"帮我看一下为什么解析器在边界条件下崩溃"}]}}
+{"timestamp":"2026-09-01T01:47:03.000Z","type":"response_item","payload":{"type":"reasoning","summary":null,"content":[{"type":"reasoning_text","text":"内部推理内容绝不能泄露到摘要"}]}}
+{"timestamp":"2026-09-01T01:47:04.000Z","type":"response_item","payload":{"type":"message","id":"msg_02","role":"developer","content":[{"type":"input_text","text":"developer 指令内容绝不能泄露"}]}}
+{"timestamp":"2026-09-01T01:47:05.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"shell","input":"cat /etc/passwd 绝不能泄露的工具输入"}}
+{"timestamp":"2026-09-01T01:47:06.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","output":"工具输出绝不能泄露 AKIAIOSFODNN7EXAMPLE"}}
+{"timestamp":"2026-09-01T01:47:07.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":50}}}}
+{"timestamp":"2026-09-01T01:47:08.000Z","type":"response_item","payload":{"type":"message","id":"msg_03","role":"assistant","content":[{"type":"output_text","text":"问题出在 offset 计算没有考虑半行：只在读到换行符时才推进游标。"}]}}
+{"timestamp":"2026-09-01T01:47:09.000Z","type":"event_msg","payload":{"type":"agent_message","message":"重复的 assistant 内容，必须被去重"}}
+{"timestamp":"2026-09-01T01:47:10.000Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"done"}}

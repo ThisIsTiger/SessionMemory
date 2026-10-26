@@ -1,0 +1,6 @@
+{"type":"system","message":{"role":"system","content":"session init"}}
+{"type":"user","message":{"role":"user","content":"阅读这个项目的 README 并总结"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"这是一个 Go 项目，包含三个模块。"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","text":"internal reasoning that must never leak"},{"type":"text","text":"我建议先跑测试。"}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"tool output that must never leak"}]}}
+{"type":"summary","message":{"role":"assistant","content":"ignored type"}}

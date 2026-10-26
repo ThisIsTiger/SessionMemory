@@ -1,0 +1,9 @@
+{"timestamp":"2026-08-31T23:50:00.000Z","ordinal":0,"type":"session_meta","payload":{"session_id":"01ddd111-2222-3333-4444-555566667777","id":"01ddd111-2222-3333-4444-555566667777","timestamp":"2026-08-31T23:50:00.000Z","cwd":"/Users/dev/demo/crossday","originator":"Codex Desktop","source":"vscode","thread_source":"user"}}
+{"timestamp":"2026-08-31T23:55:00.000Z","type":"turn_context","payload":{"turn_id":"turn-night"}}
+{"timestamp":"2026-08-31T23:55:01.000Z","type":"response_item","payload":{"type":"message","id":"m1","role":"user","content":[{"type":"input_text","text":"深夜任务：修复跨日切分的测试"}]}}
+{"timestamp":"2026-08-31T23:56:00.000Z","type":"response_item","payload":{"type":"message","id":"m2","role":"assistant","content":[{"type":"output_text","text":"八月三十一日的回复"}]}}
+{"timestamp":"2026-08-31T23:57:00.000Z","type":"event_msg","payload":{"type":"task_complete"}}
+{"timestamp":"2026-09-01T00:10:00.000Z","type":"turn_context","payload":{"turn_id":"turn-morning"}}
+{"timestamp":"2026-09-01T00:10:01.000Z","type":"response_item","payload":{"type":"message","id":"m3","role":"user","content":[{"type":"input_text","text":"凌晨任务：验证 UTC 下的分批"}]}}
+{"timestamp":"2026-09-01T00:11:00.000Z","type":"response_item","payload":{"type":"message","id":"m4","role":"assistant","content":[{"type":"output_text","text":"九月一日的回复"}]}}
+{"timestamp":"2026-09-01T00:12:00.000Z","type":"event_msg","payload":{"type":"task_complete"}}

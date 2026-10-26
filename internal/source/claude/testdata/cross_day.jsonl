@@ -1,0 +1,4 @@
+{"type":"user","message":{"role":"user","content":"first day task A"},"timestamp":"2026-08-31T22:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"day one reply"}]},"timestamp":"2026-08-31T22:01:00Z"}
+{"type":"user","message":{"role":"user","content":"second day task B"},"timestamp":"2026-09-01T01:30:00Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"day two reply"}]},"timestamp":"2026-09-01T01:31:00Z"}

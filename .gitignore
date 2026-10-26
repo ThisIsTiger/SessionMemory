@@ -1,0 +1,9 @@
+# Build artifacts
+/session-memory
+*.test
+*.out
+
+# Editor
+.idea/
+.vscode/
+.DS_Store
