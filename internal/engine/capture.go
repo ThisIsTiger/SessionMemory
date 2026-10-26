@@ -3,13 +3,16 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"sort"
 	"time"
 
 	"session-memory/internal/agent"
 	"session-memory/internal/canonjson"
 	"session-memory/internal/errcode"
+	"session-memory/internal/project"
 	"session-memory/internal/session"
 	"session-memory/internal/store"
 	"session-memory/internal/vault"
@@ -52,6 +55,7 @@ func (e *Engine) Track(ctx context.Context, ad agent.Adapter, ref agent.NativeRe
 		BindingID: session.NewBindingID(), SessionID: session.NewSessionID(), DeviceID: e.DeviceID,
 		AgentProfile: ns.Profile, NativeSessionID: ns.Ref.NativeID, NativeHome: ref.Home,
 		InstallMode: session.InstallNative, State: session.StateActive, Artifacts: map[string]session.ArtifactState{},
+		LocalCwd: ns.Cwd,
 	}
 	if err := e.Store.SaveBinding(nil, b); err != nil {
 		return b, session.Revision{}, err
@@ -91,8 +95,56 @@ func (e *Engine) Checkpoint(ctx context.Context, ad agent.Adapter, bindingID, pr
 		}
 		return session.Revision{}, false, tx.Finish()
 	}
-	if !res.Changed && b.InstalledRevisionID != "" {
+	ns, found, err := ad.Locate(ctx, ref)
+	if err != nil {
+		return session.Revision{}, false, err
+	}
+	if found && ns.Cwd != "" {
+		b.LocalCwd = ns.Cwd
+	}
+	repo, err := project.Inspect(ctx, b.LocalCwd)
+	if err != nil {
+		return session.Revision{}, false, err
+	}
+	repoJSON, err := canonjson.Marshal(repo)
+	if err != nil {
+		return session.Revision{}, false, err
+	}
+	repoRef := ""
+	repoChanged := true
+	if b.InstalledRevisionID != "" {
+		prev, err := e.Store.LoadRevision(b.InstalledRevisionID)
+		if err != nil {
+			return session.Revision{}, false, err
+		}
+		if projectRef == "" {
+			projectRef = prev.ProjectRef
+		}
+		if prev.RepoStateRef != "" {
+			rc, err := e.Store.OpenObject(ctx, prev.RepoStateRef, vault.TypeRepoState, nil)
+			if err != nil {
+				return session.Revision{}, false, err
+			}
+			old, err := io.ReadAll(rc)
+			rc.Close()
+			if err != nil {
+				return session.Revision{}, false, err
+			}
+			if bytes.Equal(repoJSON, old) {
+				repoRef = prev.RepoStateRef
+				repoChanged = false
+			}
+		}
+	}
+	if !res.Changed && !repoChanged && b.InstalledRevisionID != "" {
 		return session.Revision{}, false, tx.Finish()
+	}
+	if repoRef == "" {
+		obj, err := e.Store.PutObject(ctx, vault.TypeRepoState, nil, bytesNewReader(repoJSON))
+		if err != nil {
+			return session.Revision{}, false, err
+		}
+		repoRef = obj.Ref
 	}
 	if err := tx.SetState(store.StStaged, nil); err != nil {
 		return session.Revision{}, false, err
@@ -125,7 +177,7 @@ func (e *Engine) Checkpoint(ctx context.Context, ad agent.Adapter, bindingID, pr
 	rev := session.Revision{
 		SchemaVersion: session.SchemaVersion, SessionID: b.SessionID, ProjectRef: projectRef, ParentRevisionID: b.InstalledRevisionID,
 		ProducerDeviceID: e.DeviceID, ProducerBindingID: b.BindingID, AgentProfile: b.AgentProfile,
-		NativeSnapshotRef: info.Ref, CaptureState: captureState, CreatedAt: session.FormatTime(e.now()),
+		NativeSnapshotRef: info.Ref, RepoStateRef: repoRef, CaptureState: captureState, CreatedAt: session.FormatTime(e.now()),
 	}
 	if rev.ParentRevisionID == "" {
 		rev.OriginNativeID = b.NativeSessionID
@@ -136,7 +188,19 @@ func (e *Engine) Checkpoint(ctx context.Context, ad agent.Adapter, bindingID, pr
 	if err := rev.Seal(); err != nil {
 		return rev, false, err
 	}
-	data := store.CaptureData{Artifacts: res.Cursor.Artifacts, Snapshot: info.Ref, Revision: &rev, Generation: res.State == agent.CaptureReplaced}
+	var unsafe *session.UnsafeMark
+	if res.State == agent.CaptureUnsafe {
+		for _, d := range res.Diags {
+			if d.Code == "unsafe_record" {
+				unsafe = &session.UnsafeMark{Path: d.Detail, Offset: d.Offset, At: session.FormatTime(e.now())}
+			}
+		}
+	}
+	b.Artifacts = res.Cursor.Artifacts
+	b.InstalledRevisionID = rev.RevisionID
+	b.BaseRevisionID = firstNonEmpty(b.BaseRevisionID, rev.RevisionID)
+	b.Unsafe = unsafe
+	data := store.CaptureData{NewBinding: &b, RepoState: repoRef, Unsafe: unsafe, Artifacts: res.Cursor.Artifacts, Snapshot: info.Ref, Revision: &rev, Generation: res.State == agent.CaptureReplaced}
 	if err := tx.SetState(store.StStored, data); err != nil {
 		return rev, false, err
 	}
@@ -149,14 +213,7 @@ func (e *Engine) Checkpoint(ctx context.Context, ad agent.Adapter, bindingID, pr
 	b.Artifacts = res.Cursor.Artifacts
 	b.InstalledRevisionID = rev.RevisionID
 	b.BaseRevisionID = firstNonEmpty(b.BaseRevisionID, rev.RevisionID)
-	b.Unsafe = nil
-	if res.State == agent.CaptureUnsafe {
-		for _, d := range res.Diags {
-			if d.Code == "unsafe_record" {
-				b.Unsafe = &session.UnsafeMark{Path: d.Detail, Offset: d.Offset, At: session.FormatTime(e.now())}
-			}
-		}
-	}
+	b.Unsafe = unsafe
 	if err := e.Store.SaveBinding(tx, b); err != nil {
 		return rev, false, err
 	}

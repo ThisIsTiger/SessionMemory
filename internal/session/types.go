@@ -268,13 +268,14 @@ type ArtifactState struct {
 // ImportReceipt records what a Writer put into a target so the capture side
 // can tell the imported prefix from the user's later records (design §8.3).
 type ImportReceipt struct {
-	WriterVersion  string `json:"writer_version"`
-	SourceRevision string `json:"source_revision"`
-	WrittenCount   int64  `json:"written_count"`   // records written
-	LastMarker     string `json:"last_marker"`     // id or ordinal of the last written record
-	BoundaryOffset int64  `json:"boundary_offset"` // byte offset (decompressed) just after the last written record
-	BoundaryHash   string `json:"boundary_hash"`   // hex SHA-256 of bytes [0, BoundaryOffset)
-	At             string `json:"at"`
+	WriterVersion     string   `json:"writer_version"`
+	SourceRevision    string   `json:"source_revision"`
+	WrittenCount      int64    `json:"written_count"`   // records written
+	LastMarker        string   `json:"last_marker"`     // id or ordinal of the last written record
+	BoundaryOffset    int64    `json:"boundary_offset"` // byte offset (decompressed) just after the last written record
+	BoundaryHash      string   `json:"boundary_hash"`   // hex SHA-256 of bytes [0, BoundaryOffset)
+	At                string   `json:"at"`
+	CodeStateOverride []string `json:"code_state_override,omitempty"`
 }
 
 // UnsafeMark records where capture stopped at a corrupt record. Capture of the
@@ -314,6 +315,7 @@ type Binding struct {
 	AgentProfile        AgentProfile             `json:"agent_profile"`
 	NativeSessionID     string                   `json:"native_session_id"`
 	NativeHome          string                   `json:"native_home"` // device-local, never synced
+	LocalCwd            string                   `json:"local_cwd,omitempty"`
 	InstallMode         string                   `json:"install_mode"`
 	State               string                   `json:"state"`
 	BaseRevisionID      string                   `json:"base_revision_id,omitempty"`

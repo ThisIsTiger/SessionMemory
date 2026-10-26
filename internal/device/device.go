@@ -16,10 +16,11 @@ import (
 // Info is device.json. VaultID lets the device find its key in the credential
 // store.
 type Info struct {
-	SchemaVersion int    `json:"schema_version"`
-	DeviceID      string `json:"device_id"`
-	VaultID       string `json:"vault_id"`
-	CreatedAt     string `json:"created_at"`
+	SchemaVersion     int      `json:"schema_version"`
+	DeviceID          string   `json:"device_id"`
+	VaultID           string   `json:"vault_id"`
+	CreatedAt         string   `json:"created_at"`
+	PreviousDeviceIDs []string `json:"previous_device_ids,omitempty"` // local unpublished history after clone recovery
 }
 
 type seqFile struct {
@@ -64,6 +65,9 @@ func (d *Device) Init(vaultID, now string) (Info, error) {
 // Load reads device.json.
 func (d *Device) Load() (Info, error) {
 	var i Info
+	if err := d.finishRegeneration(); err != nil {
+		return i, err
+	}
 	if err := d.read("device.json", &i); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return i, errcode.New(errcode.NoVault, "this device is not initialised; run init or device join")
@@ -83,11 +87,118 @@ func (d *Device) Regenerate() (Info, error) {
 	if err != nil {
 		return i, err
 	}
-	i.DeviceID = session.NewDeviceID()
-	if err := d.write("device.json", i); err != nil {
+	// Publish journals contain ciphertext bound to the old identity. They can
+	// be retired because revisions and outbox entries remain durable locally;
+	// other unfinished operations must be recovered before changing identity.
+	files, err := filepath.Glob(filepath.Join(d.dir, "..", "journal", "*.json"))
+	if err != nil {
 		return i, err
 	}
-	return i, d.write("sequence.json", seqFile{SchemaVersion: 1})
+	for _, p := range files {
+		var j struct {
+			Kind string `json:"kind"`
+		}
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			return i, err
+		}
+		if json.Unmarshal(raw, &j) != nil || j.Kind != "publish" {
+			return i, errcode.New(errcode.RecoveryNeeded, "recover unfinished transactions before regenerating the device id")
+		}
+	}
+	old := i.DeviceID
+	i.PreviousDeviceIDs = append(i.PreviousDeviceIDs, old)
+	i.DeviceID = session.NewDeviceID()
+	if err := d.write("regenerate.json", regeneration{OldID: old, Info: i, PublishJournals: files}); err != nil {
+		return i, err
+	}
+	return i, d.finishRegeneration()
+}
+
+type regeneration struct {
+	OldID           string   `json:"old_id"`
+	Info            Info     `json:"info"`
+	PublishJournals []string `json:"publish_journals"`
+}
+
+// finishRegeneration is idempotent: a restart completes the same migration,
+// never creates another identity or resets an already active identity twice.
+func (d *Device) finishRegeneration() error {
+	var j regeneration
+	if err := d.read("regenerate.json", &j); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if !session.ValidDeviceID(j.OldID) || !session.ValidDeviceID(j.Info.DeviceID) {
+		return errcode.New(errcode.RecoveryNeeded, "invalid device migration")
+	}
+	files, err := filepath.Glob(filepath.Join(d.dir, "..", "bindings", "*.json"))
+	if err != nil {
+		return err
+	}
+	for _, p := range files {
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		var b session.Binding
+		if err := json.Unmarshal(raw, &b); err != nil {
+			return err
+		}
+		if b.DeviceID != j.OldID {
+			continue
+		}
+		b.DeviceID = j.Info.DeviceID
+		data, err := json.MarshalIndent(b, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := platform.AtomicWrite(p, append(data, '\n'), 0600); err != nil {
+			return err
+		}
+	}
+	entries, err := d.Outbox()
+	if err != nil {
+		return err
+	}
+	for idx := range entries {
+		e := &entries[idx]
+		if e.Receipt != nil && e.Receipt.DeviceID == j.OldID {
+			e.Receipt.DeviceID = j.Info.DeviceID
+		}
+		if e.Choice != nil && e.Choice.DeviceID == j.OldID {
+			e.Choice.DeviceID = j.Info.DeviceID
+		}
+		if e.ConvertRequest != nil && e.ConvertRequest.SourceDeviceID == j.OldID {
+			e.ConvertRequest.SourceDeviceID = j.Info.DeviceID
+		}
+		if e.Binding != nil && e.Binding.DeviceID == j.OldID {
+			e.Binding.DeviceID = j.Info.DeviceID
+		}
+	}
+	if err := d.write("outbox.json", struct {
+		Entries []session.Entry `json:"entries"`
+	}{entries}); err != nil {
+		return err
+	}
+	for _, p := range j.PublishJournals {
+		dst := filepath.Join(d.dir, "..", "journal", "done", filepath.Base(p))
+		if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
+			return err
+		}
+		if err := os.Rename(p, dst); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	if err := d.write("sequence.json", seqFile{SchemaVersion: 1}); err != nil {
+		return err
+	}
+	if err := d.write("device.json", j.Info); err != nil {
+		return err
+	}
+	return os.Remove(filepath.Join(d.dir, "regenerate.json"))
 }
 
 // LastPublished returns the highest manifest sequence this device published.

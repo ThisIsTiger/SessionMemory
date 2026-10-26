@@ -40,6 +40,9 @@ func New(st *store.FS, t transport.Transport, v vault.Sealer, root string, info 
 	st.Resumers[store.KindPublish] = func(ctx context.Context, _ *store.FS, rec store.JournalRecord) error {
 		return s.resumePublish(ctx, rec)
 	}
+	st.Resumers[store.KindPull] = func(ctx context.Context, _ *store.FS, rec store.JournalRecord) error {
+		return s.resumePull(ctx, rec)
+	}
 	return s
 }
 
@@ -133,13 +136,26 @@ func (s *Sync) newObjects(ctx context.Context, r session.Revision) ([]string, er
 // Publish sends every unpublished revision and queued entry; it returns the
 // number of entries published.
 func (s *Sync) Publish(ctx context.Context) (int, error) {
+	if _, err := s.Store.Recover(ctx); err != nil {
+		return 0, err
+	}
 	if err := s.CheckDeviceID(ctx); err != nil {
 		return 0, err
 	}
-	revs, err := s.Store.UnpublishedRevisions(s.Info.DeviceID)
-	if err != nil {
-		return 0, err
+	var revs []session.Revision
+	for _, id := range append([]string{s.Info.DeviceID}, s.Info.PreviousDeviceIDs...) {
+		rs, err := s.Store.UnpublishedRevisions(id)
+		if err != nil {
+			return 0, err
+		}
+		revs = append(revs, rs...)
 	}
+	sort.Slice(revs, func(i, j int) bool {
+		if revs[i].CreatedAt == revs[j].CreatedAt {
+			return revs[i].RevisionID < revs[j].RevisionID
+		}
+		return revs[i].CreatedAt < revs[j].CreatedAt
+	})
 	var entries []session.Entry
 	for _, r := range revs {
 		objs, err := s.newObjects(ctx, r)
@@ -231,6 +247,18 @@ func (s *Sync) prevHash(seq int64) string {
 
 // continuePublish performs the steps after StSealed; it is also the resume path.
 func (s *Sync) continuePublish(ctx context.Context, tx store.Tx, d store.PublishData, sealed []byte, m session.Manifest) error {
+	// A restored/cloned identity can have a pending journal at a sequence
+	// already published by another copy. Never publish a second hash there.
+	ents, err := s.T.List(ctx, "manifests/"+s.Info.DeviceID+"/")
+	if err != nil {
+		return err
+	}
+	for _, entry := range ents {
+		var sequence int64
+		if _, err := fmt.Sscanf(filepath.Base(entry.Path), "%012d-", &sequence); err == nil && sequence == d.Sequence && filepath.Base(entry.Path) != d.ManifestFile {
+			return errcode.New(errcode.DeviceIDConflict, "another manifest already occupies this device sequence")
+		}
+	}
 	if tx.State() == store.StSealed {
 		for i, ref := range d.Objects {
 			if i == len(d.Objects)/2 {

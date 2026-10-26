@@ -192,6 +192,11 @@ func newDeviceCmd(a *App) *cobra.Command {
 	join.Flags().String("passphrase-file", "", "file containing the bundle passphrase")
 	regen := &cobra.Command{Use: "regenerate-id", Short: "Give this device a new id (after a restore or clone)", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			unlock, err := lockStore(a.Cfg.StateDir())
+			if err != nil {
+				return err
+			}
+			defer unlock()
 			info, err := device.At(a.Cfg.StateDir()).Regenerate()
 			if err != nil {
 				return err

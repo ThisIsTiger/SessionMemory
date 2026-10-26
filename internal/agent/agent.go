@@ -222,6 +222,10 @@ type WriteInput struct {
 	BindingID string
 	// Cwd is the local project directory the session is bound to.
 	Cwd string
+	// ValidateEnvironment rechecks the code-state baseline under vendor locks.
+	ValidateEnvironment func(context.Context) error
+	// VendorLocked is set only by the core after InstallLocker succeeds.
+	VendorLocked bool
 }
 
 // PlannedWrite is one file operation of a plan.
@@ -271,6 +275,7 @@ type FidelityReport struct {
 
 // Receipt is returned by Apply and verified by Verify.
 type Receipt struct {
+	TargetHash      string                 `json:"target_hash,omitempty"` // complete native postcondition, when supplied by the writer
 	SessionID       string                 `json:"session_id"`
 	RevisionID      string                 `json:"revision_id"`
 	NativeSessionID string                 `json:"native_session_id"`
@@ -303,6 +308,11 @@ type Writer interface {
 	Verify(ctx context.Context, in WriteInput, r Receipt) error
 	// Rollback restores everything recorded by tx.Backed / tx.Wrote.
 	Rollback(ctx context.Context, home string, tx Tx) error
+}
+
+// InstallLocker keeps vendor locks through apply, adoption and binding commit.
+type InstallLocker interface {
+	LockInstall(context.Context, WriteInput) (func(), error)
 }
 
 // ---- the adapter ----

@@ -30,6 +30,10 @@ type FS struct {
 	// Resumers handle journals the store cannot finish alone (publish, pull);
 	// the sync package registers them.
 	Resumers map[Kind]func(context.Context, *FS, JournalRecord) error
+	// InstallGuard protects startup Undo with the same vendor lock protocol.
+	InstallGuard func(context.Context, InstallData) (func(), error)
+	// InstallRowUndo restores only the vendor registry rows covered by a journal.
+	InstallRowUndo func(context.Context, InstallData) error
 }
 
 // Open prepares the state directory and opens (or rebuilds) sessions.db.

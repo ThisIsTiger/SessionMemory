@@ -1,5 +1,7 @@
 # P0 实验报告（第一轮，命令行 / app-server 级）
 
+后续进展见 [第二轮真实客户端测试](p0-live-report.md)：已补 Codex CLI 往返、WorkBuddy GUI / 真实模型与登记路线实验。本文保留第一轮的历史结论和当时未完成项。
+
 > 日期：2026-10-26  
 > 环境：开发机 macOS（arm64），Codex CLI `0.162.1`，Codex Desktop（ChatGPT.app 内的 Codex Framework 155/156）；全部写入实验在 `$SM_HOME/dev/sandboxes/` 下的隔离 `CODEX_HOME` 中进行，用 `codex app-server`（stdio JSON-RPC）作为被测的“客户端”。本机的日常 `~/.codex` 只做了只读结构清单和只读的锁探测。  
 > 夹具：从本机一个 465 KB 的真实 rollout 经 `dev scrub` 脱敏得到，再把 `cwd`、`runtime_workspace_roots` 改成合法路径。

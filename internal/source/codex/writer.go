@@ -172,10 +172,16 @@ func (w *Writer) Plan(ctx context.Context, in agent.WriteInput) (agent.Plan, err
 	if in.Mode != agent.ModeNative {
 		return agent.Plan{}, errcode.New(errcode.Unsupported, "conversion into Codex is not implemented yet")
 	}
+	if in.SourceProfile.Agent != AgentName || in.SourceProfile.Format != "rollout-jsonl" || in.Target.Agent != AgentName {
+		return agent.Plan{}, errcode.New(errcode.UnknownFormat, "Codex native restore only accepts Codex rollout snapshots")
+	}
 	home := in.TargetState.Home
 	plan := agent.Plan{SchemaVersion: 1, SessionID: in.SessionID, RevisionID: in.RevisionID, Mode: in.Mode, Route: agent.RouteFiles}
 	var paths []string
 	for _, a := range in.Source.Artifacts() {
+		if !session.ValidArtifactPath(a.Path) || nativeIDOf(in) == "" {
+			return plan, errcode.New(errcode.UnknownFormat, "snapshot does not identify a Codex thread")
+		}
 		if a.Kind != session.KindStream {
 			return plan, errcode.New(errcode.Unsupported, "non-stream artifacts are not supported by the Codex writer")
 		}
@@ -248,22 +254,81 @@ func threadLocks(home, nativeID string) (release func(), held bool, err error) {
 			return nil, true, nil
 		}
 		return func() { platform.Unlock(tf); tf.Close(); rel() }, false, nil
+	} else if !os.IsNotExist(terr) {
+		rel()
+		return nil, false, terr
 	}
 	return rel, false, nil
 }
 
+func (w *Writer) LockInstall(ctx context.Context, in agent.WriteInput) (func(), error) {
+	nativeID := nativeIDOf(in)
+	return w.lockThread(ctx, in.TargetState.Home, nativeID)
+}
+
+func (w *Writer) lockThread(ctx context.Context, home, nativeID string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if nativeID == "" {
+		return nil, errcode.New(errcode.UnknownFormat, "snapshot does not identify a Codex thread")
+	}
+	rs, _, err := (runtimeDetector{}).Running(ctx, home, nativeID)
+	if err != nil {
+		return nil, err
+	}
+	if rs == agent.Running || (rs == agent.Unknown && !w.ClientClosed) {
+		return nil, errcode.New(errcode.ClientRunning, "the Codex client may be running; close it and confirm with --client-closed")
+	}
+	release, held, err := threadLocks(home, nativeID)
+	if err != nil {
+		return nil, err
+	}
+	if held {
+		return nil, errcode.New(errcode.ClientRunning, "a Codex client holds this thread")
+	}
+	return release, nil
+}
+
+// GuardRecovery refuses to undo vendor files while Codex could own them.
+func GuardRecovery(ctx context.Context, d store.InstallData) (func(), error) {
+	id := d.NativeSessionID
+	if id == "" {
+		for _, p := range append(append([]string{}, d.Backed...), d.Created...) {
+			if parsed, _, ok := parseName(filepath.Base(p)); ok {
+				id = parsed
+				break
+			}
+		}
+	}
+	return (&Writer{ClientClosed: d.ClientClosed}).lockThread(ctx, d.Home, id)
+}
+
 // Apply executes the plan under the journal: backup, write, verify.
-func (w *Writer) Apply(ctx context.Context, in agent.WriteInput, p agent.Plan, tx agent.Tx) (agent.Receipt, error) {
+func (w *Writer) Apply(ctx context.Context, in agent.WriteInput, p agent.Plan, tx agent.Tx) (receipt agent.Receipt, applyErr error) {
+	check := p
+	check.Digest = ""
+	digest, err := canonjson.Hash(check)
+	if err != nil {
+		return agent.Receipt{}, err
+	}
+	if digest != p.Digest {
+		return agent.Receipt{}, errcode.New(errcode.BaselineChanged, "the restore plan digest does not match")
+	}
 	home := in.TargetState.Home
 	t, ok := tx.(store.Tx)
 	if !ok {
 		return agent.Receipt{}, errcode.New(errcode.Internal, "writer needs a store transaction")
 	}
-	// run state, before and after
 	nativeID := nativeIDOf(in)
-	rs, _, _ := (runtimeDetector{}).Running(ctx, home, nativeID)
-	if rs == agent.Running || (rs == agent.Unknown && !w.ClientClosed) {
-		return agent.Receipt{}, errcode.New(errcode.ClientRunning, "the Codex client may be running; close it and confirm with --client-closed")
+	if !in.VendorLocked {
+		// The standalone Writer path must also hold locks through staging,
+		// revalidation, backup and any rollback.
+		release, err := w.LockInstall(ctx, in)
+		if err != nil {
+			return agent.Receipt{}, err
+		}
+		defer release()
 	}
 	// plan must match the target now
 	paths := make([]string, 0, len(p.Writes))
@@ -275,7 +340,7 @@ func (w *Writer) Apply(ctx context.Context, in agent.WriteInput, p agent.Plan, t
 	if baselineOf(existingState(home, all)) != p.BaselineHash {
 		return agent.Receipt{}, errcode.New(errcode.BaselineChanged, "the target changed after the plan was made")
 	}
-	d := store.InstallData{PlanDigest: p.Digest, Mode: p.Mode, Route: p.Route, Home: home, BackupDir: t.BackupDir()}
+	d := store.InstallData{NativeSessionID: nativeID, ClientClosed: w.ClientClosed, PlanDigest: p.Digest, Mode: p.Mode, Route: p.Route, Home: home, BackupDir: t.BackupDir()}
 	contents := map[string][]byte{}
 	for _, pw := range p.Writes {
 		c, _, err := buildTarget(ctx, in.Source, pw.Path, in.PathMap)
@@ -294,6 +359,25 @@ func (w *Writer) Apply(ctx context.Context, in agent.WriteInput, p agent.Plan, t
 	if err := t.SetState(store.StStaged, d); err != nil {
 		return agent.Receipt{}, err
 	}
+
+	// Undo under the same vendor locks; a later caller must not overwrite
+	// records produced after this writer released its critical section.
+	defer func() {
+		if applyErr != nil && (t.State() == store.StBackedUp || t.State() == store.StWritten) {
+			if err := t.Rollback(); err != nil {
+				applyErr = errcode.Wrap(errcode.RecoveryNeeded, "install rollback failed", err)
+			}
+		}
+	}()
+	if baselineOf(existingState(home, all)) != p.BaselineHash {
+		return agent.Receipt{}, errcode.New(errcode.BaselineChanged, "the target changed before the writer acquired its locks")
+	}
+	if in.ValidateEnvironment != nil {
+		if err := in.ValidateEnvironment(ctx); err != nil {
+			return agent.Receipt{}, err
+		}
+	}
+
 	for _, pw := range p.Writes {
 		target := filepath.Join(home, filepath.FromSlash(pw.Path))
 		if pw.Op == "create" {
@@ -313,15 +397,6 @@ func (w *Writer) Apply(ctx context.Context, in agent.WriteInput, p agent.Plan, t
 	if err := t.SetState(store.StBackedUp, d); err != nil {
 		return agent.Receipt{}, err
 	}
-
-	release, held, err := threadLocks(home, nativeID)
-	if err != nil {
-		return agent.Receipt{}, err
-	}
-	if held {
-		return agent.Receipt{}, errcode.New(errcode.ClientRunning, "a Codex client holds this thread")
-	}
-	defer release()
 	for i, pw := range p.Writes {
 		if i == len(p.Writes)/2 {
 			if err := failpoint.Hit("install.mid_write"); err != nil {
@@ -341,10 +416,8 @@ func (w *Writer) Apply(ctx context.Context, in agent.WriteInput, p agent.Plan, t
 	if err := t.SetState(store.StWritten, d); err != nil {
 		return agent.Receipt{}, err
 	}
-	// client must not have started meanwhile
-	if rs2, _, _ := (runtimeDetector{}).Running(ctx, home, nativeID); rs2 == agent.Running {
-		return agent.Receipt{}, errcode.New(errcode.ClientRunning, "the client started during the install")
-	}
+	// The coordination/thread locks prevent a cooperating Codex writer from
+	// starting here. Probing the thread lock again would detect our own lock.
 	rec := agent.Receipt{SessionID: in.SessionID, RevisionID: in.RevisionID, NativeSessionID: nativeID, InstallMode: session.InstallNative,
 		Written: p.Writes, At: session.FormatTime(time.Now())}
 	if err := w.Verify(ctx, in, rec); err != nil {

@@ -26,6 +26,9 @@ type keyringStore struct{}
 func NewKeyring() KeyStore { return keyringStore{} }
 
 func (keyringStore) Load(id string) ([]byte, error) {
+	if err := keyringAvailable(); err != nil {
+		return nil, err
+	}
 	s, err := keyring.Get(KeyService, id)
 	if errors.Is(err, keyring.ErrNotFound) {
 		return nil, ErrNoKey
@@ -37,6 +40,9 @@ func (keyringStore) Load(id string) ([]byte, error) {
 }
 
 func (keyringStore) Store(id string, key []byte) error {
+	if err := keyringAvailable(); err != nil {
+		return err
+	}
 	return keyring.Set(KeyService, id, base64.StdEncoding.EncodeToString(key))
 }
 

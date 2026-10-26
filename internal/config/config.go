@@ -26,8 +26,9 @@ const EnvHome = "SM_HOME"
 // AgentConfig is the per-agent block: where its native data lives and how the
 // adapter treats it.
 type AgentConfig struct {
-	Enabled *bool  `json:"enabled,omitempty"`
-	Home    string `json:"home"`
+	AllowRegistryWrite bool   `json:"allow_registry_write,omitempty"`
+	Enabled            *bool  `json:"enabled,omitempty"`
+	Home               string `json:"home"`
 	// MaxRecordBytes caps one JSONL record read from this agent's files.
 	MaxRecordBytes int64 `json:"max_record_bytes"`
 	// AutoInstall lets the background sync write new revisions into this
@@ -355,6 +356,7 @@ var keys = func() []keySpec {
 	ks = append(ks, agentKeys("agents.claude", func(c *Config) *AgentConfig { return &c.Agents.Claude })...)
 	ks = append(ks, agentKeys("agents.workbuddy", func(c *Config) *AgentConfig { return &c.Agents.WorkBuddy })...)
 	ks = append(ks,
+		keySpec{"agents.workbuddy.allow_registry_write", kindBool, func(c Config) string { return strconv.FormatBool(c.Agents.WorkBuddy.AllowRegistryWrite) }},
 		keySpec{"transport.folder", kindPath, func(c Config) string { return c.Transport.Folder }},
 		keySpec{"log.retention_days", kindInt, func(c Config) string { return strconv.Itoa(c.Log.RetentionDays) }},
 	)

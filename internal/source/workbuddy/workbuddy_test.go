@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"session-memory/internal/agent"
+	"session-memory/internal/bridge"
 	"session-memory/internal/canonical"
 	"session-memory/internal/config"
 	"session-memory/internal/convert"
@@ -174,5 +175,51 @@ func TestExtractActivePathAndBranches(t *testing.T) {
 	out, _ := convert.Convert(items, convert.Options{})
 	if c := out.Report.Counts["message"]; c.Kept != 3 || c.Dropped != 2 || out.Report.Dropped["branch"] != 1 {
 		t.Errorf("conversion of the tree: %+v %v", c, out.Report.Dropped)
+	}
+}
+
+// Shape observed in WorkBuddy 5.8.3: system reminders and the actual query
+// share one input_text block. Neither conversion nor Resume Pack may lose it.
+func TestExtractWrappedHumanQuery(t *testing.T) {
+	const question = "SM_P0_WORKBUDDY_ALPHA"
+	wrapped := "<system-reminder data-role=\"user-context\">injected-only</system-reminder>\n" +
+		"<system-reminder>more-injected-context</system-reminder>\n<user_query>" + question + "</user_query>"
+	input := line(map[string]any{"type": "message", "id": "u1", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": wrapped}}}) +
+		line(map[string]any{"type": "message", "id": "a1", "parentId": "u1", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "ACK_ALPHA"}}})
+	items, err := extractStream(io.NopCloser(strings.NewReader(input)), "fixture.jsonl", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 || !items[0].Human || items[0].Norm["text"] != question || items[0].Raw.Length == 0 {
+		t.Fatalf("wrapped query lost: %+v", items)
+	}
+	out, _ := convert.Convert(items, convert.Options{})
+	if len(out.Records) != 2 || out.Records[0].Text != question {
+		t.Fatalf("converted query lost: %+v", out)
+	}
+	pack := bridge.ResumePack(session.Revision{}, items, bridge.Options{})
+	if !strings.Contains(pack, question) || !strings.Contains(pack, "ACK_ALPHA") || strings.Contains(pack, "injected") {
+		t.Fatalf("pack lost query or leaked injected context: %s", pack)
+	}
+}
+
+func TestWorkBuddyUserEnvelopeBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		in, want string
+		human    bool
+	}{
+		{"plain question", "plain question", true},
+		{"<user_query>question</user_query>", "question", true},
+		{"<user_query><div>HTML</div></user_query>", "<div>HTML</div>", true},
+		{"<user_query>@agent:run</user_query>", "@agent:run", false},
+		{"<system-reminder>context</system-reminder>", "", false},
+		{"<system-reminder>unfinished", "<system-reminder>unfinished", false},
+		{"<system-reminder>context</system-reminder>\n@agent:run", "@agent:run", false},
+		{"quote <user_query>literal</user_query>", "quote <user_query>literal</user_query>", true},
+		{"<system-reminder-other>literal</system-reminder>question", "<system-reminder-other>literal</system-reminder>question", false},
+	} {
+		if got, human := wbUserText(tc.in); got != tc.want || human != tc.human {
+			t.Errorf("wbUserText(%q) = (%q, %v), want (%q, %v)", tc.in, got, human, tc.want, tc.human)
+		}
 	}
 }

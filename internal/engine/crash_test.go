@@ -56,8 +56,8 @@ func TestCaptureCrashMatrix(t *testing.T) {
 				t.Fatal("no revision after recovery + checkpoint")
 			}
 			cur, _ := r.st.Revisions(final[0].SessionID)
-			if len(cur) < 1 {
-				t.Fatal("no committed revision")
+			if len(cur) != 1 {
+				t.Fatalf("recovery must not produce duplicate roots or revisions: %d", len(cur))
 			}
 			// the revision's content is the native file, byte for byte
 			orig, _ := os.ReadFile(p)

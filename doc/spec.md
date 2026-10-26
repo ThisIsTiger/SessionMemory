@@ -410,6 +410,7 @@ type ArtifactState struct {
 // ImportReceipt records what a Writer put into a target so the capture side
 // can tell the imported prefix from the user's later records (design §8.3).
 type ImportReceipt struct {
+	CodeStateOverride []string `json:"code_state_override,omitempty"` // explicitly accepted environment gaps
 	WriterVersion  string `json:"writer_version"`
 	SourceRevision string `json:"source_revision"`
 	WrittenCount   int64  `json:"written_count"`   // records written
@@ -456,6 +457,7 @@ type Binding struct {
 	AgentProfile        AgentProfile             `json:"agent_profile"`
 	NativeSessionID     string                   `json:"native_session_id"`
 	NativeHome          string                   `json:"native_home"` // device-local, never synced
+	LocalCwd            string                   `json:"local_cwd,omitempty"` // device-local project mapping
 	InstallMode         string                   `json:"install_mode"`
 	State               string                   `json:"state"`
 	BaseRevisionID      string                   `json:"base_revision_id,omitempty"`
@@ -498,10 +500,14 @@ type Binding struct {
 `repo_state_ref` 指向一个类型为 `TypeRepoState` 的密封对象，明文是规范化 JSON：
 
 ```json
-{"branch":"main","dirty":{"modified":3,"untracked":1},"head":"<commit sha>","remote_hash":"<sha256 of normalised remote url>","schema_version":1}
+{"branch":"main","dirty":{"modified":3,"untracked":1},"head":"<commit sha>","remote_hash":"<sha256 of normalised remote url>","schema_version":1,"status":"git"}
 ```
 
 只记摘要（计数、分支、HEAD、远端哈希），**不含文件内容、不含 diff**（设计 §10）。远端 URL 规范化：小写主机名，去掉 `.git` 后缀、凭据和末尾斜杠，`ssh://git@host/x` 与 `https://host/x` 视为同一远端；再取 SHA-256。
+
+`status` 是 v1 的可选扩展：`git`、`directory`（已存在的非 Git 目录）、`unavailable`。旧对象缺省时，有 HEAD 按 `git` 解释，否则按 `unavailable`。每次 checkpoint 都观察代码状态；只有代码状态变化也应产生子 revision，没有变化时复用已有 repo 对象。项目标签从上一 revision 继承。
+
+恢复默认校验本地目录、源 commit 是否存在、HEAD、remote identity 与 dirty 缺口。`--plan` 列出缺口；安装时默认拒绝未知/不一致状态，可用 `--allow-code-mismatch` 明确覆盖并把缺口写进 `ImportReceipt.code_state_override`，但本地目录必须存在。`--cwd`、`--project` 或已保存的 `Binding.local_cwd` 决定目标路径。实际写入前在厂商锁内重新核对代码状态基线；本工具不自动 fetch、checkout 或应用 patch。
 
 ### 2.5 Manifest
 
@@ -744,7 +750,8 @@ func ManifestFileName(sequence int64, fileSHA256Hex string) string {
 ```text
 $SM_HOME/
 ├── device/
-│   ├── device.json            {schema_version, device_id, vault_id, created_at}   # vault_id 用于在凭据存储里找钥匙（实现时新增）
+│   ├── device.json            {schema_version, device_id, vault_id, created_at, previous_device_ids?}
+│   ├── regenerate.json        # 可选：重建设备 ID 的可恢复迁移记录
 │   ├── sequence.json          {schema_version, last_published}   # 本设备已发布的最大 manifest 序号
 │   └── outbox.json            {entries}   # 等待下一个 manifest 的 receipt/choice/convert-request 条目（实现时新增）
 ├── projects/<project_ref>.json        session.ProjectMap（设备本地，不同步）
@@ -936,6 +943,8 @@ type JournalRecord struct {
 // CaptureData is JournalRecord.Data for KindCapture. Everything recovery needs
 // to commit the revision is here, so it never re-reads the source.
 type CaptureData struct {
+	NewBinding *session.Binding `json:"new_binding,omitempty"` // complete post-capture state; older journals use fields below
+	Unsafe *session.UnsafeMark `json:"unsafe,omitempty"`
 	Artifacts  map[string]session.ArtifactState `json:"artifacts"` // the state to commit
 	Snapshot   string                           `json:"snapshot"`  // ObjectRef
 	RepoState  string                           `json:"repo_state,omitempty"`
@@ -963,6 +972,10 @@ type PullData struct {
 
 // InstallData is JournalRecord.Data for KindInstall.
 type InstallData struct {
+	Agent string `json:"agent,omitempty"`
+	RegistryUndo string `json:"registry_undo,omitempty"` // row backup file under BackupDir
+	NativeSessionID string `json:"native_session_id,omitempty"`
+	ClientClosed bool `json:"client_closed,omitempty"`
 	PlanDigest string               `json:"plan_digest"`
 	Mode       agent.Mode           `json:"mode"`
 	Route      agent.Route          `json:"route"`
@@ -1044,7 +1057,7 @@ type RecoveryReport struct {
 2. 每完成一个步骤，用 `Tx.SetState(新状态, data)` 重写 journal（`AtomicWrite`）。**State 表示“该步骤已完成且其效果已持久”**；先改 State 再做动作是错误的。
 3. 每个步骤**必须幂等**：重复执行不产生第二份对象、第二个 revision 或第二次写入。
 4. `Finish` 把 journal 移到 `journal/done/` 并删除 `staging/<tx_id>/`。
-5. 启动时（以及每次 `sync` 开始前）调用 `Store.Recover`：按 `StartedAt` 升序扫描 `journal/*.json`，对每个调用 `RecoveryFor(kind, state)` 并执行下表的动作；恢复失败的事务保留原样，记 `recovery_needed`，不影响其他会话。
+5. 启动时（以及每次 `sync` 开始前）先注册 publish/pull 恢复处理器，再调用 `Store.Recover`：按 `StartedAt` 升序扫描 `journal/*.json`，对每个调用 `RecoveryFor(kind, state)` 并执行下表的动作。所有事务都尝试恢复；失败的事务保留原样并返回 `recovery_needed`。当前 CLI 在有未解决恢复错误时停止本次命令，避免复用序号或覆盖不确定状态。
 
 ### 4.3 各事务的步骤与恢复
 
@@ -1055,7 +1068,7 @@ type RecoveryReport struct {
 | `planned` | 仅 journal | Discard：删除 `staging/<tx>/` |
 | `staged` | 部分对象在 staging，尚未进入 `objects/` | Discard（游标未动，下次重新采集同一区间；按 `(generation, start, end, raw_hash)` 去重） |
 | `stored` | 全部对象已移入 `objects/`（含 Snapshot、RepoState）；`Data.Revision` 已封好 | Resume：`CommitRevision(Data.Revision)` |
-| `revision_committed` | revision 已在 sessions.db 与 manifests 缓冲 | Resume：保存 binding（`Data.Artifacts` 作为新游标/Segment 列表） |
+| `revision_committed` | revision 已在 sessions.db 与 manifests 缓冲 | Resume：保存完整 `Data.NewBinding`；兼容旧 journal 时恢复 Artifacts、Unsafe、InstalledRevisionID、BaseRevisionID，不能只推进游标 |
 | `cursor_advanced` | binding 已更新 | Resume：入队 publish 事务，`Finish` |
 | `done` | — | Archive |
 
@@ -1079,7 +1092,7 @@ type RecoveryReport struct {
 | State | 恢复 |
 |---|---|
 | `planned` | Discard |
-| `verified`（manifest 已验证、对象齐全，`Data` 列出将导入的 revision） | Resume：写入 sessions.db 与 `store/manifests/` |
+| `verified`（manifest 已验证、对象齐全，`Data` 列出将导入的 revision） | Resume：从 staging 的同一份 `manifest.sealed` 写入 sessions.db 与 `store/manifests/`；旧 journal 可回读本地镜像或远端同名文件并重新校验 |
 | `committed` | Resume：发布 `received` 回执，`Finish` |
 | `done` | Archive |
 
@@ -1100,14 +1113,14 @@ Undo 的做法：对 `Data.Backed` 中每个文件，用备份覆盖回去；对
 
 ### 4.4 安装事务的写入规则
 
-1. 获取 `locks/<session_id>.lock`；检测运行状态（`agent.RuntimeDetector`），`Running`/`Unknown` 一律不写，返回 `client_running`（设计 §9.3）。
+1. 在 store 互斥锁下检测运行状态（`agent.RuntimeDetector`）；取得 Codex 协调锁与线程锁，并保护到文件采纳、binding 与回执提交完成。`Running` 拒绝；`Unknown` 默认拒绝，手动安装的 `--client-closed` 是显式关闭声明。
 2. 重新计算目标的 `BaselineHash` 并与 plan 比对，不一致返回 `baseline_changed`。
 3. 在 `staging/<tx>/` 构建全部将写入的内容；`Plan.Digest` 校验通过。
 4. 备份：每个将被替换/追加的目标文件**整文件复制**到 `backups/<tx>/<相对路径>`（保持权限）；记入 `Data.Backed`（这一步完成才写 `backed_up`）。
 5. 写入：每个文件用“同目录临时文件 → fsync → rename”替换（**同一设备的同一文件系统内**，保证原子）；保持原权限位；内容变化的文件把 mtime 设为当前时间。向已有文件追加按“读旧内容 + 增量 → 临时文件 → rename”实现，不就地 `O_APPEND`。每写完一个文件调用 `Tx.Wrote`。
-6. **写完之后再检测一次运行状态**；若期间客户端启动，立即 Undo 并返回 `client_running`（设计 §6.4 第 7 点）。
+6. 持有厂商锁期间由锁协议阻止其他写入者，不再用另一个文件描述符探测自身持有的线程锁。写入失败立即在锁内 Undo；启动恢复的 Undo 也须先取得同样的厂商锁。
 7. 验证：读回每个写入文件的哈希与 plan 一致，并用适配器的校验器解析（记录可解析、条目数一致）；失败则 Undo 并返回 `target_rejected`。
-8. Codex 目标额外规则（来源：设计 §3.3“参考实现”，待 E1b 验证）：步骤 5 的 rename 之前取 `thread-writer-locks/.coordination.lock`，再尝试取该线程的锁，取不到就放弃并返回 `client_running`；没有 `thread-writer-locks` 目录的旧版 Codex 不写。
+8. Codex 目标额外规则：协调锁、线程锁必须在最终基线校验和备份之前取得；获取失败时尚未改写厂商文件。只有同 Agent 且已识别的 `rollout-jsonl` 快照可走 native 路径；跨 Agent 数据拒绝，不能绕过转换。
 
 ## 5. sessions.db
 
@@ -1426,6 +1439,8 @@ reconcile():
 
 **本机 ID 克隆检测**：`sync` 开始前，List 出 `manifests/<本机 device_id>/`，若存在序号大于本地 `sequence.json.last_published` 的文件（且不是本机 journal 中进行中的 publish），说明 ID 被克隆或本地状态回退：**拒绝一切发布**，返回 `device_id_conflict`，要求执行 `device regenerate-id`（生成新的 `device_id`，旧 ID 的历史保持原样）。
 
+`regenerate-id` 受 store 锁保护，以 `device/regenerate.json` 实现幂等迁移：本地 binding 与待发回执/选择/请求改为新身份，旧身份进入 `previous_device_ids`，以继续发布旧身份尚未发布的本地 revision；历史 revision 字节不改写。旧身份的 pending publish journal 归档，原始 outbox 和 revision 保留，在新身份下重新发布；其他种类的未完成事务要求先恢复。新身份的 sequence 从 0 开始，迁移完成后不再重复重置。
+
 ### 7.5 状态到 CLI 的映射
 
 `status` 命令把设计 §11.3 的状态按 (session, 设备) 计算：
@@ -1721,6 +1736,7 @@ type FidelityReport struct {
 
 // Receipt is returned by Apply and verified by Verify.
 type Receipt struct {
+	TargetHash string `json:"target_hash,omitempty"` // optional full native postcondition
 	SessionID       string                 `json:"session_id"`
 	RevisionID      string                 `json:"revision_id"`
 	NativeSessionID string                 `json:"native_session_id"`
@@ -1855,7 +1871,7 @@ rollout-<YYYY-MM-DDTHH-MM-SS>-<线程 UUID>[_<分段 UUID>].jsonl[.zst]
 - 目标线程已存在且只有 `.zst` 形式时：返回 `needs_action`，不处理，直到 E1b 给出结论；
 - 账号、权限、模型类字段取自目标配置，不取自归档（E1c 之前以“不覆盖”为准：Writer 不修改这些字段，也不声称覆盖了它们）。
 
-### 8.4 WorkBuddy 适配器（读取侧已定，写入侧待 E3/E4）
+### 8.4 WorkBuddy 适配器（读取侧与手动原生 Writer；转换写入待 E4）
 
 **目录**：`config.WorkBuddyHome()`（环境变量 `WORKBUDDY_CONFIG_DIR`，否则 `~/.workbuddy`）。CodeBuddy Code 的目录（`CODEBUDDY_CONFIG_DIR` 或 `~/.codebuddy`）格式相同；两者指向同一目录时只读一次（按目录身份 `os.SameFile` 判定）。
 
@@ -1872,11 +1888,16 @@ rollout-<YYYY-MM-DDTHH-MM-SS>-<线程 UUID>[_<分段 UUID>].jsonl[.zst]
 
 - `NativeID` = 文件名里的会话 ID；`cwd` 取自记录的 `cwd` 字段，其次取自 `.meta.json`，**不得从目录名反推**（编码有损）；
 - `Title`：`custom-title` 优先于 `ai-title`；
-- 非人类输入：user 消息内容以 `<` 开头，或匹配 `^@[\w-]+:\S*$`（起点启发式，M2 用真实样本确认）；
+- 人类输入（WorkBuddy 5.8.3 实测，适配器 0.1.1）：先从 user 消息的文本中移除连续的前置完整 `<system-reminder ...>…</system-reminder>`，再提取完整 `<user_query>…</user_query>` 的正文；非空 query 属于人类输入（含以 `<` 开头的 HTML 问题），场景标记 `^@[\w-]+:\S*$` 仍排除。没有 query 包装时沿用“以 `<` 开头或场景标记＝非人类”的保守启发式；不完整的 reminder 不升级成人类输入。原始字节与 RawRef 保持完整，仅派生文本去除注入上下文。见 [第二轮 P0 报告](p0-live-report.md)；
 - 软删除：`workbuddy.db` 的 `sessions.deleted_at` 非空的会话不当作活跃会话。读取该库一律用 URI `file:<path>?mode=ro&immutable=1`；读不到时不排除任何会话并在 Diag 记 `registry_unreadable`；
 - 子代理文件的键归属父会话（`NativeID` 取其上级会话目录名）；
 - 采集算法同 §8.2；
-- **Writer**：行为待 E3（是否需要登记行、行的最小内容、重启后是否保持）。在 E3 之前 `Writer()` 返回 `errcode.Unsupported`。
+- **Writer**：原生模式使用路线 3，默认关闭；`agents.workbuddy.allow_registry_write=true` 后支持手动 `restore --agent workbuddy --client-closed`。仅允许 macOS、安装在 `/Applications/WorkBuddy.app` 的 5.8.3，以及 PRAGMA table_info 指纹 `884179348b27ff0de44059fc1483fb289a6edf29f5ae5a310428495a21eb928f` 的 sessions 表；拒绝未知列/类型/默认值、额外触发器、符号链接和未纳管的同 ID 数据。转换模式仍 unsupported。
+- 目标目录编码目前只接受已验证的无空格 ASCII 绝对路径；只改主流/旁路 JSONL 及 meta.json 已知顶层 `cwd` 字符串，保留其他字节以支持映射后往返；不推断历史工具参数。单个 artifact 超过 64 MiB 或单次安装超过 128 MiB 时明确返回 unsupported。
+- 新登记从目标 schema 默认值构造，仅设 ID/cwd/title/status/时间与本地唯一非删除账号的 user_id；不复制源账号、模型、权限或专家设置。目标配置需专用于一个账号且已有本地会话；多账号或空库返回 needs_action。已有登记仅在受管理 binding 下更新，并保留目标私有字段；不复活软删除。
+- 安装要求客户端完全退出并显式声明 client-closed；macOS 进程及 SingletonLock PID 检测为运行中时不能用声明覆盖。home 下的安装锁只串行化 SessionMemory 写入，不是假设厂商会遵守的锁；安装过程中反复检查进程、文件和行基线，禁止自动安装。若写入后发现客户端启动，保留 recovery_needed，等退出后由恢复守卫处理，不在客户端运行中撤销。
+- 文件先 staging，所有备份和行级回滚资料在首次写入前进入 journal。登记使用 SQLite 事务和行值比较更新；只回滚本次行，不替换整个 workbuddy.db。`InstallData.Agent=workbuddy` 分派恢复守卫，`RegistryUndo` 指向备份目录的 workbuddy-registry.json；恢复处理器在 Recover 前注册。缺处理器、厂商文件/登记行已前进或出现新 artifact 时保留 journal 并返回 recovery_needed，不能覆盖客户端新数据。
+- `Receipt.TargetHash` 是本地完整文件哈希/权限与目标登记行的后置条件哈希（SQLite NULL 采用本地 JSON 表达，不使用禁止 null 的传输 canonjson）。写后及 adoption 后各验证一次，再提交 binding；backed_up/written 撤销，verified/binding_committed 前滚。详见 [正式 Writer 验收](p0-workbuddy-writer-report.md)。
 
 ## 9. Canonical 与转换
 
@@ -2188,6 +2209,8 @@ DiscoverHomes *bool `json:"discover_homes,omitempty"`
 4. 校验：`homes` 的每一项必须是绝对路径（展开 `~` 后）；`homes` 最多 16 项；
 5. 测试：环境变量优先级、重复目录去重、符号链接指向同一目录只算一次、`discover_homes` 只看目录名且不读 `auth.json`（用权限为 000 的 `auth.json` 构造目录：发现仍然成功，即说明没有打开它）。
 
+WorkBuddy 原生恢复另增布尔键 `agents.workbuddy.allow_registry_write`（默认 false），对应 `AgentConfig.AllowRegistryWrite`。该开关仅允许版本/结构白名单内的手动恢复；`auto_install` 不启用 WorkBuddy 安装，也不绕过 `--client-closed`。
+
 ## 12. 命令行
 
 CLI 代码在 `cmd/session-memory/`，**只做参数解析与输出**，业务在 `internal` 各包。结构：
@@ -2375,12 +2398,12 @@ JSON 输出统一为“包内类型的 JSON”，类型名在括号里；未列�
 | `device regenerate-id` | 生成新的 `device_id`（§7.4） | M4 |
 | `discover --agent A` | 列出可纳管的原生会话（`[]agent.NativeSession`：含标题与 cwd 这类设备本地展示文本，只输出到用户自己的终端，绝不写入日志或同步；不含任何记录正文） | M2 |
 | `track --agent A --native-session ID [--project REF]` | 纳管：创建 `session_id`、binding、首个 revision | M3 |
-| `list [--agent A] [--project REF]` | 列出已纳管会话与状态 | M3 |
+| `list [--agent A] [--project REF]` | 以 session/revision 为入口，包含已收到但没有本地 binding 的会话（`state=received`） | M3 |
 | `checkpoint SESSION_ID` | 立即采集并发布 | M3 |
 | `sync [--watch] [--auto-install]` | 采集、发布、接收、（可选）自动安装 | M4/M5 |
 | `status [SESSION_ID]` | 设计 §11.3 的状态（§7.5） | M3 |
 | `project map REF --path DIR [--rule FROM=TO]...` | 建立/更新 `projects/<ref>.json` | M5 |
-| `restore SESSION_ID --agent A --mode native [--plan]` | 原生恢复 | M3/M5 |
+| `restore SESSION_ID --agent A --mode native [--plan] [--cwd DIR] [--allow-code-mismatch]` | 原生恢复；覆盖代码状态检查时记录审计信息，目录缺失仍拒绝 | M3/M5 |
 | `open SESSION_ID --agent A` | 先 pull、等待客户端关闭、安装、启动客户端 | M5 |
 | `continue SESSION_ID --agent A --device D [--mode context]` | 发布 `convert-request` | M6 |
 | `convert SESSION_ID --agent A [--plan]` | 转换写入 | M6 |
@@ -2544,7 +2567,7 @@ func Zstd(plain []byte) []byte              // 单帧 zstd，无校验和（与�
 ### 14.5 其他
 
 - `go vet`、`gofmt`、`go test`、`go test -race ./internal/...` 在三平台（CI）必须通过；
-- CI 增加一个任务：`go test -tags failpoint ./internal/...`；
+- CI 增加一个任务：`go test -tags failpoint ./...`，覆盖 CLI 重启恢复；
 - 平台相关（锁、rename、文件占用）的测试放在 `_unix_test.go`/`_windows_test.go`，Windows 上还要覆盖路径大小写和分隔符的 `PathMap` 用例；
 - 真实客户端的“显示 / 继续 / 重开”无法进 CI：用 `doc/acceptance.md` 的清单手工验收并记录版本（M1 产出）。
 
@@ -2784,7 +2807,7 @@ M5–M7 的任务在各自里程碑开始前按同样格式补充（依赖 P0 �
 | 账号/权限/沙箱字段是否需要剔除或改写 | §8.3 | E1c | 不修改这些字段，也不声称覆盖 |
 | 子线程是否随父会话一并采集安装 | §8.3、`Options.IncludeSubagents` | E1c | 作为依赖列出缺口，不一并安装 |
 | 运行检测的最终信号与“运行中是否需重启”矩阵 | §8.3 运行检测 | E2a、E2b | **已定（命令行级）**：线程锁；运行中的 app-server 无需重启即可看见新文件；Desktop 界面刷新待肉眼确认 |
-| WorkBuddy 是否需要登记行及最小行内容 | §8.4 Writer | E3 | `Unsupported` |
+| WorkBuddy 是否需要登记行及最小行内容 | §8.4 Writer | E3 | **5.8.3 手动原生模式已定**：文件与最小登记；默认关闭、版本/schema 白名单、目标本地账号；真实续写回传与 28 项恢复矩阵通过。转换待 E4 |
 | Codex Desktop 是否需要 UI 层记录与连续 `ordinal` | §9.2、Codex Writer | E4 | 不生成 |
 | 导入边界与回采 | `ImportReceipt`、§8.2 | E5 | 无法划定边界则不开放往返续写 |
 | 转换后模型的接受度、上下文容量、compaction 映射 | §9.2 | E6 | 规则按表；报告注明容量风险 |

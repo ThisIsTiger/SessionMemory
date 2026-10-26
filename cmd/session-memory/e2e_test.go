@@ -171,14 +171,14 @@ func TestRestoreVerifyAndProjectMapViaCLI(t *testing.T) {
 	projDir := filepath.Join(B.home, "code", "app")
 	os.MkdirAll(projDir, 0700)
 	ref := strings.TrimSpace(B.must("project", "map", "--path", projDir, "--rule", "/work/app="+projDir))
-	if code, _, _ := B.run("restore", tr.SessionID); code != 4 {
+	if code, _, _ := B.run("restore", tr.SessionID, "--project", ref, "--allow-code-mismatch"); code != 4 {
 		t.Errorf("restore without --client-closed should exit 4, got %d", code)
 	}
 	plan := B.must("restore", tr.SessionID, "--plan", "--project", ref)
 	if !strings.Contains(plan, "create") || !strings.Contains(plan, "nothing written") {
 		t.Fatalf("plan output: %q", plan)
 	}
-	B.must("restore", tr.SessionID, "--client-closed", "--project", ref)
+	B.must("restore", tr.SessionID, "--client-closed", "--project", ref, "--allow-code-mismatch")
 	files, _ := filepath.Glob(filepath.Join(bcodex, "sessions", "*", "*", "*", "*.jsonl"))
 	if len(files) != 1 {
 		t.Fatalf("restored files: %v", files)
@@ -263,7 +263,7 @@ func TestAutoInstallWaitsWhenClientStateIsUnknown(t *testing.T) {
 	tid := codexgen.ThreadIDFor(7)
 	p := filepath.Join(acodex, "sessions", "2026", "09", "01", "rollout-2026-09-01T01-46-53-"+tid+".jsonl")
 	os.MkdirAll(filepath.Dir(p), 0700)
-	os.WriteFile(p, codexgen.Rollout(codexgen.Options{Seed: 7, Turns: 2}), 0600)
+	os.WriteFile(p, codexgen.Rollout(codexgen.Options{Seed: 7, Turns: 2, Cwd: A.home}), 0600)
 	var tr struct {
 		SessionID string `json:"session_id"`
 	}

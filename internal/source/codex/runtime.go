@@ -30,7 +30,10 @@ func (runtimeDetector) Running(ctx context.Context, home, nativeID string) (agen
 	}
 	f, err := os.OpenFile(filepath.Join(locks, strings.ToLower(nativeID)+".lock"), os.O_RDWR, 0)
 	if err != nil {
-		return agent.NotRunning, agent.DetailNotRunning, nil
+		if os.IsNotExist(err) {
+			return agent.NotRunning, agent.DetailNotRunning, nil
+		}
+		return agent.Unknown, agent.DetailUnknown, err
 	}
 	defer f.Close()
 	if err := platform.LockExclusiveNonBlocking(f); errors.Is(err, platform.ErrLockHeld) {

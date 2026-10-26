@@ -139,8 +139,10 @@ func buildRows(r *rt, only string) ([]listRow, error) {
 	for _, u := range unpub {
 		unpubBy[u.SessionID]++
 	}
-	var rows []listRow
+	rows := []listRow{}
+	bound := map[string]bool{}
 	for _, b := range bs {
+		bound[b.SessionID] = true
 		g, err := r.Store.Graph(b.SessionID)
 		if err != nil {
 			return nil, err
@@ -151,6 +153,29 @@ func buildRows(r *rt, only string) ([]listRow, error) {
 		rows = append(rows, listRow{SessionID: b.SessionID, BindingID: b.BindingID, Agent: b.AgentProfile.Agent, NativeID: b.NativeSessionID,
 			State: b.State, Mode: b.InstallMode, HeadCount: len(res.Heads), Conflict: res.Conflict, Unpub: unpubBy[b.SessionID],
 			Unsafe: b.Unsafe != nil, Revisions: len(revs), LastUpdate: b.UpdatedAt})
+	}
+	ids, err := r.Store.SessionIDs()
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range ids {
+		if bound[id] || (only != "" && only != id) {
+			continue
+		}
+		revs, err := r.Store.Revisions(id)
+		if err != nil {
+			return nil, err
+		}
+		if len(revs) == 0 {
+			continue
+		}
+		ch, err := r.Store.Choices(id)
+		if err != nil {
+			return nil, err
+		}
+		res := session.Resolve(session.NewGraph(revs), ch)
+		last := revs[len(revs)-1]
+		rows = append(rows, listRow{SessionID: id, Agent: last.AgentProfile.Agent, NativeID: revs[0].OriginNativeID, State: "received", HeadCount: len(res.Heads), Conflict: res.Conflict, Unpub: unpubBy[id], Revisions: len(revs), LastUpdate: last.CreatedAt})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].LastUpdate > rows[j].LastUpdate })
 	return rows, nil

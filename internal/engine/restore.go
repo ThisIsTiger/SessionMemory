@@ -2,10 +2,9 @@ package engine
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 
 	"session-memory/internal/agent"
+	"session-memory/internal/canonjson"
 	"session-memory/internal/errcode"
 	"session-memory/internal/session"
 	"session-memory/internal/store"
@@ -13,15 +12,19 @@ import (
 
 // RestoreOptions configures Restore.
 type RestoreOptions struct {
-	Home         string // target agent home
-	PathMap      agent.PathMap
-	ClientClosed bool // the user states the client is not running
-	PlanOnly     bool
-	RevisionID   string // default: the effective head
-	Cwd          string
+	Home              string // target agent home
+	PathMap           agent.PathMap
+	ClientClosed      bool // the user states the client is not running
+	PlanOnly          bool
+	RevisionID        string // default: the effective head
+	Cwd               string
+	AllowCodeMismatch bool // explicitly accept recorded code-state gaps
 }
 
 type closedWriter interface{ WriterWith(bool) agent.Writer }
+type rollbackGuard interface {
+	CanRollback(context.Context, agent.WriteInput) error
+}
 
 // Restore installs a synced revision into this device's agent home (spec §4.4,
 // design §6.2). It refuses conflicts and non-fast-forward landings.
@@ -52,6 +55,9 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 	if rev == nil {
 		return agent.Plan{}, nil, errcode.New(errcode.NotFound, "revision not found")
 	}
+	if rev.AgentProfile.Agent != ad.Name() {
+		return agent.Plan{}, nil, errcode.New(errcode.Unsupported, "native restore requires the same source and target agent; use conversion for a different agent")
+	}
 	bs, _ := e.Store.Bindings(sessionID)
 	var bnd *session.Binding
 	for i := range bs {
@@ -71,6 +77,10 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 	if err != nil {
 		return agent.Plan{}, nil, err
 	}
+	cwd, pmap, gaps, checkEnvironment, err := e.restoreWorkspace(ctx, ad, src, *rev, bnd, opt)
+	if err != nil {
+		return agent.Plan{}, nil, err
+	}
 	var w agent.Writer
 	if cw, ok := ad.(closedWriter); ok {
 		w = cw.WriterWith(opt.ClientClosed)
@@ -78,11 +88,20 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 		w = ad.Writer()
 	}
 	in := agent.WriteInput{SessionID: sessionID, RevisionID: target, Mode: agent.ModeNative, Source: src, SourceProfile: rev.AgentProfile,
-		PathMap: opt.PathMap, Target: rev.AgentProfile, TargetState: agent.TargetState{Home: opt.Home}, Cwd: opt.Cwd}
+		PathMap: pmap, Target: session.AgentProfile{Agent: ad.Name(), Format: rev.AgentProfile.Format}, TargetState: agent.TargetState{Home: opt.Home}, Cwd: cwd, ValidateEnvironment: checkEnvironment}
 	if bnd != nil {
 		in.BindingID = bnd.BindingID
 	}
 	plan, err := w.Plan(ctx, in)
+	if err != nil {
+		return plan, nil, err
+	}
+	plan.Warnings = append(plan.Warnings, gaps...)
+	if len(gaps) > 0 && opt.AllowCodeMismatch {
+		plan.Warnings = append(plan.Warnings, "code_state_override")
+	}
+	plan.Digest = ""
+	plan.Digest, err = canonjson.Hash(plan)
 	if err != nil || opt.PlanOnly {
 		return plan, nil, err
 	}
@@ -96,13 +115,35 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 	if err := tx.SetState(store.StPlanned, store.InstallData{PlanDigest: plan.Digest, Mode: plan.Mode, Route: plan.Route, Home: opt.Home}); err != nil {
 		return plan, nil, err
 	}
+	if locker, ok := w.(agent.InstallLocker); ok {
+		release, err := locker.LockInstall(ctx, in)
+		if err != nil {
+			tx.Finish()
+			return plan, nil, err
+		}
+		defer release()
+		in.VendorLocked = true
+	}
+	rollback := func() error {
+		if tx.State() == store.StBackedUp || tx.State() == store.StWritten || tx.State() == store.StRollingBack {
+			if guard, ok := w.(rollbackGuard); ok {
+				if err := guard.CanRollback(context.Background(), in); err != nil {
+					return err
+				}
+			}
+		}
+		return tx.Rollback()
+	}
 	rec, err := w.Apply(ctx, in, plan, tx)
 	if err != nil {
+		if tx.State() == store.StRollingBack || errcode.CodeOf(err) == errcode.RecoveryNeeded {
+			return plan, nil, err // preserve the rollback journal for startup recovery
+		}
 		if tx.State() == store.StBackedUp || tx.State() == store.StWritten || tx.State() == store.StStaged {
-			if rerr := e.Store.RollbackTx(tx); rerr != nil {
+			if rerr := rollback(); rerr != nil {
 				return plan, nil, errcode.Wrap(errcode.RecoveryNeeded, "install failed and rollback did not finish", rerr)
 			}
-		} else {
+		} else if tx.State() != store.StDone {
 			tx.Finish()
 		}
 		return plan, nil, err
@@ -111,7 +152,25 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 	ref := agent.NativeRef{Home: opt.Home, NativeID: rec.NativeSessionID}
 	adopt, err := ad.Capture(ctx, ref, agent.Cursor{}, e.Store.Sink())
 	if err != nil {
+		if rollbackErr := rollback(); rollbackErr != nil {
+			return plan, &rec, errcode.Wrap(errcode.RecoveryNeeded, "adoption rollback failed", rollbackErr)
+		}
 		return plan, &rec, err
+	}
+	if rec.NativeSessionID == "" || adopt.State != agent.CaptureOK || len(adopt.Cursor.Artifacts) == 0 {
+		if rollbackErr := rollback(); rollbackErr != nil {
+			return plan, &rec, errcode.Wrap(errcode.RecoveryNeeded, "adoption rollback failed", rollbackErr)
+		}
+		return plan, &rec, errcode.New(errcode.TargetRejected, "installed native session could not be safely adopted")
+	}
+	if err := w.Verify(ctx, in, rec); err != nil {
+		if rollbackErr := rollback(); rollbackErr != nil {
+			return plan, &rec, errcode.Wrap(errcode.RecoveryNeeded, "post-adoption rollback failed", rollbackErr)
+		}
+		return plan, &rec, err
+	}
+	if opt.AllowCodeMismatch && rec.Import != nil {
+		rec.Import.CodeStateOverride = gaps
 	}
 	nb := session.Binding{BindingID: session.NewBindingID(), SessionID: sessionID, DeviceID: e.DeviceID, AgentProfile: rev.AgentProfile,
 		NativeSessionID: rec.NativeSessionID, NativeHome: opt.Home, InstallMode: session.InstallNative, State: session.StateActive,
@@ -120,6 +179,7 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 		nb = *bnd
 		nb.Artifacts = adopt.Cursor.Artifacts
 	}
+	nb.LocalCwd = cwd
 	nb.InstalledRevisionID = target
 	nb.ImportReceipt = rec.Import
 	var d store.InstallData
@@ -146,6 +206,3 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 	}
 	return plan, &rec, tx.Finish()
 }
-
-var _ = os.Remove
-var _ = filepath.Join

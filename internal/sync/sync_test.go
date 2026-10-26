@@ -65,7 +65,7 @@ func (n *node) put(seed int64, turns int) (string, string) {
 	tid := codexgen.ThreadIDFor(seed)
 	p := filepath.Join(n.home, "sessions", "2026", "09", "01", "rollout-2026-09-01T01-46-53-"+tid+".jsonl")
 	os.MkdirAll(filepath.Dir(p), 0700)
-	os.WriteFile(p, codexgen.Rollout(codexgen.Options{Seed: seed, Turns: turns, ToolCalls: 1}), 0600)
+	os.WriteFile(p, codexgen.Rollout(codexgen.Options{Seed: seed, Turns: turns, ToolCalls: 1, Cwd: n.home}), 0600)
 	return tid, p
 }
 

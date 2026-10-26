@@ -1,6 +1,6 @@
 // Package workbuddy is the WorkBuddy / CodeBuddy Code adapter. The read side
-// (discover, probe, capture, locate) follows spec §8.4; the writer stays
-// unsupported until experiments E3/E4 decide what WorkBuddy needs.
+// (discover, probe, capture, locate) follows spec §8.4. Native registry writes
+// are opt-in and limited to the client/schema verified by P0.
 package workbuddy
 
 import (
@@ -20,7 +20,6 @@ import (
 
 	"session-memory/internal/agent"
 	"session-memory/internal/config"
-	"session-memory/internal/errcode"
 	"session-memory/internal/jsonl"
 	"session-memory/internal/session"
 	"session-memory/internal/streamcap"
@@ -30,7 +29,7 @@ import (
 const AgentName = "workbuddy"
 
 // AdapterVersion is recorded in profiles.
-const AdapterVersion = "0.1.0"
+const AdapterVersion = "0.1.1"
 
 // Adapter implements agent.Adapter.
 type Adapter struct{ Cfg config.Config }
@@ -307,31 +306,6 @@ func (a *Adapter) VerifyBinding(ctx context.Context, ref agent.NativeRef, arts m
 	sort.Strings(bad)
 	return bad, err
 }
-
-type runtimeDetector struct{}
-
-func (a *Adapter) Runtime() agent.RuntimeDetector { return runtimeDetector{} }
-
-// Running is conservative until E2a: WorkBuddy is a desktop app whose process
-// identity is not yet determined.
-func (runtimeDetector) Running(context.Context, string, string) (agent.RunState, agent.RunDetail, error) {
-	return agent.Unknown, agent.DetailUnknown, nil
-}
-
-type writerStub struct{}
-
-func (a *Adapter) Writer() agent.Writer { return writerStub{} }
-
-var errWriter = errcode.New(errcode.Unsupported, "the WorkBuddy writer is not implemented until experiments E3/E4 finish")
-
-func (writerStub) Plan(context.Context, agent.WriteInput) (agent.Plan, error) {
-	return agent.Plan{}, errWriter
-}
-func (writerStub) Apply(context.Context, agent.WriteInput, agent.Plan, agent.Tx) (agent.Receipt, error) {
-	return agent.Receipt{}, errWriter
-}
-func (writerStub) Verify(context.Context, agent.WriteInput, agent.Receipt) error { return errWriter }
-func (writerStub) Rollback(context.Context, string, agent.Tx) error              { return errWriter }
 
 // Probe inspects every WorkBuddy home read-only (structure only).
 func (a *Adapter) Probe(ctx context.Context) (agent.ProbeResult, error) {

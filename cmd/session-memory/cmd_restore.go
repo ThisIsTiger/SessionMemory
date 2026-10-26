@@ -15,7 +15,6 @@ import (
 	"session-memory/internal/errcode"
 	"session-memory/internal/platform"
 	"session-memory/internal/session"
-	"session-memory/internal/source/codex"
 )
 
 func projectPath(root, ref string) string { return filepath.Join(root, "projects", ref+".json") }
@@ -98,6 +97,8 @@ func newRestoreCmd(a *App) *cobra.Command {
 			home, _ := cmd.Flags().GetString("home-dir")
 			planOnly, _ := cmd.Flags().GetBool("plan")
 			closed, _ := cmd.Flags().GetBool("client-closed")
+			allowMismatch, _ := cmd.Flags().GetBool("allow-code-mismatch")
+			cwd, _ := cmd.Flags().GetString("cwd")
 			rev, _ := cmd.Flags().GetString("revision")
 			proj, _ := cmd.Flags().GetString("project")
 			rules, _ := cmd.Flags().GetStringArray("rule")
@@ -109,7 +110,14 @@ func newRestoreCmd(a *App) *cobra.Command {
 				return err
 			}
 			if home == "" {
-				home = a.Cfg.CodexHome()
+				if name == "workbuddy" {
+					home = a.Cfg.WorkBuddyHome()
+				} else {
+					home = a.Cfg.CodexHome()
+				}
+			}
+			if name == "workbuddy" && !a.Cfg.Agents.WorkBuddy.AllowRegistryWrite {
+				return errcode.New(errcode.Unsupported, "enable agents.workbuddy.allow_registry_write to use the version-limited native writer")
 			}
 			rj, err := parseRules(rules)
 			if err != nil {
@@ -121,21 +129,20 @@ func newRestoreCmd(a *App) *cobra.Command {
 					return err
 				}
 				rj = append(rj, pm.Rules...)
+				if cwd == "" {
+					cwd = pm.LocalPath
+				}
 			}
 			var pmap agent.PathMap
 			for _, r := range rj {
 				pmap.Rules = append(pmap.Rules, agent.PathRule{From: r.From, To: r.To})
-			}
-			cx, ok := ad.(*codex.Adapter)
-			if !ok {
-				return errcode.New(errcode.Unsupported, name+" cannot receive native restores yet")
 			}
 			r, err := a.openRT(cmd.Context(), false)
 			if err != nil {
 				return err
 			}
 			defer r.Close()
-			plan, rec, err := r.Eng.Restore(cmd.Context(), cx, args[0], engine.RestoreOptions{Home: home, PathMap: pmap, ClientClosed: closed, PlanOnly: planOnly, RevisionID: rev})
+			plan, rec, err := r.Eng.Restore(cmd.Context(), ad, args[0], engine.RestoreOptions{Home: home, PathMap: pmap, ClientClosed: closed, PlanOnly: planOnly, RevisionID: rev, Cwd: cwd, AllowCodeMismatch: allowMismatch})
 			if err != nil {
 				return err
 			}
@@ -144,6 +151,9 @@ func newRestoreCmd(a *App) *cobra.Command {
 			}
 			for _, w := range plan.Writes {
 				fmt.Fprintf(a.Out, "%s %s (%d bytes)\n", w.Op, w.Path, w.Size)
+			}
+			for _, warning := range plan.Warnings {
+				fmt.Fprintf(a.Out, "warning: %s\n", warning)
 			}
 			if planOnly {
 				fmt.Fprintf(a.Out, "plan %s (nothing written)\n", plan.Digest[:16])
@@ -157,6 +167,8 @@ func newRestoreCmd(a *App) *cobra.Command {
 	c.Flags().String("home-dir", "", "target agent home (default: the configured one)")
 	c.Flags().Bool("plan", false, "show what would be written")
 	c.Flags().Bool("client-closed", false, "confirm the client is not running")
+	c.Flags().String("cwd", "", "local project directory (default: mapped session directory)")
+	c.Flags().Bool("allow-code-mismatch", false, "explicitly continue with recorded code-state gaps; recorded in the import receipt")
 	c.Flags().String("revision", "", "install this revision instead of the effective head")
 	c.Flags().String("project", "", "project_ref whose path rules to apply")
 	c.Flags().StringArray("rule", nil, "FROM=TO path prefix rewrite (repeatable)")

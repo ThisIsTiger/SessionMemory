@@ -178,6 +178,13 @@ func (s *FS) insertRevision(r session.Revision) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := s.insertRevisionTx(tx, r); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *FS) insertRevisionTx(tx *sql.Tx, r session.Revision) error {
 	canon, err := canonjson.Marshal(r)
 	if err != nil {
 		return err
@@ -195,7 +202,7 @@ func (s *FS) insertRevision(r session.Revision) error {
 		r.NativeSnapshotRef, nullable(r.RepoStateRef), r.CaptureState, r.CreatedAt, status, string(canon)); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }
 
 func nullable(s string) any {
@@ -224,6 +231,33 @@ func (s *FS) Revisions(sessionID string) ([]session.Revision, error) {
 		}
 	}
 	return out, rows.Err()
+}
+
+func (s *FS) LoadRevision(id string) (session.Revision, error) {
+	var r session.Revision
+	var raw string
+	if err := s.db.QueryRow(`SELECT json FROM revisions WHERE revision_id=? AND status='committed'`, id).Scan(&raw); err != nil {
+		return r, err
+	}
+	return r, json.Unmarshal([]byte(raw), &r)
+}
+
+// SessionIDs includes received sessions even before the first local restore.
+func (s *FS) SessionIDs() ([]string, error) {
+	rows, err := s.db.Query(`SELECT session_id FROM sessions ORDER BY session_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // Graph builds the revision graph of a session.
@@ -291,10 +325,15 @@ func (s *FS) ApplyManifest(m session.Manifest, fileName, fileSHA string) error {
 		VALUES(?,?,?,?,?,'applied',?)`, m.DeviceID, m.Sequence, fileName, fileSHA, nullable(m.PrevManifestHash), session.FormatTime(s.Now())); err != nil {
 		return err
 	}
-	var revs []session.Revision
 	for _, e := range m.Entries {
 		key := e.Key()
-		j, _ := canonjson.Marshal(e)
+		if err := e.Validate(); err != nil {
+			return err
+		}
+		j, err := canonjson.Marshal(e)
+		if err != nil {
+			return err
+		}
 		res, err := tx.Exec(`INSERT OR IGNORE INTO entries(entry_key, type, device_id, sequence, json) VALUES(?,?,?,?,?)`, key, e.Type, m.DeviceID, m.Sequence, string(j))
 		if err != nil {
 			return err
@@ -304,27 +343,24 @@ func (s *FS) ApplyManifest(m session.Manifest, fileName, fileSHA string) error {
 		}
 		switch {
 		case e.Revision != nil:
-			revs = append(revs, e.Revision.Revision)
+			if err := s.insertRevisionTx(tx, e.Revision.Revision); err != nil {
+				return err
+			}
 		case e.Receipt != nil:
 			r := e.Receipt
-			tx.Exec(`INSERT OR IGNORE INTO receipts(session_id, revision_id, device_id, status, install_mode, at) VALUES(?,?,?,?,?,?)`,
+			_, err = tx.Exec(`INSERT OR IGNORE INTO receipts(session_id, revision_id, device_id, status, install_mode, at) VALUES(?,?,?,?,?,?)`,
 				r.SessionID, r.RevisionID, r.DeviceID, r.Status, nullable(r.InstallMode), r.At)
 		case e.Choice != nil:
 			c := e.Choice
 			seen, _ := json.Marshal(c.SeenHeads)
-			tx.Exec(`INSERT OR IGNORE INTO choices(entry_key, session_id, chosen, seen_heads, device_id, at) VALUES(?,?,?,?,?,?)`,
+			_, err = tx.Exec(`INSERT OR IGNORE INTO choices(entry_key, session_id, chosen, seen_heads, device_id, at) VALUES(?,?,?,?,?,?)`,
 				key, c.SessionID, c.Chosen, string(seen), c.DeviceID, c.At)
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	for _, r := range revs {
-		if err := s.insertRevision(r); err != nil {
+		if err != nil {
 			return err
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 // manifestAADFor reconstructs the AAD of a stored manifest.

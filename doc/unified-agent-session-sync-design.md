@@ -284,6 +284,8 @@ Item
 - **活动路径**：来源是消息树时（如 WorkBuddy 的 `parentId`、编辑/重发分支），适配器选定活动叶子并给出 `active_path`；转换只写活动路径，其他分支留在 Canonical 中并计入保真度报告。
 - **人类输入**：不能仅凭 `role = user` 判定人类输入（Codex 的 rollout 中存在注入或继承的 user 角色消息，需要看记录的 metadata）；适配器须声明“人类输入”的判定规则，规则由 M2 的真实样本与 E4 确定；起点是 magpie 使用的启发式（Codex：以 `<` 或 `# AGENTS.md` 开头的 user 消息是客户端自己写入的上下文；WorkBuddy：以 `<` 开头，或匹配 `^@[\w-]+:\S*$` 的场景标记），见 §3.3“参考实现”。
 
+2026-10-26 的隔离实测修正了 WorkBuddy 的起点规则：5.8.3 将注入的 `<system-reminder>` 与人类问题的 `<user_query>` 放在同一个 `input_text` 中。适配器须提取后者作为人类输入，保留完整原始记录，不能因为整段以 `<` 开头而丢弃问题；只向转换及 Resume Pack 提供 query 正文。具体规则见 spec §8.4 与 [P0 第二轮报告](p0-live-report.md)。
+
 ## 6. 同 Agent 原生同步流程
 
 ### 6.1 源端采集

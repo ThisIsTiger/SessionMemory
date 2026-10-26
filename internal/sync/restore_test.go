@@ -3,6 +3,7 @@ package sync
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,17 +98,21 @@ func TestRestoreMapsPathsAndLeavesOriginAlone(t *testing.T) {
 	_, rev1, _ := a.eng.Track(ctx, a.ad, agent.NativeRef{Home: a.home, NativeID: tid}, "")
 	a.sync.Publish(ctx)
 	b.sync.Reconcile(ctx)
-	pm := agent.PathMap{Rules: []agent.PathRule{{From: "/work/app", To: "/Users/me/code/application"}}}
+	targetDir := t.TempDir()
+	pm := agent.PathMap{Rules: []agent.PathRule{{From: a.home, To: targetDir}}}
 	plan, _, err := b.restore(t, rev1.SessionID, engine.RestoreOptions{ClientClosed: true, PathMap: pm})
 	if err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(filepath.Join(b.home, plan.Writes[0].Path))
-	if !strings.Contains(string(got), `"cwd":"/Users/me/code/application"`) || strings.Contains(string(got), `"cwd":"/work/app"`) {
+	wantCwd, _ := json.Marshal(targetDir)
+	oldCwd, _ := json.Marshal(a.home)
+	if !strings.Contains(string(got), `"cwd":`+string(wantCwd)) || strings.Contains(string(got), `"cwd":`+string(oldCwd)) {
 		t.Fatal("cwd was not mapped in session_meta/turn_context")
 	}
 	// tool-call text that merely mentions the old path is untouched
-	if !strings.Contains(string(got), `\"workdir\":\"/work/app\"`) {
+	escaped, _ := json.Marshal(`"workdir":` + string(oldCwd))
+	if !strings.Contains(string(got), string(escaped[1:len(escaped)-1])) {
 		t.Error("historical text was rewritten")
 	}
 	// the mapped thread keeps working: checkpoint is clean, appends become children

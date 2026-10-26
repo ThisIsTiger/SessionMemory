@@ -72,6 +72,27 @@ func isHuman(text string) bool {
 	return t != "" && !strings.HasPrefix(t, "<") && !IsScene(t)
 }
 
+// Current WorkBuddy wraps a human query and injected context in the same
+// input_text block. Strip only its leading context envelopes, then unwrap the
+// query. RawRef still points to the complete original record.
+func wbUserText(text string) (string, bool) {
+	text = strings.TrimSpace(text)
+	for strings.HasPrefix(text, "<system-reminder>") || strings.HasPrefix(text, "<system-reminder ") {
+		end := strings.Index(text, "</system-reminder>")
+		if end < 0 {
+			return text, false // malformed context stays non-human
+		}
+		text = strings.TrimSpace(text[end+len("</system-reminder>"):])
+	}
+	if strings.HasPrefix(text, "<user_query>") && strings.HasSuffix(text, "</user_query>") {
+		text = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(text, "<user_query>"), "</user_query>"))
+		// A query can itself contain HTML or another leading '<'. The explicit
+		// envelope identifies it more reliably than the legacy text heuristic.
+		return text, text != "" && !IsScene(text)
+	}
+	return text, isHuman(text)
+}
+
 // Extract reads the main session stream and subagent streams. The history is a
 // message tree: the active path runs from the last item up the parentId chain;
 // everything else is a branch.
@@ -131,9 +152,13 @@ func extractStream(rc io.ReadCloser, path string, gen int) ([]canonical.Item, er
 		switch l.Type {
 		case "message":
 			text := wbText(l.Content)
+			human := false
+			if l.Role == "user" {
+				text, human = wbUserText(text)
+			}
 			it.Kind, it.Role = canonical.KindMessage, canonical.Role(l.Role)
 			it.Norm = map[string]any{"text": text}
-			it.Human = l.Role == "user" && isHuman(text)
+			it.Human = human
 		case "reasoning":
 			it.Kind = canonical.KindReasoning
 		case "function_call":

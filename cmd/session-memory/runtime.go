@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 
 	"session-memory/internal/agent"
@@ -72,6 +71,16 @@ func lockStore(root string) (func(), error) {
 // openRT opens the runtime. needSync requires a configured sync folder.
 func (a *App) openRT(ctx context.Context, needSync bool) (*rt, error) {
 	root := a.Cfg.StateDir()
+	unlock, err := lockStore(root)
+	if err != nil {
+		return nil, err
+	}
+	keepLock := false
+	defer func() {
+		if !keepLock {
+			unlock()
+		}
+	}()
 	info, err := device.At(root).Load()
 	if err != nil {
 		return nil, err
@@ -84,29 +93,29 @@ func (a *App) openRT(ctx context.Context, needSync bool) (*rt, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Join(root, "locks"), 0700); err != nil {
-		return nil, err
-	}
-	unlock, err := lockStore(root)
-	if err != nil {
-		return nil, err
-	}
 	st, err := store.Open(root, v)
 	if err != nil {
-		unlock()
 		return nil, err
 	}
+	st.InstallGuard = func(ctx context.Context, d store.InstallData) (func(), error) {
+		if d.Agent == workbuddy.AgentName {
+			return workbuddy.GuardRecovery(ctx, d)
+		}
+		return codex.GuardRecovery(ctx, d)
+	}
+	st.InstallRowUndo = workbuddy.UndoRegistry
+	keepLock = true
 	r := &rt{Root: root, Store: st, Vault: v, Info: info, unlock: unlock,
 		Eng: &engine.Engine{Store: st, DeviceID: info.DeviceID}}
-	if _, err := st.Recover(ctx); err != nil {
-		r.Close()
-		return nil, err
-	}
 	if folder := a.Cfg.Transport.Folder; folder != "" {
 		r.Sync = syncpkg.New(st, transport.NewFolder(config.ExpandPath(folder)), v, root, info)
 	} else if needSync {
 		r.Close()
 		return nil, errcode.New(errcode.Usage, "no sync folder configured; run transport attach-folder")
+	}
+	if _, err := st.Recover(ctx); err != nil {
+		r.Close()
+		return nil, err
 	}
 	return r, nil
 }

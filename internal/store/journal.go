@@ -132,10 +132,12 @@ type JournalRecord struct {
 // CaptureData is JournalRecord.Data for KindCapture. Everything recovery needs
 // to commit the revision is here, so it never re-reads the source.
 type CaptureData struct {
+	NewBinding *session.Binding                 `json:"new_binding,omitempty"`
 	Artifacts  map[string]session.ArtifactState `json:"artifacts"` // the state to commit
 	Snapshot   string                           `json:"snapshot"`  // ObjectRef
 	RepoState  string                           `json:"repo_state,omitempty"`
 	Revision   *session.Revision                `json:"revision,omitempty"` // sealed, set at StStored
+	Unsafe     *session.UnsafeMark              `json:"unsafe,omitempty"`
 	Generation bool                             `json:"generation_bump,omitempty"`
 }
 
@@ -159,17 +161,21 @@ type PullData struct {
 
 // InstallData is JournalRecord.Data for KindInstall.
 type InstallData struct {
-	PlanDigest string               `json:"plan_digest"`
-	Mode       agent.Mode           `json:"mode"`
-	Route      agent.Route          `json:"route"`
-	Home       string               `json:"home"`
-	BackupDir  string               `json:"backup_dir"`
-	Backed     []string             `json:"backed,omitempty"`  // relative paths copied to BackupDir
-	Created    []string             `json:"created,omitempty"` // files that did not exist before
-	Written    []agent.PlannedWrite `json:"written,omitempty"`
-	Landing    string               `json:"landing,omitempty"` // "choice" for a §9.2 landing
-	Receipt    *agent.Receipt       `json:"receipt,omitempty"` // set at StVerified
-	NewBinding *session.Binding     `json:"new_binding,omitempty"`
+	Agent           string               `json:"agent,omitempty"`
+	RegistryUndo    string               `json:"registry_undo,omitempty"` // row-level backup file under BackupDir
+	NativeSessionID string               `json:"native_session_id,omitempty"`
+	ClientClosed    bool                 `json:"client_closed,omitempty"`
+	PlanDigest      string               `json:"plan_digest"`
+	Mode            agent.Mode           `json:"mode"`
+	Route           agent.Route          `json:"route"`
+	Home            string               `json:"home"`
+	BackupDir       string               `json:"backup_dir"`
+	Backed          []string             `json:"backed,omitempty"`  // relative paths copied to BackupDir
+	Created         []string             `json:"created,omitempty"` // files that did not exist before
+	Written         []agent.PlannedWrite `json:"written,omitempty"`
+	Landing         string               `json:"landing,omitempty"` // "choice" for a §9.2 landing
+	Receipt         *agent.Receipt       `json:"receipt,omitempty"` // set at StVerified
+	NewBinding      *session.Binding     `json:"new_binding,omitempty"`
 }
 
 // Tx is an open transaction. Every method that changes state writes the
@@ -185,6 +191,8 @@ type Tx interface {
 	// Data unmarshals the journal data into v; State is the last completed state.
 	Data(v any) error
 	State() State
+	// Rollback restores install backups while the caller still holds vendor locks.
+	Rollback() error
 	// Finish moves the journal to done/ and removes StagingDir.
 	Finish() error
 }

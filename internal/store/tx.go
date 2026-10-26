@@ -10,6 +10,7 @@ import (
 
 	"session-memory/internal/agent"
 	"session-memory/internal/device"
+	"session-memory/internal/errcode"
 	"session-memory/internal/failpoint"
 	"session-memory/internal/platform"
 	"session-memory/internal/session"
@@ -152,7 +153,20 @@ func (s *FS) Recover(ctx context.Context) ([]RecoveryReport, error) {
 		case Discard, Archive:
 			err = t.Finish()
 		case Undo:
-			err = s.undoInstall(t)
+			err = func() error {
+				if s.InstallGuard != nil {
+					var data InstallData
+					if err := t.Data(&data); err != nil {
+						return err
+					}
+					release, err := s.InstallGuard(ctx, data)
+					if err != nil {
+						return err
+					}
+					defer release()
+				}
+				return s.undoInstall(t)
+			}()
 			if err == nil {
 				t.rec.State = StRolledBack
 				err = t.Finish()
@@ -164,6 +178,11 @@ func (s *FS) Recover(ctx context.Context) ([]RecoveryReport, error) {
 			rep.Err = "recovery_needed"
 		}
 		reports = append(reports, rep)
+	}
+	for _, rep := range reports {
+		if rep.Err != "" {
+			return reports, errcode.New(errcode.RecoveryNeeded, "unfinished transaction requires recovery").With("tx_id", rep.TxID)
+		}
 	}
 	return reports, nil
 }
@@ -190,8 +209,13 @@ func (s *FS) resume(ctx context.Context, t *tx) error {
 				return err
 			}
 			b.Artifacts = d.Artifacts
+			b.Unsafe = d.Unsafe
 			if d.Revision != nil {
+				b.InstalledRevisionID = d.Revision.RevisionID
 				b.BaseRevisionID = firstNonEmpty(b.BaseRevisionID, d.Revision.RevisionID)
+			}
+			if d.NewBinding != nil {
+				b = *d.NewBinding
 			}
 			if err := s.SaveBinding(t, b); err != nil {
 				return err
@@ -216,6 +240,14 @@ func (s *FS) undoInstall(t *tx) error {
 	var d InstallData
 	if err := t.Data(&d); err != nil {
 		return err
+	}
+	if d.RegistryUndo != "" {
+		if s.InstallRowUndo == nil {
+			return errcode.New(errcode.RecoveryNeeded, "vendor registry recovery handler is not registered")
+		}
+		if err := s.InstallRowUndo(context.Background(), d); err != nil {
+			return err
+		}
 	}
 	for _, rel := range d.Backed {
 		src := filepath.Join(d.BackupDir, filepath.FromSlash(rel))
@@ -283,3 +315,5 @@ func (s *FS) RollbackTx(t Tx) error {
 	}
 	return tt.Finish()
 }
+
+func (t *tx) Rollback() error { return t.s.RollbackTx(t) }

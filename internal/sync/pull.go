@@ -35,6 +35,9 @@ type PullResult struct {
 // Reconcile imports every new manifest of other devices (spec §7.4).
 func (s *Sync) Reconcile(ctx context.Context) (PullResult, error) {
 	var res PullResult
+	if _, err := s.Store.Recover(ctx); err != nil {
+		return res, err
+	}
 	ents, err := s.T.List(ctx, "manifests/")
 	if err != nil {
 		return res, err
@@ -180,6 +183,11 @@ func (s *Sync) importOne(ctx context.Context, dev string, seq int64, hash12 stri
 	for _, r := range revs {
 		ids = append(ids, r.RevisionID)
 	}
+	// Recovery must have the exact authenticated bytes before verified is
+	// durable, including a crash before the local manifest mirror is written.
+	if err := platform.AtomicWrite(filepath.Join(tx.StagingDir(), "manifest.sealed"), data, 0600); err != nil {
+		return false, true, err
+	}
 	if err := tx.SetState(store.StVerified, store.PullData{DeviceID: dev, Manifests: []string{filepath.Base(e.Path)}, Revisions: ids}); err != nil {
 		return false, true, err
 	}
@@ -205,6 +213,78 @@ func (s *Sync) importOne(ctx context.Context, dev string, seq int64, hash12 stri
 	res.Applied++
 	res.Revisions += len(revs)
 	return true, false, tx.Finish()
+}
+
+func (s *Sync) resumePull(ctx context.Context, rec store.JournalRecord) error {
+	tx := s.Store.AttachTx(rec)
+	var d store.PullData
+	if err := tx.Data(&d); err != nil {
+		return err
+	}
+	for _, name := range d.Manifests {
+		match := manifestName.FindStringSubmatch(name)
+		if match == nil || !session.ValidDeviceID(d.DeviceID) {
+			return errcode.New(errcode.RecoveryNeeded, "invalid pull journal")
+		}
+		var seq int64
+		fmt.Sscan(match[1], &seq)
+		prev := ""
+		if seq > 1 {
+			if err := s.Store.DB().QueryRow(`SELECT file_sha256 FROM manifests WHERE device_id=? AND sequence=? AND status='applied'`, d.DeviceID, seq-1).Scan(&prev); err != nil {
+				return err
+			}
+		}
+		data, err := os.ReadFile(filepath.Join(tx.StagingDir(), "manifest.sealed"))
+		if err != nil {
+			// Older journals may have already persisted the local mirror.
+			data, err = os.ReadFile(filepath.Join(s.Store.Root, "store", "manifests", d.DeviceID, name))
+		}
+		if err != nil {
+			rc, getErr := s.T.Get(ctx, "manifests/"+d.DeviceID+"/"+name)
+			if getErr != nil {
+				return getErr
+			}
+			data, err = io.ReadAll(rc)
+			rc.Close()
+		}
+		if err != nil {
+			return err
+		}
+		h := sha(data)
+		if h[:12] != match[2] {
+			return errcode.New(errcode.AuthFailed, "pull journal manifest hash mismatch")
+		}
+		plain, err := s.V.Open(vault.TypeManifest, vault.ManifestAAD(d.DeviceID, seq, prev), data)
+		if err != nil {
+			return err
+		}
+		var m session.Manifest
+		if err := json.Unmarshal(plain, &m); err != nil {
+			return err
+		}
+		if !manifestValid(m, d.DeviceID, seq, prev) {
+			return errcode.New(errcode.UnsafeRecord, "invalid recovered manifest")
+		}
+		if err := platform.AtomicWrite(filepath.Join(s.Store.Root, "store", "manifests", d.DeviceID, name), data, 0600); err != nil {
+			return err
+		}
+		if err := s.Store.ApplyManifest(m, name, h); err != nil {
+			return err
+		}
+		var receipts []session.Entry
+		for _, e := range m.Entries {
+			if e.Revision != nil {
+				r := e.Revision.Revision
+				receipts = append(receipts, session.Entry{Type: session.EntryReceipt, Receipt: &session.ReceiptEntry{SessionID: r.SessionID, RevisionID: r.RevisionID, DeviceID: s.Info.DeviceID, Status: session.ReceiptReceived, At: session.FormatTime(s.Store.Now())}})
+			}
+		}
+		if len(receipts) > 0 {
+			if err := s.Dev.AppendOutbox(receipts...); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Finish()
 }
 
 func manifestValid(m session.Manifest, dev string, seq int64, prev string) bool {
