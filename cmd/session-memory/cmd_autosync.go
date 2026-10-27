@@ -90,7 +90,9 @@ func newAutosyncCmd(a *App) *cobra.Command {
 			}
 			launchctl("bootout", domain+"/"+autosyncLabel) // replace a running older definition
 			if out, err := launchctl("bootstrap", domain, p); err != nil {
-				return errcode.New(errcode.Internal, "launchctl bootstrap failed: "+out)
+				if _, err2 := launchctl("load", "-w", p); err2 != nil {
+					return errcode.New(errcode.Internal, "launchd refused to start the job now ("+out+"). The job file is in place and starts at your next login; to start it now run this command from the Terminal app of your own login session")
+				}
 			}
 			fmt.Fprintf(a.Out, "autosync is on: relay runs every %d seconds; log: %s\n", interval, logPath)
 			return nil
@@ -117,11 +119,11 @@ func newAutosyncCmd(a *App) *cobra.Command {
 				fmt.Fprintln(a.Out, "autosync is off")
 				return nil
 			}
-			state := "installed"
-			if _, err := launchctl("print", domain+"/"+autosyncLabel); err == nil {
-				state = "running (scheduled)"
+			if _, err := launchctl("print", domain+"/"+autosyncLabel); err != nil {
+				fmt.Fprintln(a.Out, "autosync is NOT running: the job file exists but launchd has not loaded it (it loads at the next login, or run autosync enable from your own Terminal)")
+				return nil
 			}
-			fmt.Fprintf(a.Out, "autosync is on: %s\n", state)
+			fmt.Fprintln(a.Out, "autosync is on: running (scheduled)")
 			if b, err := os.ReadFile(filepath.Join(a.Cfg.StateDir(), "autosync.log")); err == nil {
 				lines := strings.Split(strings.TrimSpace(string(b)), "\n")
 				if len(lines) > 8 {
