@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"time"
 
 	"session-memory/internal/agent"
 	"session-memory/internal/config"
@@ -58,15 +59,28 @@ func lockStore(root string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := platform.LockExclusiveNonBlocking(f); err != nil {
-		f.Close()
-		if errors.Is(err, platform.ErrLockHeld) {
+	// a background relay may hold the lock for a minute or two: wait for it
+	// instead of failing the command the user just typed
+	deadline := time.Now().Add(lockWait)
+	for {
+		err := platform.LockExclusiveNonBlocking(f)
+		if err == nil {
+			return func() { platform.Unlock(f); f.Close() }, nil
+		}
+		if !errors.Is(err, platform.ErrLockHeld) {
+			f.Close()
+			return nil, err
+		}
+		if time.Now().After(deadline) {
+			f.Close()
 			return nil, errcode.New(errcode.Internal, "another session-memory is running")
 		}
-		return nil, err
+		time.Sleep(500 * time.Millisecond)
 	}
-	return func() { platform.Unlock(f); f.Close() }, nil
 }
+
+// lockWait is how long a command waits for another session-memory to finish.
+var lockWait = 3 * time.Minute
 
 // openRT opens the runtime. needSync requires a configured sync folder.
 func (a *App) openRT(ctx context.Context, needSync bool) (*rt, error) {
