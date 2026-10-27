@@ -136,7 +136,12 @@ func (e *Engine) Checkpoint(ctx context.Context, ad agent.Adapter, bindingID, pr
 			}
 		}
 	}
-	if !res.Changed && !repoChanged && b.InstalledRevisionID != "" {
+	// Background captures follow the conversation only: two computers whose
+	// working trees differ would otherwise each add a code-only revision to the
+	// same parent and fork the session without any new work (explicit
+	// checkpoints still record code-state changes).
+	codeOnly := captureState == session.CaptureAuto
+	if !res.Changed && (!repoChanged || codeOnly) && b.InstalledRevisionID != "" {
 		return session.Revision{}, false, tx.Finish()
 	}
 	if repoRef == "" {

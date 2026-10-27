@@ -79,6 +79,14 @@ func TestRepoStateCaptureAndRestore(t *testing.T) {
 	if _, changed, err := r.eng.Checkpoint(ctx, r.ad, b.BindingID, "", session.CaptureAuto); err != nil || changed {
 		t.Fatalf("unchanged code checkpoint: %v %v", changed, err)
 	}
+	// a background capture must not fork the session over a code-only change
+	gitrepo.Run(t, source, "commit", "--allow-empty", "-q", "-m", "code-only-2")
+	if _, changed, err := r.eng.Checkpoint(ctx, r.ad, b.BindingID, "", session.CaptureAuto); err != nil || changed {
+		t.Fatalf("auto capture of a code-only change: %v %v", changed, err)
+	}
+	if rev3, changed, err := r.eng.Checkpoint(ctx, r.ad, b.BindingID, "", session.CaptureCheckpoint); err != nil || !changed || rev3.ParentRevisionID != rev2.RevisionID {
+		t.Fatalf("explicit checkpoint must still record it: %+v %v %v", rev3, changed, err)
+	}
 
 	for _, scenario := range []string{"matching", "mismatch", "override", "missing-commit", "missing-directory", "legacy"} {
 		t.Run(scenario, func(t *testing.T) {
