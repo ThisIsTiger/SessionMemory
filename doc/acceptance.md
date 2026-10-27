@@ -23,7 +23,8 @@
 
 ## 尚未通过，不能作为已支持能力发布
 
-- [ ] Codex Desktop GUI 的侧边栏、点开、真实模型续写与重开（CLI / app-server 成功不能代替 GUI 验收）。
+- [x] Codex Desktop（ChatGPT.app，内置 Codex 0.164.0-alpha.11.1）后端：转换线程可列出、`thread/resume` 历史完整、续写成功，与原生 rollout 对照一致（见 [p0-convert-report.md](p0-convert-report.md) 第五轮）。
+- [ ] Codex Desktop 主窗口界面的侧边栏、点开、续写与重开（隔离实例无登录状态进不了主界面；需有登录状态的实例人工确认）。
 - [ ] 两台物理电脑之间的同 Agent 原生同步；当前是同一台 Mac 的独立配置模拟。
 - [ ] WorkBuddy Writer 扩大支持范围：其他版本/路径编码/更大容量、厂商协作锁、无人值守自动安装及真实跨账号切换。
 - [ ] 转换会话在 Codex Desktop GUI 的显示、继续与重开；原生工具记录、附件、压缩边界仍按文本/丢弃处理。

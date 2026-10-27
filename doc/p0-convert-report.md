@@ -51,9 +51,22 @@
 - 历史消息时间不再被导入时间覆盖；Codex `item_completed` 的 UserMessage/AgentMessage 与模型记录关联，`Text` 正确提取。仅有匹配的明确用户 UI 记录才提升正文的人类消息身份，孤立注入上下文仍过滤；Codex AdapterVersion 为 0.1.1。
 - Codex provider 使用 `go-toml/v2` v2.4.3 解析目标 TOML 与选中 profile，覆盖根配置；配置读取/解析失败拒绝转换，诊断不包含配置正文。两个 Serializer 版本均为 0.2。
 
+## 第五轮：Codex Desktop（ChatGPT.app）自带后端（2026-10-27）
+
+Desktop 为 `ChatGPT.app`，自带 Codex `0.164.0-alpha.11.1`（早于本报告其余部分验证的 CLI `0.162.1`）。在隔离 `CODEX_HOME` + 本地受控 Responses 服务下，用该内置二进制的 `app-server` 验证新转换的会话：
+
+| 步骤 | 结果 |
+|---|---|
+| `thread/list` | 转换线程出现在列表中；隔离的 Desktop 实例（独立 `--user-data-dir`）启动后其本地后端也已对该线程发起 `thread/list`、`thread/attachment/list` |
+| `thread/resume`（Desktop 打开线程的路径） | 返回完整历史（轮次与 `userMessage`/`agentMessage` 条目齐全），内置后端同步写入 `thread_history` |
+| `turn/start` 续写 | 成功；模型请求含历史标记（`SM_P0_ALPHA`/`SM_P0_BETA`），无 Authorization；回答写回并可再读取 |
+| 对照：Codex 原生 rollout 复制进全新目录 | 与转换会话表现一致：`thread/read` 在首次 `resume` 前返回 0 轮，`resume` 后完整。这是 0.164 对外部放入文件的通用行为，不是转换写入的问题 |
+
+**没有验证**：Desktop **主窗口界面**。隔离实例没有账号登录状态，主窗口停在启动画面（日志为 `Sign in to ChatGPT to start a durable thread`）；按安全规则不登录账号、不使用日常客户端做实验。因此侧边栏显示与点开后的渲染仍需有登录状态的实例人工确认。
+
 ## 没有验证（不要当作已支持）
 
-- Codex Desktop **图形界面**里转换会话的显示、真实模型续写与重开；Codex 当前证据限 CLI / app-server，WorkBuddy GUI 的显示、真实模型续写和重开已通过。
+- Codex Desktop **主窗口界面**里转换会话的显示、真实模型续写与重开；Codex 当前证据限 CLI 及 Desktop 内置后端的 app-server（见第五轮），WorkBuddy GUI 的显示、真实模型续写和重开已通过。
 - 原生工具调用记录（外来工具映射）、附件、子代理、compaction 的原生边界、编辑分支：转换时按文本渲染或丢弃并计入保真度报告。
 - 跨账号（E1c）、Windows/Linux 实机、两台物理电脑。
 
