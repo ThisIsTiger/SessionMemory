@@ -417,9 +417,54 @@ func TestRuntimeFromThreadLocks(t *testing.T) {
 
 func TestMapRootsAndCwdTogether(t *testing.T) {
 	line := []byte(`{"type":"session_meta","payload":{"cwd":"/work/app","runtime_workspace_roots":["/work/app","/work/app/sub","/other"],"x":"/work/app"}}`)
-	got, ok := mapLine(line, agent.PathMap{Rules: []agent.PathRule{{From: "/work/app", To: "/Users/me/app"}}})
+	got, ok := mapLine(line, agent.PathMap{Rules: []agent.PathRule{{From: "/work/app", To: "/Users/me/app"}}}, "")
 	want := `{"type":"session_meta","payload":{"cwd":"/Users/me/app","runtime_workspace_roots":["/Users/me/app","/Users/me/app/sub","/other"],"x":"/work/app"}}`
 	if !ok || string(got) != want {
 		t.Errorf("got  %s\nwant %s", got, want)
+	}
+}
+
+func TestMapLineCoversThreadSettingsAndWorldState(t *testing.T) {
+	pm := agent.PathMap{Rules: []agent.PathRule{{From: "/work/app", To: "/Users/me/app"}}}
+	for _, c := range []struct{ in, want string }{
+		{`{"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"cwd":"/work/app","runtime_workspace_roots":["/work/app"],"model":"m"}}}`,
+			`{"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"cwd":"/Users/me/app","runtime_workspace_roots":["/Users/me/app"],"model":"m"}}}`},
+		{`{"type":"world_state","payload":{"state":{"environments":{"environments":{"local":{"cwd":"/work/app/sub"}}}}}}`,
+			`{"type":"world_state","payload":{"state":{"environments":{"environments":{"local":{"cwd":"/Users/me/app/sub"}}}}}}`},
+		// other events and text that merely mentions a cwd are never touched
+		{`{"type":"event_msg","payload":{"type":"agent_message","message":"{\"cwd\":\"/work/app\"}"}}`, ""},
+		{`{"type":"response_item","payload":{"cwd":"/work/app"}}`, ""},
+	} {
+		got, ok := mapLine([]byte(c.in), pm, "")
+		if c.want == "" {
+			if ok || string(got) != c.in {
+				t.Errorf("must not change: %s -> %s", c.in, got)
+			}
+			continue
+		}
+		if !ok || string(got) != c.want {
+			t.Errorf("got  %s\nwant %s", got, c.want)
+		}
+	}
+}
+
+func TestMapLineRewritesProvider(t *testing.T) {
+	pm := agent.PathMap{Rules: []agent.PathRule{{From: "/work/app", To: "/m/app"}}}
+	for _, c := range []struct{ in, want string }{
+		{`{"type":"session_meta","payload":{"cwd":"/work/app","model_provider":"openai"}}`, `{"type":"session_meta","payload":{"cwd":"/m/app","model_provider":"custom"}}`},
+		{`{"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"model_provider_id":"openai","cwd":"/work/app"}}}`,
+			`{"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"model_provider_id":"custom","cwd":"/m/app"}}}`},
+	} {
+		got, ok := mapLine([]byte(c.in), pm, "custom")
+		if !ok || string(got) != c.want {
+			t.Errorf("got  %s\nwant %s", got, c.want)
+		}
+	}
+	// provider alone, without any path rule, still applies; an empty provider changes nothing
+	if got, ok := mapLine([]byte(`{"type":"session_meta","payload":{"model_provider":"openai"}}`), agent.PathMap{}, "custom"); !ok || string(got) != `{"type":"session_meta","payload":{"model_provider":"custom"}}` {
+		t.Errorf("provider only: %s", got)
+	}
+	if _, ok := mapLine([]byte(`{"type":"session_meta","payload":{"model_provider":"openai"}}`), agent.PathMap{}, ""); ok {
+		t.Error("empty provider must not rewrite")
 	}
 }

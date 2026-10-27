@@ -54,9 +54,16 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 		}
 		switch session.LandingFor(g, bnd.InstalledRevisionID, target) {
 		case session.LandUpToDate:
-			return agent.Plan{}, nil, errcode.New(errcode.NotFound, "already installed at this revision")
+			// a revision whose native files were removed (to redo an install) is installed again
+			if _, found, err := ad.Locate(ctx, agent.NativeRef{Home: bnd.NativeHome, NativeID: bnd.NativeSessionID}); err != nil || found {
+				return agent.Plan{}, nil, errcode.New(errcode.NotFound, "already installed at this revision")
+			}
 		case session.LandNeedsAction:
-			return agent.Plan{}, nil, errcode.New(errcode.NeedsAction, "the installed version is not an ancestor of the chosen revision")
+			// the abandoned branch's native files were moved away by the user (the
+			// supported way to take the chosen head): install the chosen revision
+			if _, found, err := ad.Locate(ctx, agent.NativeRef{Home: bnd.NativeHome, NativeID: bnd.NativeSessionID}); err != nil || found {
+				return agent.Plan{}, nil, errcode.New(errcode.NeedsAction, "the installed version is not an ancestor of the chosen revision; run `session-memory adopt <session_id>` to take the chosen version (your copy is backed up)")
+			}
 		}
 	}
 	src, err := e.Store.SnapshotReader(ctx, rev.NativeSnapshotRef)
@@ -115,6 +122,9 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 	if err != nil {
 		return plan, nil, err
 	}
+	if plan.Writes == nil {
+		plan.Writes = []agent.PlannedWrite{} // canonical JSON refuses null
+	}
 	plan.Warnings = append(plan.Warnings, gaps...)
 	if len(retiring) > 0 {
 		plan.Warnings = append(plan.Warnings, "native_identity_changed")
@@ -128,6 +138,16 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 		return plan, nil, err
 	}
 	if len(plan.Writes) == 0 {
+		// the native files already hold exactly this revision (e.g. it was captured
+		// elsewhere from this very content): move the binding on so later captures
+		// continue from it instead of forking
+		if bnd != nil && bnd.InstalledRevisionID != target {
+			moved := *bnd
+			moved.InstalledRevisionID = target
+			if err := e.Store.SaveBinding(nil, moved); err != nil {
+				return plan, nil, err
+			}
+		}
 		return plan, nil, errcode.New(errcode.NotFound, "the target already matches this revision")
 	}
 	var superseded []string

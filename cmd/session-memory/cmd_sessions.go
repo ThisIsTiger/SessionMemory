@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"text/tabwriter"
@@ -267,31 +268,10 @@ func newSyncCmd(a *App) *cobra.Command {
 			}
 			defer r.Close()
 			once := func() (map[string]int, error) {
-				out := map[string]int{}
-				bs, _ := r.Store.Bindings("")
-				for _, b := range bs {
-					if b.State != session.StateActive || b.DeviceID != r.Info.DeviceID || (b.InstallMode != session.InstallNative && b.InstallMode != session.InstallConverted) {
-						continue
-					}
-					ad, err := a.adapter(b.AgentProfile.Agent)
-					if err != nil {
-						continue
-					}
-					if _, changed, err := r.Eng.Checkpoint(cmd.Context(), ad, b.BindingID, "", session.CaptureAuto); err == nil && changed {
-						out["captured"]++
-					}
-				}
-				n, err := r.Sync.Publish(cmd.Context())
+				out, err := syncOnce(cmd.Context(), a, r)
 				if err != nil {
 					return out, err
 				}
-				out["published"] = n
-				res, err := r.Sync.Reconcile(cmd.Context())
-				if err != nil {
-					return out, err
-				}
-				out["received_manifests"], out["received_revisions"] = res.Applied, res.Revisions
-				out["pending_objects"], out["quarantined"] = res.PendingObjs, res.Quarantined
 				if auto, _ := cmd.Flags().GetBool("auto-install"); auto {
 					out["installed"], out["waiting_client_close"] = autoInstall(cmd.Context(), a, r)
 				}
@@ -305,7 +285,7 @@ func newSyncCmd(a *App) *cobra.Command {
 				if a.JSON {
 					a.printJSON(out)
 				} else {
-					fmt.Fprintf(a.Out, "captured=%d published=%d received=%d/%d pending_objects=%d quarantined=%d installed=%d waiting_client_close=%d\n", out["captured"], out["published"],
+					fmt.Fprintf(a.Out, "auto_tracked=%d captured=%d published=%d received=%d/%d pending_objects=%d quarantined=%d installed=%d waiting_client_close=%d\n", out["auto_tracked"], out["captured"], out["published"],
 						out["received_manifests"], out["received_revisions"], out["pending_objects"], out["quarantined"], out["installed"], out["waiting_client_close"])
 				}
 				if !watch {
@@ -321,6 +301,38 @@ func newSyncCmd(a *App) *cobra.Command {
 	c.Flags().Bool("watch", false, "keep syncing every 60 seconds")
 	c.Flags().Bool("auto-install", false, "install fast-forward updates for agents with auto_install enabled")
 	return c
+}
+
+// syncOnce is one round of: take on new sessions of watched projects, capture
+// local changes, publish them, receive what other devices published.
+func syncOnce(ctx context.Context, a *App, r *rt) (map[string]int, error) {
+	out := map[string]int{}
+	out["auto_tracked"] = autoTrackProjects(ctx, a, r)
+	bs, _ := r.Store.Bindings("")
+	for _, b := range bs {
+		if b.State != session.StateActive || b.DeviceID != r.Info.DeviceID || (b.InstallMode != session.InstallNative && b.InstallMode != session.InstallConverted) {
+			continue
+		}
+		ad, err := a.adapter(b.AgentProfile.Agent)
+		if err != nil {
+			continue
+		}
+		if _, changed, err := r.Eng.Checkpoint(ctx, ad, b.BindingID, "", session.CaptureAuto); err == nil && changed {
+			out["captured"]++
+		}
+	}
+	n, err := r.Sync.Publish(ctx)
+	if err != nil {
+		return out, err
+	}
+	out["published"] = n
+	res, err := r.Sync.Reconcile(ctx)
+	if err != nil {
+		return out, err
+	}
+	out["received_manifests"], out["received_revisions"] = res.Applied, res.Revisions
+	out["pending_objects"], out["quarantined"] = res.PendingObjs, res.Quarantined
+	return out, nil
 }
 
 func newRevisionsCmd(a *App) *cobra.Command {

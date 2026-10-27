@@ -85,7 +85,7 @@ func newProjectCmd(a *App) *cobra.Command {
 	m.Flags().String("path", "", "local project directory")
 	m.Flags().StringArray("rule", nil, "FROM=TO path prefix rewrite (repeatable)")
 	m.Flags().String("label", "", "display label")
-	c.AddCommand(m)
+	c.AddCommand(m, newProjectTrackCmd(a), newProjectListCmd(a), newProjectRestoreCmd(a))
 	return c
 }
 
@@ -128,6 +128,9 @@ func newRestoreCmd(a *App) *cobra.Command {
 				fmt.Fprintf(a.Out, "plan %s (nothing written)\n", plan.Digest[:16])
 			} else if rec != nil {
 				fmt.Fprintf(a.Out, "installed revision %s\n", plan.RevisionID[:16])
+				if name == "codex" {
+					registerWithCodex(cmd.Context(), a, r, opt.Home, []string{args[0]})
+				}
 			}
 			return nil
 		}}

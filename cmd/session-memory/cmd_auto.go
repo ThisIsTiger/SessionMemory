@@ -71,6 +71,7 @@ func autoInstall(ctx context.Context, a *App, r *rt) (installed, waiting int) {
 		}
 		if _, _, err := r.Eng.Restore(ctx, cx, b.SessionID, engine.RestoreOptions{Home: b.NativeHome, ClientClosed: true}); err == nil {
 			installed++
+			registerWithCodex(ctx, a, r, b.NativeHome, []string{b.SessionID})
 		} else if errcode.CodeOf(err) == errcode.ClientRunning {
 			waiting++
 		}

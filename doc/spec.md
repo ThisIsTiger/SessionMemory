@@ -2430,6 +2430,7 @@ JSON 输出统一为“包内类型的 JSON”，类型名在括号里；未列�
 |---|---|---|
 | `init` | 创建 vault 与本机 `device.json`，写 `vault.json` | M4 |
 | `transport attach-folder DIR` | 记录同步目录（`transport.folder`）并检查可读写 | M4 |
+| `transport attach-weiyun [NAME]` | 以微云目录 NAME（默认 `SessionMemory`）为保险库（`transport.weiyun`）；令牌只读环境变量 `WEIYUN_MCP_TOKEN`，不进配置文件。本地缓存目录为状态目录下的 `weiyun-cache`，`Mirror` 按名字上传/下载（文件写一次不可变，远端把 `a/b/c` 存为目录 `a` 下的文件 `b~c`）；`Put` 先写本地再上传，`List` 先拉取本地缺的文件 | M4 |
 | `device invite --out FILE` / `device join FILE` | 生成/使用加入包（§6.3），口令从 `--passphrase-file` 或交互读取，不接受命令行明文参数 | M4 |
 | `device regenerate-id` | 生成新的 `device_id`（§7.4） | M4 |
 | `discover --agent A` | 列出可纳管的原生会话（`[]agent.NativeSession`：含标题与 cwd 这类设备本地展示文本，只输出到用户自己的终端，绝不写入日志或同步；不含任何记录正文） | M2 |
@@ -2439,6 +2440,12 @@ JSON 输出统一为“包内类型的 JSON”，类型名在括号里；未列�
 | `sync [--watch] [--auto-install]` | 采集、发布、接收、（可选）自动安装 | M4/M5 |
 | `status [SESSION_ID]` | 设计 §11.3 的状态（§7.5） | M3 |
 | `project map REF --path DIR [--rule FROM=TO]...` | 建立/更新 `projects/<ref>.json` | M5 |
+| `project track --cwd DIR [--agent A] [--label L] [--project REF]` | 按项目纳管：把原生会话 `cwd` 在 DIR 内（含子目录，按路径分量边界）的所有会话一次纳管并打同一个 `project_ref`；已纳管的计入 `already_tracked`；在 `projects/<ref>.json` 记 `watch=[A]`，之后每次 `sync` 先自动纳管该目录下新出现的会话（输出 `auto_tracked`）。同目录重复执行复用同一 ref | M5 |
+| `relay [--agent A] [--client-closed] [--strict]` | 日常唯一需要的命令（离开一台电脑前、到另一台电脑后各跑一次）：`sync`（自动纳管新会话、采集、上传、接收）→ 对本机已映射的每个项目把全部会话快进安装到目标 Agent（Codex 随后自行登记）。默认放行代码状态差异（`--strict` 则拒绝）；Codex 仍占用的会话计入 `waiting`，提示关闭后重跑；冲突/分叉计入 `needs attention` 并以非零退出；尚未映射到本机目录的项目给出一次性的 `project restore REF --cwd DIR` 提示 | M5 |
+| `adopt SESSION_ID [--agent A] [--client-closed] [--strict]` | 冲突后让输掉的一台取所选版本：先确认已有 `choose` 且本机装的是被放弃的分支（否则提示用 `relay`）；Agent 运行中拒绝；先 `checkpoint` 保存本机新进展（若因此重新冲突则要求再 `choose`）；把本机原生文件移到 `<状态目录>/abandoned/<session>/<时间>/` 并安装所选版本，失败则移回；装完让 Codex 登记 | M5 |
+| `autosync enable [--interval 120] / disable / status` | macOS：安装 launchd 登录项，每隔 N 秒（≥60）跑 `relay --quiet`；微云令牌取自环境变量并存入系统凭据库（`weiyun-mcp-token`），登录项与 plist 里不含令牌；日志在 `<状态目录>/autosync.log`，仅在有事发生或出错时写入；`relay --quiet` 无事不输出 | M5 |
+| `project list` | 列出本机已知项目：ref、标签、已收到/纳管的会话数、本机映射路径（未映射则提示） | M5 |
+| `project restore REF [--agent A] [--cwd DIR] [--client-closed] [--plan] [--allow-code-mismatch]` | 先拉取，再把该项目全部同 Agent 会话装进本机；本机未映射时 `--cwd` 同时建立映射；已是最新的计入 `up_to_date`，单个失败不中断其余并最终以非零退出；同时把该 Agent 加入 `watch`，本机之后在该目录新建的会话也会随 `sync` 回流 | M5 |
 | `restore SESSION_ID --agent A --mode native [--plan] [--cwd DIR] [--allow-code-mismatch]` | 原生恢复；覆盖代码状态检查时记录审计信息，目录缺失仍拒绝 | M3/M5 |
 | `open SESSION_ID --agent A` | 先 pull、等待客户端关闭、安装、启动客户端 | M5 |
 | `continue SESSION_ID --agent A --device D [--mode context]` | 发布 `convert-request` | M6 |

@@ -80,6 +80,43 @@ func ensureVaultJSON(v *vault.Vault, folder string, now string) error {
 
 func newTransportCmd(a *App) *cobra.Command {
 	c := &cobra.Command{Use: "transport", Short: "Sync folder"}
+	c.AddCommand(&cobra.Command{Use: "attach-weiyun [dir-name]", Short: "Use a Weiyun directory as the shared vault (token from WEIYUN_MCP_TOKEN)", Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := "SessionMemory"
+			if len(args) == 1 {
+				name = args[0]
+			}
+			m, err := a.weiyunMirror(name)
+			if err != nil {
+				return err
+			}
+			info, err := device.At(a.Cfg.StateDir()).Load()
+			if err != nil {
+				return err
+			}
+			key, err := a.Keys.Load(info.VaultID)
+			if err != nil {
+				return errcode.Wrap(errcode.NoVault, "the vault key is not available", err)
+			}
+			v, _ := vault.New(info.VaultID, key)
+			if err := m.Pull(cmd.Context()); err != nil {
+				return errcode.Wrap(errcode.Usage, "cannot reach Weiyun: "+err.Error(), err)
+			}
+			if err := ensureVaultJSON(v, a.weiyunCache(), session.FormatTime(a.Now())); err != nil {
+				return err
+			}
+			if err := m.Push(cmd.Context()); err != nil {
+				return errcode.Wrap(errcode.Usage, "cannot publish to Weiyun: "+err.Error(), err)
+			}
+			if err := config.Set("transport.weiyun", name); err != nil {
+				return errcode.Wrap(errcode.Usage, err.Error(), err)
+			}
+			if a.JSON {
+				return a.printJSON(map[string]string{"weiyun": name})
+			}
+			fmt.Fprintln(a.Out, "weiyun:"+name)
+			return nil
+		}})
 	c.AddCommand(&cobra.Command{Use: "attach-folder <dir>", Short: "Use a directory as the shared vault folder", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			abs, err := filepath.Abs(args[0])
@@ -164,7 +201,18 @@ func newDeviceCmd(a *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if folder := a.Cfg.Transport.Folder; folder != "" {
+			if name := a.Cfg.Transport.Weiyun; name != "" {
+				m, err := a.weiyunMirror(name)
+				if err != nil {
+					return err
+				}
+				if err := m.Pull(cmd.Context()); err != nil {
+					return errcode.Wrap(errcode.Usage, "cannot reach Weiyun: "+err.Error(), err)
+				}
+				if err := ensureVaultJSON(v, a.weiyunCache(), session.FormatTime(a.Now())); err != nil {
+					return err
+				}
+			} else if folder := a.Cfg.Transport.Folder; folder != "" {
 				if err := ensureVaultJSON(v, config.ExpandPath(folder), session.FormatTime(a.Now())); err != nil {
 					return err
 				}

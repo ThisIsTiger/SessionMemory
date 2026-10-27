@@ -107,11 +107,18 @@ func (a *App) openRT(ctx context.Context, needSync bool) (*rt, error) {
 	keepLock = true
 	r := &rt{Root: root, Store: st, Vault: v, Info: info, unlock: unlock,
 		Eng: &engine.Engine{Store: st, DeviceID: info.DeviceID}}
-	if folder := a.Cfg.Transport.Folder; folder != "" {
+	if name := a.Cfg.Transport.Weiyun; name != "" {
+		m, err := a.weiyunMirror(name)
+		if err != nil {
+			r.Close()
+			return nil, err
+		}
+		r.Sync = syncpkg.New(st, m, v, root, info)
+	} else if folder := a.Cfg.Transport.Folder; folder != "" {
 		r.Sync = syncpkg.New(st, transport.NewFolder(config.ExpandPath(folder)), v, root, info)
 	} else if needSync {
 		r.Close()
-		return nil, errcode.New(errcode.Usage, "no sync folder configured; run transport attach-folder")
+		return nil, errcode.New(errcode.Usage, "no sync folder configured; run transport attach-folder or attach-weiyun")
 	}
 	if _, err := st.Recover(ctx); err != nil {
 		r.Close()

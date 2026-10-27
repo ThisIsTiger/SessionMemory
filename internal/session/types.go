@@ -297,6 +297,9 @@ type ProjectMap struct {
 	// /work/app -> local D:\code\app).
 	Rules         []PathRuleJSON `json:"rules"`
 	GitRemoteHash string         `json:"git_remote_hash,omitempty"` // sha256 of the normalised remote URL
+	// Watch lists the agents whose new sessions under LocalPath are tracked
+	// automatically by sync (set by project track; device-local).
+	Watch []string `json:"watch,omitempty"`
 }
 
 // PathRuleJSON is the persisted form of agent.PathRule.

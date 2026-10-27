@@ -44,6 +44,26 @@
 
 补齐 converted binding 的自动回采、checkpoint Agent 选择、旧目标未采集进展/半行/运行状态的提交前保护、不同转换原生 ID 的同 Agent 恢复。修正历史时间、字面 HTML 用户消息与 Codex UI 记录关联；provider 改为完整 TOML 与 profile 解析，拒绝无效配置且不泄露正文。多 session 合并仍按设计延期。
 
+## 微云传输（2026-10-27）
+
+本机没有微云本地同步目录，因此新增直接走微云 MCP 接口的传输（`internal/transport/weiyun.go`，`transport attach-weiyun`）：本地缓存目录 + 按名字镜像，复用原有的同步与加密逻辑。上传的分块 SHA1 状态与技能自带的 Python 参考实现逐项一致（测试向量）。已用真实微云跑通两台独立配置的完整流程（发布、加入、接收、增量第二个版本，`TestLiveWeiyunTwoMachines`，`SM_LIVE_WEIYUN=1`）。真实接口的差异：文件项不返回所在目录 key（用列出时的目录 key 下载）；删除目录需要 `dir_name`。测试清理只移入回收站。仍未验证：延迟/乱序/离线重连的长时间行为、两台物理电脑。
+
+## 按项目同步（2026-10-27）
+
+`project track --cwd DIR` 把目录（含子目录）下所有会话一次纳管并打同一个 `project_ref`，之后每次 `sync` 自动纳管该目录下新建的会话；另一台机器用 `project restore REF --cwd 本机目录` 一次装进整个项目（cwd 自动改写为本机目录，已是最新的跳过，单个失败不中断）。`TestProjectTrackAndRestoreAcrossMachines` 覆盖：项目内外会话区分、重复执行幂等、同步时自动纳管、B 机映射恢复与二次恢复全部 up_to_date。
+
+**B 机（Intel、真实 Codex）暴露的问题与修复**（会话装进去了，但侧边栏看不到）：
+1. 用临时 `CODEX_HOME` 做对照实验：配置加载成功（生效 provider = `custom`）时 `thread/list` 不列出 `model_provider=openai` 的会话，配置加载失败退回默认 `openai` 时能列出。结论：`thread/list` 只列 provider 等于客户端当前生效值的线程。此前 P0 都在空 home 里做，没发现。现在原生恢复写入 Codex 时，把 `session_meta.model_provider` 与 `thread_settings_applied.model_provider_id` 改成目标 `config.toml`（含 profile）的 provider；目标目录里已装文件则沿用它自己的 provider（之后切换 provider 也不影响追加）；配置读不到则不改。
+2. 补登记出来的 `cwd` 仍是 A 机路径：路径改写原先只覆盖 `session_meta`、`turn_context`，漏了 `event_msg/thread_settings_applied`（`thread_settings.cwd`、`runtime_workspace_roots`）和 `world_state` 的 `cwd`，且 `runtime_workspace_roots` 只改第一处。已全部覆盖。
+3. 桌面客户端启动时只读自己的登记，不会扫描新放进去的 rollout；`thread/list` 的默认扫描才会让 Codex 自己补登记。现在 `restore`/`project restore`/自动安装成功后，用桌面应用自带的 Codex（`ChatGPT.app/.../codex`，可用 `SM_CODEX_BIN` 指定）起一个短命 stdio `app-server`，对目标 `CODEX_HOME` 做 `thread/list` 分页直到列出刚装的线程（`codex.Register`，不直接碰任何数据库）；失败只告警。真实 Codex 0.164 上 `TestRegisterLive`（`SM_LIVE_CODEX`）通过；测试默认把 `SM_CODEX_BIN` 指向不存在的路径，避免启动本机真实客户端。
+4. 已装文件是旧版写出的，无法追加；现在 binding 的原生文件被删除后再次 `restore` 会重新安装。
+
+B 机实测（project2 版 + 手动触发登记并重启应用后）：会话出现在「最近」、点开历史完整、输入框可用。未验证：会话归入「项目」分组（需在应用里添加该项目目录，工具不改应用的项目列表）；登记后不重启应用是否直接显示；`runtime_workspace_roots` 里指向 A 机 `~/.codex` 下目录的第二项在 B 机 `resume` 时是否被接受。跨 Agent（转换）暂不按项目批量处理。
+
+## 一条命令接力（2026-10-27）
+
+`session-memory relay`：离开前、到达后各跑一次，等价于 `sync` + 对本机每个已映射项目的 `project restore`（快进安装，装完让 Codex 登记）；只剩「新电脑上每个项目选一次本地目录」这一步。`TestRelayHandsWorkOverAndBack` 覆盖 A→B→A→B 两圈：B 首次提示映射、B 续写后回传、A 收到并装入（A 的原生文件里出现 B 的新内容）、空闲时无事可做、A 再续写后 B 同样快进。真实两机运行（A 机 Apple 芯片 + B 机 Intel，微云）已跑通一圈：A 纳管项目 → B 加入并恢复 → 两边在同一版本后各自续写形成冲突 → A 机 `choose` → B 机把旧分支文件移走后 `relay` 取到所选版本，历史完整、投影条目数与文件一致 → B 机新建的会话自动回到 A 机并装入 Codex。期间修了两处：本机文件已与目标版本字节一致时计划里的写入列表为 nil 导致规范 JSON 报 null（现在规范成空列表，并把绑定推进到目标版本避免日后分叉）；放弃分支的原生文件被用户移走后允许装入所选版本。随后补了两个命令：`adopt`（冲突后输掉的一台一条命令取所选版本，自己的副本备份、失败回滚；`TestRelayConflictChooseThenLoserTakesChosen` 覆盖整个流程含备份内容）与 `autosync`（launchd 每 2 分钟 `relay --quiet`，令牌存系统钥匙串，plist 里没有令牌）。A 机已真实启用，登录项无需环境变量即能完成一次完整同步（退出码 0）。未验证：长时间运行、休眠唤醒、Codex 运行中的后台安装是否总被正确挡住；B 机尚未启用。原先写的"未验证：定时/后台自动运行（目前需手动或由 agent 执行 `relay`）；真实 Codex 客户端里 A→B→A 的整圈。
+
 ## 1. 已实现并有测试
 
 | 里程碑 | 内容 | 位置 |
@@ -52,7 +72,7 @@
 | M2 | zstd/plain `jsonl.Source`、合成夹具生成器、Codex 发现/探测/采集（孪生、分段、归档、压缩、半行、损坏行、同长度改写）、多 `CODEX_HOME` 配置、流式采集内存断言 | `internal/{jsonl,testutil/codexgen,source/codex,streamcap,config}` |
 | M3 | 对象库、journal 与恢复、binding、`sessions.db`（含重建）、采集事务（崩溃矩阵）、原生恢复事务（备份/回滚，崩溃矩阵）、双设备回环 | `internal/{store,engine,sync}` |
 | M4 | vault 加解密与加入包、凭据存储接口（系统钥匙串）、FolderTransport、发布/接收算法、隔离与 `device_id` 克隆检测、发布崩溃矩阵 | `internal/{vault,transport,sync,device}` |
-| M5 | `init`、`transport attach-folder`、`device invite/join/regenerate-id`、`discover`、`track`、`list`、`status`、`checkpoint`、`sync [--watch] [--auto-install]`、`revisions`、`choose`、`project map`、`restore [--plan]`、`open`、`verify [--deep]`、`auto-install`；冲突检测与落地 | `cmd/session-memory`、`internal/session` |
+| M5 | `init`、`transport attach-folder/attach-weiyun`、`device invite/join/regenerate-id`、`discover`、`track`、`list`、`status`、`checkpoint`、`sync [--watch] [--auto-install]`、`revisions`、`choose`、`project map/track/list/restore`、`restore [--plan]`、`open`、`verify [--deep]`、`auto-install`；冲突检测与落地 | `cmd/session-memory`、`internal/session` |
 | M6（读取侧与规则） | WorkBuddy 适配器（发现含软删除、采集含旁路文件与 blob、探测）；Canonical 提取（Codex 主流/链接、WorkBuddy 活动路径）；`convert.Convert` 全部规则与保真度报告；`convert --plan`、`fidelity`、`continue` | `internal/{source/workbuddy,convert,canonical}` |
 | M6（跨 Agent 转换写入） | `convert.Serializer`、`agent.MemSnapshot`、`engine.ConvertRestore`（与 `Restore` 共用 `runInstall`）、binding supersede、Codex/WorkBuddy 序列化、`convert` 命令；Codex CLI / app-server（本地桩模型）及 WorkBuddy GUI（真实模型）往返、重开验证 | `internal/{convert,engine,agent}`、`internal/source/{codex,workbuddy}/convert*.go` |
 | M6（WorkBuddy 原生写入） | 手动路线 3、版本/schema 白名单、目标本地账号、文件及行级回滚、路径映射与续写往返；默认 opt-out | `internal/source/workbuddy/{writer,registry,runtime}.go` |

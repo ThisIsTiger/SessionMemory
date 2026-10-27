@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -45,42 +46,104 @@ func (a *Adapter) WriterWith(clientClosed bool) agent.Writer {
 
 func (a *Adapter) Writer() agent.Writer { return &Writer{} }
 
+// nativeProvider is the provider the target client runs with; "" (leave the
+// recorded one) when its configuration cannot be read.
+func nativeProvider(home string) string {
+	p, err := targetProvider(home)
+	if err != nil {
+		return ""
+	}
+	return p
+}
+
+// providerFor keeps the provider an already installed thread was written with
+// (so later appends stay a byte-prefix extension even after the user switches
+// provider) and otherwise uses the target client's current one.
+func providerFor(home, rel string) string {
+	if f, err := os.Open(filepath.Join(home, filepath.FromSlash(rel))); err == nil {
+		defer f.Close()
+		first, _ := bufio.NewReaderSize(f, 1<<16).Peek(1 << 16)
+		if i := bytes.IndexByte(first, '\n'); i >= 0 {
+			first = first[:i]
+		}
+		if m := providerRe.FindSubmatch(first); m != nil && string(m[1]) == "model_provider" {
+			var v string
+			if json.Unmarshal([]byte(`"`+string(m[2])+`"`), &v) == nil {
+				return v
+			}
+		}
+	}
+	return nativeProvider(home)
+}
+
 var cwdRe = regexp.MustCompile(`"cwd":"((?:[^"\\]|\\.)*)"`)
 
-// mapLine rewrites payload.cwd of session_meta and turn_context records at the
-// byte level; every other byte is untouched.
-func mapLine(line []byte, pm agent.PathMap) ([]byte, bool) {
-	if len(pm.Rules) == 0 {
+// mapLine rewrites the structured working-directory fields of the records that
+// carry them, at the byte level; every other byte is untouched. Besides
+// session_meta and turn_context, Codex 0.164 repeats cwd and
+// runtime_workspace_roots in event_msg thread_settings_applied and cwd in
+// world_state, and derives the thread's registered cwd from them.
+func mapLine(line []byte, pm agent.PathMap, provider string) ([]byte, bool) {
+	if len(pm.Rules) == 0 && provider == "" {
 		return line, false
 	}
 	var env struct {
 		Type string `json:"type"`
 	}
-	if json.Unmarshal(line, &env) != nil || (env.Type != "session_meta" && env.Type != "turn_context") {
+	if json.Unmarshal(line, &env) != nil {
+		return line, false
+	}
+	switch env.Type {
+	case "session_meta", "turn_context", "world_state":
+	case "event_msg":
+		if !bytes.Contains(line, []byte(`"thread_settings_applied"`)) {
+			return line, false
+		}
+	default:
 		return line, false
 	}
 	pi := bytes.Index(line, []byte(`"payload":`))
 	if pi < 0 {
 		return line, false
 	}
-	loc := cwdRe.FindSubmatchIndex(line[pi:])
-	if loc == nil {
+	head, payload := line[:pi], line[pi:]
+	mapped := cwdRe.ReplaceAllFunc(payload, func(m []byte) []byte {
+		sub := cwdRe.FindSubmatch(m)
+		var old string
+		if json.Unmarshal([]byte(`"`+string(sub[1])+`"`), &old) != nil {
+			return m
+		}
+		to, ok := pm.Apply(old)
+		if !ok || to == old {
+			return m
+		}
+		return append([]byte(`"cwd":`), jsonString(to)...)
+	})
+	mapped = mapRoots(mapped, pm)
+	mapped = mapProvider(mapped, provider)
+	if bytes.Equal(mapped, payload) {
 		return line, false
 	}
-	var old string
-	if json.Unmarshal([]byte(`"`+string(line[pi+loc[2]:pi+loc[3]])+`"`), &old) != nil {
-		return line, false
+	out := make([]byte, 0, len(line)+len(mapped)-len(payload))
+	out = append(out, head...)
+	return append(out, mapped...), true
+}
+
+var providerRe = regexp.MustCompile(`"(model_provider|model_provider_id)":"((?:[^"\\]|\\.)*)"`)
+
+// mapProvider points the thread's recorded provider at the target Codex's own:
+// thread/list only lists threads whose provider equals the one the client runs
+// with, so a thread from another machine's provider would stay invisible.
+func mapProvider(payload []byte, provider string) []byte {
+	if provider == "" {
+		return payload
 	}
-	mapped, ok := pm.Apply(old)
-	if !ok || mapped == old {
-		return line, false
-	}
-	val := jsonString(mapped)
-	out := make([]byte, 0, len(line)+len(val))
-	out = append(out, line[:pi+loc[2]-1]...)
-	out = append(out, val...)
-	out = append(out, line[pi+loc[3]+1:]...)
-	return mapRoots(out, pm), true
+	return providerRe.ReplaceAllFunc(payload, func(m []byte) []byte {
+		key := providerRe.FindSubmatch(m)[1]
+		out := append([]byte{'"'}, key...)
+		out = append(out, '"', ':')
+		return append(out, jsonString(provider)...)
+	})
 }
 
 func jsonString(s string) []byte {
@@ -98,29 +161,28 @@ var rootItemRe = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"`)
 // refuses to resume a thread whose roots are not valid absolute paths on the
 // host (experiment E1a).
 func mapRoots(line []byte, pm agent.PathMap) []byte {
-	loc := rootsRe.FindSubmatchIndex(line)
-	if loc == nil {
-		return line
-	}
-	inner := line[loc[2]:loc[3]]
-	mappedInner := rootItemRe.ReplaceAllFunc(inner, func(m []byte) []byte {
-		var old string
-		if json.Unmarshal(m, &old) != nil {
+	return rootsRe.ReplaceAllFunc(line, func(whole []byte) []byte {
+		loc := rootsRe.FindSubmatchIndex(whole)
+		inner := whole[loc[2]:loc[3]]
+		mappedInner := rootItemRe.ReplaceAllFunc(inner, func(m []byte) []byte {
+			var old string
+			if json.Unmarshal(m, &old) != nil {
+				return m
+			}
+			if mp, ok := pm.Apply(old); ok {
+				return jsonString(mp)
+			}
 			return m
-		}
-		if mp, ok := pm.Apply(old); ok {
-			return jsonString(mp)
-		}
-		return m
+		})
+		out := make([]byte, 0, len(whole)+len(mappedInner))
+		out = append(out, whole[:loc[2]]...)
+		out = append(out, mappedInner...)
+		return append(out, whole[loc[3]:]...)
 	})
-	out := make([]byte, 0, len(line)+len(mappedInner))
-	out = append(out, line[:loc[2]]...)
-	out = append(out, mappedInner...)
-	return append(out, line[loc[3]:]...)
 }
 
 // buildTarget streams the artifact through mapLine and returns the bytes.
-func buildTarget(ctx context.Context, src agent.SnapshotReader, path string, pm agent.PathMap) ([]byte, bool, error) {
+func buildTarget(ctx context.Context, src agent.SnapshotReader, path string, pm agent.PathMap, provider string) ([]byte, bool, error) {
 	rc, err := src.Open(ctx, path)
 	if err != nil {
 		return nil, false, err
@@ -137,7 +199,7 @@ func buildTarget(ctx context.Context, src agent.SnapshotReader, path string, pm 
 		if err != nil {
 			return nil, false, err
 		}
-		l, c := mapLine(rec.Line, pm)
+		l, c := mapLine(rec.Line, pm, provider)
 		changed = changed || c
 		out.Write(l)
 	}
@@ -195,7 +257,7 @@ func (w *Writer) Plan(ctx context.Context, in agent.WriteInput) (agent.Plan, err
 		}
 	}
 	for _, p := range paths {
-		content, lenChanged, err := buildTarget(ctx, in.Source, p, in.PathMap)
+		content, lenChanged, err := buildTarget(ctx, in.Source, p, in.PathMap, providerFor(in.TargetState.Home, p))
 		if err != nil {
 			return plan, err
 		}
@@ -343,7 +405,7 @@ func (w *Writer) Apply(ctx context.Context, in agent.WriteInput, p agent.Plan, t
 	d := store.InstallData{NativeSessionID: nativeID, ClientClosed: w.ClientClosed, PlanDigest: p.Digest, Mode: p.Mode, Route: p.Route, Home: home, BackupDir: t.BackupDir()}
 	contents := map[string][]byte{}
 	for _, pw := range p.Writes {
-		c, _, err := buildTarget(ctx, in.Source, pw.Path, in.PathMap)
+		c, _, err := buildTarget(ctx, in.Source, pw.Path, in.PathMap, providerFor(in.TargetState.Home, pw.Path))
 		if err != nil {
 			return agent.Receipt{}, err
 		}

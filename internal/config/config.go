@@ -63,6 +63,10 @@ type AgentsConfig struct {
 type TransportConfig struct {
 	// Folder is the local directory synchronised by the cloud client.
 	Folder string `json:"folder"`
+	// Weiyun is the name of a Weiyun (Tencent cloud drive) directory used as
+	// the vault instead of a synchronised local folder. The access token is
+	// read from WEIYUN_MCP_TOKEN and is never written to the config file.
+	Weiyun string `json:"weiyun,omitempty"`
 }
 
 // LogConfig controls local log retention.
@@ -358,6 +362,7 @@ var keys = func() []keySpec {
 	ks = append(ks,
 		keySpec{"agents.workbuddy.allow_registry_write", kindBool, func(c Config) string { return strconv.FormatBool(c.Agents.WorkBuddy.AllowRegistryWrite) }},
 		keySpec{"transport.folder", kindPath, func(c Config) string { return c.Transport.Folder }},
+		keySpec{"transport.weiyun", kindString, func(c Config) string { return c.Transport.Weiyun }},
 		keySpec{"log.retention_days", kindInt, func(c Config) string { return strconv.Itoa(c.Log.RetentionDays) }},
 	)
 	return ks
