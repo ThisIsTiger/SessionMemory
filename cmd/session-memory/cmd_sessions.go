@@ -289,7 +289,7 @@ func newSyncCmd(a *App) *cobra.Command {
 						out["received_manifests"], out["received_revisions"], out["pending_objects"], out["quarantined"], out["installed"], out["waiting_client_close"])
 				}
 				if !watch {
-					return nil
+					return captureFailure(out)
 				}
 				select {
 				case <-cmd.Context().Done():
@@ -317,7 +317,11 @@ func syncOnce(ctx context.Context, a *App, r *rt) (map[string]int, error) {
 		if err != nil {
 			continue
 		}
-		if _, changed, err := r.Eng.Checkpoint(ctx, ad, b.BindingID, "", session.CaptureAuto); err == nil && changed {
+		if _, changed, err := r.Eng.Checkpoint(ctx, ad, b.BindingID, "", session.CaptureAuto); err != nil {
+			// keep going with the other sessions, but never report the round as clean
+			out["capture_failed"]++
+			fmt.Fprintf(a.Err, "warning: could not capture session %s: %v\n", b.SessionID, err)
+		} else if changed {
 			out["captured"]++
 		}
 	}
@@ -404,4 +408,13 @@ func newChooseCmd(a *App) *cobra.Command {
 		}}
 	c.Flags().String("revision", "", "revision id of the head to keep")
 	return c
+}
+
+// captureFailure turns sessions that could not be captured in a sync round
+// into a non-success result.
+func captureFailure(out map[string]int) error {
+	if n := out["capture_failed"]; n > 0 {
+		return errcode.New(errcode.RecoveryNeeded, fmt.Sprintf("%d session(s) could not be captured; see the warnings above", n))
+	}
+	return nil
 }

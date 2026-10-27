@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"session-memory/internal/errcode"
@@ -20,6 +21,10 @@ import (
 	"session-memory/internal/transport"
 	"session-memory/internal/vault"
 )
+
+// parseManifestSeq reads the zero-padded decimal sequence of a manifest name.
+// (fmt.Sscan would take a leading zero as octal: "000000000010" is 8.)
+func parseManifestSeq(s string) (int64, error) { return strconv.ParseInt(s, 10, 64) }
 
 var manifestName = regexp.MustCompile(`^(\d{12})-([0-9a-f]{12})\.manifest$`)
 
@@ -226,8 +231,10 @@ func (s *Sync) resumePull(ctx context.Context, rec store.JournalRecord) error {
 		if match == nil || !session.ValidDeviceID(d.DeviceID) {
 			return errcode.New(errcode.RecoveryNeeded, "invalid pull journal")
 		}
-		var seq int64
-		fmt.Sscan(match[1], &seq)
+		seq, err := parseManifestSeq(match[1])
+		if err != nil {
+			return errcode.Wrap(errcode.RecoveryNeeded, "invalid pull journal", err)
+		}
 		prev := ""
 		if seq > 1 {
 			if err := s.Store.DB().QueryRow(`SELECT file_sha256 FROM manifests WHERE device_id=? AND sequence=? AND status='applied'`, d.DeviceID, seq-1).Scan(&prev); err != nil {

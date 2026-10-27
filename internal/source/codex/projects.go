@@ -31,16 +31,26 @@ var appBinary = regexp.MustCompile(`(^|/)(ChatGPT|Codex)\.app/Contents/MacOS/[^/
 // AppRunning reports whether the Codex desktop app is running. Tests replace it.
 var AppRunning = appRunning
 
+var appSeen string
+
+// AppSeen describes why the last AppRunning call said yes ("pid path"), for messages.
+func AppSeen() string { return appSeen }
+
 func appRunning() bool {
+	appSeen = ""
 	if runtime.GOOS != "darwin" {
+		appSeen = "unsupported platform"
 		return true // unknown platform: never touch the state file
 	}
-	out, err := exec.Command("ps", "-axo", "comm=").Output()
+	out, err := exec.Command("ps", "-axo", "pid=,comm=").Output()
 	if err != nil {
+		appSeen = "cannot list processes: " + err.Error()
 		return true
 	}
 	for _, line := range strings.Split(string(out), "\n") {
-		if appBinary.MatchString(strings.TrimSpace(line)) {
+		line = strings.TrimSpace(line)
+		if _, comm, ok := strings.Cut(line, " "); ok && appBinary.MatchString(strings.TrimSpace(comm)) {
+			appSeen = line
 			return true
 		}
 	}
@@ -128,9 +138,6 @@ func AssignProjects(home, backupDir string, ids []string) ([]AssignResult, error
 	if err != nil {
 		return nil, err
 	}
-	if AppRunning() {
-		return results(ids, AppIsRunning), nil
-	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(data, &top); err != nil {
 		return nil, fmt.Errorf("codex state file is not valid JSON: %w", err)
@@ -191,6 +198,14 @@ func AssignProjects(home, backupDir string, ids []string) ([]AssignResult, error
 	if !changed {
 		return out, nil
 	}
+	if AppRunning() { // nothing is written while the app may be using the file
+		for i := range out {
+			if out[i].Outcome == Assigned {
+				out[i] = AssignResult{ID: out[i].ID, Outcome: AppIsRunning}
+			}
+		}
+		return out, nil
+	}
 	if err := backup(path, data, backupDir); err != nil {
 		return nil, fmt.Errorf("backing up the Codex state file: %w", err)
 	}
@@ -223,7 +238,12 @@ func AssignProjects(home, backupDir string, ids []string) ([]AssignResult, error
 		return nil, err
 	}
 	if AppRunning() { // the app may have been started while we prepared
-		return results(ids, AppIsRunning), nil
+		for i := range out {
+			if out[i].Outcome == Assigned {
+				out[i] = AssignResult{ID: out[i].ID, Outcome: AppIsRunning}
+			}
+		}
+		return out, nil
 	}
 	mode := os.FileMode(0600)
 	if st, err := os.Stat(path); err == nil {
@@ -259,4 +279,29 @@ func backup(path string, data []byte, dir string) error {
 		old = old[1:]
 	}
 	return nil
+}
+
+// AppProjectRoots lists the folders of the projects the desktop app knows
+// (read only), used to find where a project lives on this computer.
+func AppProjectRoots(home string) []string {
+	data, err := os.ReadFile(filepath.Join(home, globalStateFile))
+	if err != nil {
+		return nil
+	}
+	var top map[string]json.RawMessage
+	if json.Unmarshal(data, &top) != nil {
+		return nil
+	}
+	var lp map[string]struct {
+		RootPaths []string `json:"rootPaths"`
+	}
+	if json.Unmarshal(top["local-projects"], &lp) != nil {
+		return nil
+	}
+	var out []string
+	for _, p := range lp {
+		out = append(out, p.RootPaths...)
+	}
+	sort.Strings(out)
+	return out
 }

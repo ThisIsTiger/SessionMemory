@@ -51,12 +51,21 @@ func (s *FS) openDB() error {
 					db.Close()
 					return err
 				}
-				if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, DBSchemaVersion)); err != nil {
+				s.db = db
+				// the version marks a finished rebuild, so it is written last: a
+				// crash before that leaves tables without a version and the next
+				// open starts over
+				if err := s.refill(context.Background()); err != nil {
 					db.Close()
+					s.db = nil
 					return err
 				}
-				s.db = db
-				return s.refill(context.Background())
+				if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, DBSchemaVersion)); err != nil {
+					db.Close()
+					s.db = nil
+					return err
+				}
+				return nil
 			}
 		}
 		db.Close()

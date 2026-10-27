@@ -239,6 +239,16 @@ type BundleKDF struct {
 	Salt      string `json:"salt"` // base64, 16 bytes
 }
 
+// validate rejects parameters argon2 would panic on or that would let a
+// hostile bundle exhaust memory or time (the defaults are far below the caps).
+func (k BundleKDF) validate() error {
+	if k.Time < 1 || k.Time > 16 || k.Threads < 1 || k.Threads > 16 ||
+		k.MemoryKiB < 8*uint32(k.Threads) || k.MemoryKiB > 1<<20 {
+		return errors.New("vault: unsupported bundle KDF parameters")
+	}
+	return nil
+}
+
 // DefaultKDF are the parameters used when creating a bundle.
 var DefaultKDF = BundleKDF{Alg: "argon2id", Time: 3, MemoryKiB: 64 * 1024, Threads: 4}
 
@@ -291,6 +301,9 @@ func OpenBundle(data []byte, passphrase string) (vaultID string, vaultKey []byte
 	ct, err3 := base64.StdEncoding.DecodeString(b.Ciphertext)
 	if err1 != nil || err2 != nil || err3 != nil || len(nonce) != nonceLen {
 		return "", nil, errors.New("vault: malformed bundle")
+	}
+	if err := b.KDF.validate(); err != nil {
+		return "", nil, err
 	}
 	pk := argon2.IDKey([]byte(passphrase), salt, b.KDF.Time, b.KDF.MemoryKiB, b.KDF.Threads, keyLen)
 	gcm, err := newGCM(pk)

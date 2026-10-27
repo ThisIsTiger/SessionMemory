@@ -18,7 +18,8 @@ type RestoreOptions struct {
 	PlanOnly          bool
 	RevisionID        string // default: the effective head
 	Cwd               string
-	AllowCodeMismatch bool // explicitly accept recorded code-state gaps
+	DirHints          []string // local folders the agent already knows as projects, used to find the project folder here
+	AllowCodeMismatch bool     // explicitly accept recorded code-state gaps
 }
 
 type closedWriter interface{ WriterWith(bool) agent.Writer }
@@ -86,7 +87,7 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 			}
 		}
 	}
-	cwd, pmap, gaps, checkEnvironment, err := e.restoreWorkspace(ctx, ad, src, rev, bnd, opt)
+	cwd, pmap, gaps, checkEnvironment, notes, err := e.restoreWorkspaceNotes(ctx, ad, src, rev, bnd, opt)
 	if err != nil {
 		return agent.Plan{}, nil, err
 	}
@@ -126,6 +127,7 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 		plan.Writes = []agent.PlannedWrite{} // canonical JSON refuses null
 	}
 	plan.Warnings = append(plan.Warnings, gaps...)
+	plan.Warnings = append(plan.Warnings, notes...)
 	if len(retiring) > 0 {
 		plan.Warnings = append(plan.Warnings, "native_identity_changed")
 	}
@@ -323,4 +325,22 @@ func (e *Engine) resolveRevision(sessionID, want string) (*session.Graph, sessio
 		}
 	}
 	return nil, session.Revision{}, errcode.New(errcode.NotFound, "revision not found")
+}
+
+// OriginDir reports the folder a session's effective revision was recorded in
+// (on the computer it came from), for finding the matching folder here.
+func (e *Engine) OriginDir(ctx context.Context, ad agent.Adapter, sessionID string) (string, error) {
+	_, rev, err := e.resolveRevision(sessionID, "")
+	if err != nil {
+		return "", err
+	}
+	reader, ok := ad.(workspaceReader)
+	if !ok {
+		return "", errcode.New(errcode.Unsupported, "this agent does not report a workspace")
+	}
+	src, err := e.Store.SnapshotReader(ctx, rev.NativeSnapshotRef)
+	if err != nil {
+		return "", err
+	}
+	return reader.Workspace(ctx, src)
 }

@@ -3,6 +3,7 @@ package vault
 import (
 	"bytes"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"testing"
 )
@@ -123,5 +124,36 @@ func TestBundle(t *testing.T) {
 	}
 	if _, err := CreateBundle(testVaultID, fixedKey(), "short"); err == nil {
 		t.Error("a short passphrase was accepted")
+	}
+}
+
+// A bundle comes from outside; bad KDF parameters must be an error, never a
+// panic inside argon2 or an unbounded memory request.
+func TestOpenBundleRejectsUnsafeKDF(t *testing.T) {
+	kdf := DefaultKDF
+	kdf.MemoryKiB, kdf.Time = 1024, 1
+	good, err := createBundleWith(testVaultID, fixedKey(), "correct horse battery", kdf, bytes.Repeat([]byte{0xc0}, 16), bytes.Repeat([]byte{0xd0}, 12))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*BundleKDF){
+		"zero rounds":     func(k *BundleKDF) { k.Time = 0 },
+		"zero threads":    func(k *BundleKDF) { k.Threads = 0 },
+		"too many rounds": func(k *BundleKDF) { k.Time = 1000000 },
+		"huge memory":     func(k *BundleKDF) { k.MemoryKiB = 1 << 31 },
+		"tiny memory":     func(k *BundleKDF) { k.MemoryKiB = 1 },
+	} {
+		var b Bundle
+		if err := json.Unmarshal(good, &b); err != nil {
+			t.Fatal(err)
+		}
+		mutate(&b.KDF)
+		data, _ := json.Marshal(b)
+		if _, _, err := OpenBundle(data, "correct horse battery"); err == nil || errors.Is(err, ErrAuth) {
+			t.Errorf("%s: want a parameter error, got %v", name, err)
+		}
+	}
+	if _, _, err := OpenBundle(good, "correct horse battery"); err != nil {
+		t.Fatalf("valid bundle rejected: %v", err)
 	}
 }

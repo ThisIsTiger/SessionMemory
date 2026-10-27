@@ -95,6 +95,16 @@ func mapLine(line []byte, pm agent.PathMap, provider string) ([]byte, bool) {
 	}
 	switch env.Type {
 	case "session_meta", "turn_context", "world_state":
+	case "response_item":
+		// The environment block Codex injects into the conversation names the
+		// workspace; nothing else in a message is ever rewritten.
+		if !bytes.Contains(line, []byte("<environment_context>")) {
+			return line, false
+		}
+		if out := mapTags(line, pm); !bytes.Equal(out, line) {
+			return out, true
+		}
+		return line, false
 	case "event_msg":
 		if !bytes.Contains(line, []byte(`"thread_settings_applied"`)) {
 			return line, false
@@ -120,6 +130,7 @@ func mapLine(line []byte, pm agent.PathMap, provider string) ([]byte, bool) {
 		return append([]byte(`"cwd":`), jsonString(to)...)
 	})
 	mapped = mapRoots(mapped, pm)
+	mapped = mapTags(mapped, pm)
 	mapped = mapProvider(mapped, provider)
 	if bytes.Equal(mapped, payload) {
 		return line, false
@@ -154,12 +165,12 @@ func jsonString(s string) []byte {
 	return bytes.TrimRight(enc.Bytes(), "\n")
 }
 
-var rootsRe = regexp.MustCompile(`"runtime_workspace_roots":\[((?:[^\]"\\]|"(?:[^"\\]|\\.)*")*)\]`)
+var rootsRe = regexp.MustCompile(`"(?:runtime_)?workspace_roots":\[((?:[^\]"\\]|"(?:[^"\\]|\\.)*")*)\]`)
 var rootItemRe = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"`)
 
-// mapRoots rewrites session_meta.payload.runtime_workspace_roots entries: Codex
+// mapRoots rewrites runtime_workspace_roots (session_meta, experiment E1a: Codex
 // refuses to resume a thread whose roots are not valid absolute paths on the
-// host (experiment E1a).
+// host) and workspace_roots (turn_context) entries.
 func mapRoots(line []byte, pm agent.PathMap) []byte {
 	return rootsRe.ReplaceAllFunc(line, func(whole []byte) []byte {
 		loc := rootsRe.FindSubmatchIndex(whole)
@@ -178,6 +189,39 @@ func mapRoots(line []byte, pm agent.PathMap) []byte {
 		out = append(out, whole[:loc[2]]...)
 		out = append(out, mappedInner...)
 		return append(out, whole[loc[3]:]...)
+	})
+}
+
+var tagRe = regexp.MustCompile(`<(root|cwd)>([^<]*)</(root|cwd)>`)
+
+// mapTags rewrites the directories Codex records as <root>…</root> and
+// <cwd>…</cwd> in the environment text (the model-visible environment block and
+// world_state), so a thread that came back from another computer does not
+// announce that computer's folder.
+func mapTags(line []byte, pm agent.PathMap) []byte {
+	if len(pm.Rules) == 0 || !bytes.Contains(line, []byte("</")) {
+		return line
+	}
+	return tagRe.ReplaceAllFunc(line, func(m []byte) []byte {
+		sub := tagRe.FindSubmatch(m)
+		if string(sub[1]) != string(sub[3]) {
+			return m
+		}
+		var old string
+		if json.Unmarshal([]byte(`"`+string(sub[2])+`"`), &old) != nil {
+			return m
+		}
+		to, ok := pm.Apply(old)
+		if !ok || to == old {
+			return m
+		}
+		enc := jsonString(to)
+		out := append([]byte("<"), sub[1]...)
+		out = append(out, '>')
+		out = append(out, enc[1:len(enc)-1]...)
+		out = append(out, "</"...)
+		out = append(out, sub[1]...)
+		return append(out, '>')
 	})
 }
 

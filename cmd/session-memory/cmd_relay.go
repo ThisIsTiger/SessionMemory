@@ -30,6 +30,9 @@ func newRelayCmd(a *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := captureFailure(sync); err != nil {
+				return err // handing over work that was not saved would lose it
+			}
 			if !strict {
 				// the history is what is being handed over; a differing code state is only noted in the receipt
 				cmd.Flags().Set("allow-code-mismatch", "true")

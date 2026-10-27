@@ -178,3 +178,17 @@ func TestRegressionPullRevisionFailureRetried(t *testing.T) {
 		t.Fatalf("manifest was marked applied but its revision was lost: revisions=%d", len(revs))
 	}
 }
+
+// Manifest names carry a zero-padded decimal sequence; fmt.Sscan reads a
+// leading zero as octal ("000000000010" became 8, "000000000009" became 0).
+func TestParseManifestSeqIsDecimal(t *testing.T) {
+	for in, want := range map[string]int64{"000000000001": 1, "000000000008": 8, "000000000009": 9, "000000000010": 10, "000000000017": 17, "000000000100": 100} {
+		got, err := parseManifestSeq(in)
+		if err != nil || got != want {
+			t.Errorf("%s -> %d %v, want %d", in, got, err, want)
+		}
+	}
+	if _, err := parseManifestSeq("0000000000x"); err == nil {
+		t.Error("garbage was accepted")
+	}
+}

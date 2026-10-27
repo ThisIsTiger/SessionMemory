@@ -7,7 +7,10 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"session-memory/internal/platform"
+	"session-memory/internal/session"
 	"session-memory/internal/source/codex"
 )
 
@@ -96,7 +99,7 @@ func flushCodexAssign(a *App, verbose bool) {
 		}
 	}
 	var keep []pendingAssign
-	placed, running, noProject := 0, 0, 0
+	placed, running, noProject, seen := 0, 0, 0, ""
 	for _, p := range ps {
 		r, ok := outcome[p.Home+"|"+p.ID]
 		if !ok { // the home failed this round
@@ -108,6 +111,9 @@ func flushCodexAssign(a *App, verbose bool) {
 			placed++
 		case codex.AppIsRunning:
 			running++
+			if running == 1 {
+				seen = codex.AppSeen()
+			}
 			keep = append(keep, p)
 		case codex.NoProject:
 			noProject++
@@ -117,16 +123,52 @@ func flushCodexAssign(a *App, verbose bool) {
 		}
 	}
 	savePendingAssign(a, keep)
+	if placed > 0 { // rare and worth a log line even in the background
+		fmt.Fprintf(a.Out, "filed %d session(s) under their Codex project\n", placed)
+	}
 	if !verbose {
 		return
 	}
-	if placed > 0 {
-		fmt.Fprintf(a.Out, "filed %d session(s) under their Codex project\n", placed)
-	}
 	if running > 0 {
-		fmt.Fprintf(a.Err, "note: %d session(s) will be filed under their Codex project the next time sync runs while Codex is closed\n", running)
+		fmt.Fprintf(a.Err, "note: Codex app is running (%s); %d session(s) will be filed under their Codex project the next time sync runs while it is closed\n", seen, running)
 	}
 	if noProject > 0 {
 		fmt.Fprintf(a.Err, "note: %d session(s) stay under Recent: add their folder as a project in Codex once and they are filed automatically\n", noProject)
 	}
+}
+
+// newFileProjectsCmd files the Codex sessions installed on this computer under
+// their desktop-app project right away, including ones installed before the
+// automatic step existed.
+func newFileProjectsCmd(a *App) *cobra.Command {
+	return &cobra.Command{Use: "file-projects", Short: "File sessions installed into Codex under their Codex project (Codex must be closed)", Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if !a.Cfg.Agents.Codex.IsAssignProjects() {
+				fmt.Fprintln(a.Out, "agents.codex.assign_projects is off")
+				return nil
+			}
+			r, err := a.openRT(cmd.Context(), false)
+			if err != nil {
+				return err
+			}
+			defer r.Close()
+			bs, _ := r.Store.Bindings("")
+			byHome := map[string][]string{}
+			for _, b := range bs {
+				if b.State == session.StateActive && b.DeviceID == r.Info.DeviceID && b.AgentProfile.Agent == "codex" && b.ImportReceipt != nil {
+					byHome[b.NativeHome] = append(byHome[b.NativeHome], b.NativeSessionID)
+				}
+			}
+			if len(byHome) == 0 {
+				fmt.Fprintln(a.Out, "no installed Codex sessions on this computer")
+				return nil
+			}
+			for h, ids := range byHome {
+				queueCodexAssign(a, h, ids)
+			}
+			if n := len(loadPendingAssign(a)); n == 0 {
+				fmt.Fprintln(a.Out, "nothing left to file")
+			}
+			return nil
+		}}
 }

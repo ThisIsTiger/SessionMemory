@@ -257,7 +257,12 @@ func newProjectRestoreCmd(a *App) *cobra.Command {
 			cwd, _ := cmd.Flags().GetString("cwd")
 			if _, err := loadProject(a.Cfg.StateDir(), ref); err != nil {
 				if cwd == "" {
-					return errcode.New(errcode.NotFound, "project is not mapped on this device; pass --cwd <local project directory>")
+					found, note := autoProjectDir(cmd.Context(), a, ref, name)
+					if found == "" {
+						return errcode.New(errcode.NotFound, "project is not mapped on this device and its folder was not found automatically ("+note+"); pass --cwd <local project directory>")
+					}
+					fmt.Fprintf(a.Err, "note: using %s as this project's folder here (%s)\n", found, note)
+					cwd = found
 				}
 				abs, err := filepath.Abs(cwd)
 				if err != nil {
@@ -309,8 +314,10 @@ func newProjectRestoreCmd(a *App) *cobra.Command {
 				return err
 			}
 			installed, upToDate, skipped, failed := res.Installed, res.UpToDate, res.Skipped, res.Failed+res.Waiting
-			for _, d := range res.Done {
-				fmt.Fprintf(a.Out, "installed %s\n", d)
+			if !a.JSON { // JSON mode prints one document and nothing else
+				for _, d := range res.Done {
+					fmt.Fprintf(a.Out, "installed %s\n", d)
+				}
 			}
 			for _, pr := range res.Problems {
 				fmt.Fprintln(a.Err, pr)
@@ -401,4 +408,81 @@ func installProject(ctx context.Context, a *App, r *rt, ad agent.Adapter, name, 
 		registerWithCodex(ctx, a, r, opt.Home, res.Done)
 	}
 	return res, nil
+}
+
+// autoProjectDir finds this computer's folder for a project that has no
+// mapping here: the folder named like the one its sessions were recorded in.
+// The second result says what was matched, or why nothing was.
+func autoProjectDir(ctx context.Context, a *App, ref, agentName string) (string, string) {
+	ad, err := a.adapter(agentName)
+	if err != nil {
+		return "", err.Error()
+	}
+	r, err := a.openRT(ctx, true)
+	if err != nil {
+		return "", err.Error()
+	}
+	defer r.Close()
+	if r.Sync != nil {
+		if _, err := r.Sync.Reconcile(ctx); err != nil {
+			return "", err.Error()
+		}
+	}
+	ids, err := projectSessions(r, ref)
+	if err != nil || len(ids) == 0 {
+		return "", "no sessions of this project here yet"
+	}
+	var hints []string
+	if agentName == "codex" {
+		hints = codex.AppProjectRoots(a.Cfg.CodexHome())
+	}
+	var origins []string
+	for _, id := range ids {
+		if origin, err := r.Eng.OriginDir(ctx, ad, id); err == nil && origin != "" {
+			origins = append(origins, origin)
+		}
+	}
+	// sessions may sit in subfolders; the project's folder is what they share
+	origin := commonDir(origins)
+	if origin == "" {
+		return "", "the sessions do not record a folder"
+	}
+	c := engine.LocalDirCandidates(origin, hints)
+	switch {
+	case len(c) == 1:
+		return c[0], "same folder name as " + filepath.Base(origin)
+	case len(c) > 1:
+		return "", fmt.Sprintf("%d folders named %s: %s", len(c), filepath.Base(origin), strings.Join(c, ", "))
+	}
+	return "", "no folder named " + filepath.Base(origin) + " in the usual places"
+}
+
+// commonDir is the deepest directory containing every given path ("" when
+// they share no plausible project folder).
+func commonDir(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	parts := strings.Split(filepath.Clean(paths[0]), string(filepath.Separator))
+	for _, p := range paths[1:] {
+		q := strings.Split(filepath.Clean(p), string(filepath.Separator))
+		n := 0
+		for n < len(parts) && n < len(q) && parts[n] == q[n] {
+			n++
+		}
+		parts = parts[:n]
+	}
+	common := strings.Join(parts, string(filepath.Separator))
+	if len(parts) < 2 {
+		return ""
+	}
+	for _, p := range paths {
+		if filepath.Clean(p) == common {
+			return common // a session's own folder: that is the project
+		}
+	}
+	if len(parts) < 4 { // an ancestor like /Users/me is not a project folder
+		return ""
+	}
+	return common
 }

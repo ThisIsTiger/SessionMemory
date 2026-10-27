@@ -30,7 +30,7 @@ func TestCodexAssignWaitsForAppToCloseThenFilesThread(t *testing.T) {
 	defer func() { codex.AppRunning = old }()
 
 	queueCodexAssign(a, home, []string{"t1"})
-	if !strings.Contains(a.Err.(*bytes.Buffer).String(), "next time sync runs while Codex is closed") {
+	if !strings.Contains(a.Err.(*bytes.Buffer).String(), "will be filed under their Codex project the next time sync runs while it is closed") {
 		t.Errorf("no waiting note: %q", a.Err.(*bytes.Buffer).String())
 	}
 	if len(loadPendingAssign(a)) != 1 {
@@ -61,5 +61,21 @@ func TestCodexAssignOffDoesNothing(t *testing.T) {
 	queueCodexAssign(a, t.TempDir(), []string{"t1"})
 	if len(loadPendingAssign(a)) != 0 {
 		t.Fatal("disabled option must not queue anything")
+	}
+}
+
+func TestCodexAssignDropsFinishedThreadEvenWhileAppRuns(t *testing.T) {
+	cfg := config.DefaultConfig()
+	home := t.TempDir()
+	cfg.Home = t.TempDir()
+	a := &App{Cfg: cfg, Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}
+	os.WriteFile(filepath.Join(home, ".codex-global-state.json"),
+		[]byte(`{"local-projects":{"p":{"id":"p","name":"P","rootPaths":["/w"]}},"thread-project-assignments":{"t1":{"projectKind":"local","projectId":"p"}}}`), 0600)
+	old := codex.AppRunning
+	codex.AppRunning = func() bool { return true }
+	defer func() { codex.AppRunning = old }()
+	queueCodexAssign(a, home, []string{"t1"})
+	if n := len(loadPendingAssign(a)); n != 0 {
+		t.Fatalf("a thread that already has its project must not wait for the app to close (%d queued)", n)
 	}
 }

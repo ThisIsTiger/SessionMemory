@@ -55,6 +55,11 @@ func TestProjectTrackAndRestoreAcrossMachines(t *testing.T) {
 	if again.ProjectRef != pt.ProjectRef || again.Tracked != 0 || again.Already != 2 {
 		t.Fatalf("second project track: %+v", again)
 	}
+	// changing the label must not switch off following the project
+	A.must("project", "map", pt.ProjectRef, "--path", projA, "--label", "renamed")
+	if raw, _ := os.ReadFile(filepath.Join(A.home, "sm", "projects", pt.ProjectRef+".json")); !strings.Contains(string(raw), `"codex"`) || !strings.Contains(string(raw), "renamed") {
+		t.Fatalf("project map lost the watch list or ignored the label: %s", raw)
+	}
 	// a session created later under the project joins on the next sync; one elsewhere does not
 	t3 := add(14, projA)
 	var sy map[string]int
@@ -82,11 +87,23 @@ func TestProjectTrackAndRestoreAcrossMachines(t *testing.T) {
 	}
 
 	projB := filepath.Join(B.home, "work", "app")
-	os.MkdirAll(projB, 0700)
-	if code, _, _ := B.run("project", "restore", pt.ProjectRef, "--client-closed"); code == 0 {
-		t.Fatal("restore of an unmapped project without --cwd must be refused")
+	if code, _, errs := B.run("project", "restore", pt.ProjectRef, "--client-closed"); code == 0 || !strings.Contains(errs, "no folder named app") {
+		t.Fatalf("restore of an unmapped project whose folder does not exist here must be refused with the reason: %d %s", code, errs)
 	}
-	B.must("project", "restore", pt.ProjectRef, "--cwd", projB, "--client-closed", "--allow-code-mismatch")
+	// two candidates are not guessed between
+	os.MkdirAll(filepath.Join(B.home, "Documents", "app"), 0700)
+	os.MkdirAll(projB, 0700)
+	if code, _, errs := B.run("project", "restore", pt.ProjectRef, "--client-closed"); code == 0 || !strings.Contains(errs, "2 folders named app") {
+		t.Fatalf("ambiguous folders must be refused: %d %s", code, errs)
+	}
+	os.RemoveAll(filepath.Join(B.home, "Documents"))
+	// exactly one folder with the project's name: found without --cwd
+	if out := B.must("project", "restore", pt.ProjectRef, "--client-closed", "--allow-code-mismatch", "--json"); !json.Valid([]byte(out)) {
+		t.Fatalf("--json output is not one JSON document:\n%s", out)
+	}
+	if out := B.must("project", "list"); !strings.Contains(out, projB) {
+		t.Fatalf("project not mapped to the matching folder: %s", out)
+	}
 	files, _ := filepath.Glob(filepath.Join(bcodex, "sessions", "*", "*", "*", "*.jsonl"))
 	if len(files) != 3 {
 		t.Fatalf("B restored %d sessions, want 3: %v", len(files), files)
@@ -289,6 +306,17 @@ func TestRelayConflictChooseThenLoserTakesChosen(t *testing.T) {
 	if raw, _ := os.ReadFile(bfiles[0]); !strings.Contains(string(raw), "FROM_B") {
 		t.Fatal("B's own work must stay untouched until the user moves it")
 	}
+	// a preview changes nothing
+	before, _ := os.ReadFile(bfiles[0])
+	if out := B.must("adopt", list[0].SessionID, "--client-closed", "--plan"); !strings.Contains(out, "nothing changed") {
+		t.Fatalf("adopt --plan output: %s", out)
+	}
+	if after, err := os.ReadFile(bfiles[0]); err != nil || string(after) != string(before) {
+		t.Fatalf("adopt --plan touched B's copy: %v", err)
+	}
+	if moved, _ := filepath.Glob(filepath.Join(B.home, "sm", "abandoned", "*", "*")); len(moved) != 0 {
+		t.Fatalf("adopt --plan made a backup: %v", moved)
+	}
 	// one command takes the chosen version; B's own copy is kept in a backup folder
 	out := B.must("adopt", list[0].SessionID, "--client-closed")
 	if !strings.Contains(out, "your previous copy is in") {
@@ -319,5 +347,33 @@ func TestRelayConflictChooseThenLoserTakesChosen(t *testing.T) {
 	B.must("relay", "--client-closed")
 	if raw, _ := os.ReadFile(bfiles[0]); !strings.Contains(string(raw), "A_AGAIN") {
 		t.Fatal("A's later work did not reach B")
+	}
+}
+
+// A session that cannot be read must not make a sync look clean.
+func TestSyncReportsSessionsItCouldNotCapture(t *testing.T) {
+	root := t.TempDir()
+	A := &machine{t: t, home: filepath.Join(root, "a"), keys: vault.MemStore{}}
+	os.MkdirAll(A.home, 0700)
+	A.must("init")
+	A.must("transport", "attach-folder", filepath.Join(root, "cloud"))
+	acodex := filepath.Join(A.home, "codex")
+	A.must("config", "set", "agents.codex.home", acodex)
+	tid := codexgen.ThreadIDFor(31)
+	p := filepath.Join(acodex, "sessions", "2026", "09", "01", "rollout-2026-09-01T01-46-53-"+tid+".jsonl")
+	os.MkdirAll(filepath.Dir(p), 0700)
+	os.WriteFile(p, codexgen.Rollout(codexgen.Options{Seed: 31, Turns: 2}), 0600)
+	A.must("track", "--native-session", tid)
+	if os.Geteuid() == 0 {
+		t.Skip("file permissions do not stop root")
+	}
+	os.WriteFile(p, append(codexgen.Rollout(codexgen.Options{Seed: 31, Turns: 3}), '\n'), 0600)
+	if err := os.Chmod(p, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(p, 0600)
+	code, _, errs := A.run("sync")
+	if code == 0 || !strings.Contains(errs, "could not capture") {
+		t.Fatalf("sync of an unreadable session: exit %d, stderr %q", code, errs)
 	}
 }

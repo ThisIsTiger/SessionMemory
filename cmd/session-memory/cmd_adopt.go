@@ -65,6 +65,18 @@ func newAdoptCmd(a *App) *cobra.Command {
 			case session.LandFastForward:
 				return errcode.New(errcode.Usage, "this copy can simply be updated; run relay instead")
 			}
+			if planOnly, _ := cmd.Flags().GetBool("plan"); planOnly {
+				// a preview changes nothing: no move, no capture, no install
+				files := 0
+				if ns, found, err := ad.Locate(cmd.Context(), agent.NativeRef{Home: bnd.NativeHome, NativeID: bnd.NativeSessionID}); err == nil && found {
+					files = len(ns.Files)
+				}
+				if a.JSON {
+					return a.printJSON(map[string]any{"plan": true, "move_to_backup": files, "install_revision": res.Effective})
+				}
+				fmt.Fprintf(a.Out, "plan: would move %d file(s) of this computer's copy to the backup folder and install revision %s (nothing changed)\n", files, res.Effective[:16])
+				return nil
+			}
 			closed, _ := cmd.Flags().GetBool("client-closed")
 			rs, _, err := ad.Runtime().Running(cmd.Context(), bnd.NativeHome, bnd.NativeSessionID)
 			if err != nil {

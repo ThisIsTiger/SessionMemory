@@ -15,6 +15,7 @@ import (
 	"session-memory/internal/errcode"
 	"session-memory/internal/platform"
 	"session-memory/internal/session"
+	"session-memory/internal/source/codex"
 )
 
 func projectPath(root, ref string) string { return filepath.Join(root, "projects", ref+".json") }
@@ -72,6 +73,16 @@ func newProjectCmd(a *App) *cobra.Command {
 				return errcode.New(errcode.Usage, "bad project ref")
 			}
 			pm := session.ProjectMap{SchemaVersion: 1, ProjectRef: ref, Label: label, LocalPath: abs, Rules: rj}
+			if old, err := loadProject(a.Cfg.StateDir(), ref); err == nil {
+				// changing the folder or label must not switch off following the project
+				pm.Watch = old.Watch
+				if label == "" {
+					pm.Label = old.Label
+				}
+				if len(rj) == 0 {
+					pm.Rules = old.Rules
+				}
+			}
 			b, _ := json.MarshalIndent(pm, "", "  ")
 			if err := platform.AtomicWrite(projectPath(a.Cfg.StateDir(), ref), append(b, '\n'), 0600); err != nil {
 				return err
@@ -190,7 +201,11 @@ func installOptions(a *App, cmd *cobra.Command, name string) (engine.RestoreOpti
 	for _, r := range rj {
 		pmap.Rules = append(pmap.Rules, agent.PathRule{From: r.From, To: r.To})
 	}
-	return engine.RestoreOptions{Home: home, PathMap: pmap, ClientClosed: closed, PlanOnly: planOnly, RevisionID: rev, Cwd: cwd, AllowCodeMismatch: allowMismatch}, nil
+	var hints []string
+	if name == "codex" {
+		hints = codex.AppProjectRoots(home)
+	}
+	return engine.RestoreOptions{Home: home, PathMap: pmap, ClientClosed: closed, PlanOnly: planOnly, RevisionID: rev, Cwd: cwd, AllowCodeMismatch: allowMismatch, DirHints: hints}, nil
 }
 
 func newVerifyCmd(a *App) *cobra.Command {

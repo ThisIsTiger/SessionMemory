@@ -19,13 +19,21 @@ type workspaceReader interface {
 }
 
 func (e *Engine) restoreWorkspace(ctx context.Context, ad agent.Adapter, src agent.SnapshotReader, rev session.Revision, bnd *session.Binding, opt RestoreOptions) (string, agent.PathMap, []string, func(context.Context) error, error) {
+	cwd, pm, gaps, check, _, err := e.restoreWorkspaceNotes(ctx, ad, src, rev, bnd, opt)
+	return cwd, pm, gaps, check, err
+}
+
+// restoreWorkspaceNotes also reports how the directory was chosen when that
+// was not stated by the user (notes are warnings for the plan, not gaps).
+func (e *Engine) restoreWorkspaceNotes(ctx context.Context, ad agent.Adapter, src agent.SnapshotReader, rev session.Revision, bnd *session.Binding, opt RestoreOptions) (string, agent.PathMap, []string, func(context.Context) error, []string, error) {
 	pm := opt.PathMap
+	var notes []string
 	origin := ""
 	if reader, ok := ad.(workspaceReader); ok {
 		var err error
 		origin, err = reader.Workspace(ctx, src)
 		if err != nil && opt.Cwd == "" {
-			return "", pm, nil, nil, err
+			return "", pm, nil, nil, notes, err
 		}
 	}
 	cwd := opt.Cwd
@@ -33,7 +41,15 @@ func (e *Engine) restoreWorkspace(ctx context.Context, ad agent.Adapter, src age
 		cwd = bnd.LocalCwd
 	}
 	if cwd == "" {
-		cwd, _ = pm.Apply(origin)
+		if mapped, ok := pm.Apply(origin); ok {
+			cwd = mapped
+		}
+	}
+	if cwd == "" && origin != "" && !dirExists(origin) {
+		if found, ok := UniqueLocalDir(origin, opt.DirHints); ok {
+			cwd = found
+			notes = append(notes, "cwd_auto_matched:"+found)
+		}
 	}
 	if cwd == "" {
 		cwd = origin
@@ -45,16 +61,16 @@ func (e *Engine) restoreWorkspace(ctx context.Context, ad agent.Adapter, src age
 	if rev.RepoStateRef != "" {
 		rc, err := e.Store.OpenObject(ctx, rev.RepoStateRef, vault.TypeRepoState, nil)
 		if err != nil {
-			return cwd, pm, nil, nil, err
+			return cwd, pm, nil, nil, notes, err
 		}
 		var state project.State
 		err = json.NewDecoder(rc).Decode(&state)
 		rc.Close()
 		if err != nil {
-			return cwd, pm, nil, nil, err
+			return cwd, pm, nil, nil, notes, err
 		}
 		if state.SchemaVersion != 1 {
-			return cwd, pm, nil, nil, errcode.New(errcode.UnknownFormat, "unknown repo state schema")
+			return cwd, pm, nil, nil, notes, errcode.New(errcode.UnknownFormat, "unknown repo state schema")
 		}
 		if state.Status == "" {
 			if state.Head != "" {
@@ -67,7 +83,7 @@ func (e *Engine) restoreWorkspace(ctx context.Context, ad agent.Adapter, src age
 	}
 	target, err := project.Inspect(ctx, cwd)
 	if err != nil {
-		return cwd, pm, nil, nil, err
+		return cwd, pm, nil, nil, notes, err
 	}
 	gaps := project.Gaps(ctx, source, target, cwd)
 	st, statErr := os.Stat(cwd)
@@ -77,7 +93,7 @@ func (e *Engine) restoreWorkspace(ctx context.Context, ad agent.Adapter, src age
 	}
 	baseline, err := canonjson.Hash(target)
 	if err != nil {
-		return cwd, pm, nil, nil, err
+		return cwd, pm, nil, nil, notes, err
 	}
 	check := func(ctx context.Context) error {
 		st, err := os.Stat(cwd)
@@ -100,5 +116,5 @@ func (e *Engine) restoreWorkspace(ctx context.Context, ad agent.Adapter, src age
 		}
 		return nil
 	}
-	return cwd, pm, gaps, check, nil
+	return cwd, pm, gaps, check, notes, nil
 }

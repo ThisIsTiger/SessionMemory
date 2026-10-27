@@ -66,14 +66,20 @@ B 机实测（project2 版 + 手动触发登记并重启应用后）：会话出
 
 **实现**（`internal/source/codex/projects.go`、`cmd/session-memory/cmd_assign.go`）：
 1. 选项 `agents.codex.assign_projects`，默认开；`session-memory config set agents.codex.assign_projects false` 关闭。
-2. 会话装进 Codex 后（restore / project restore / adopt / relay / 自动安装）进入待办队列 `<state>/codex-assign-pending.json`，每次同步也会重试。
+2. 会话装进 Codex 后（restore / project restore / adopt / relay / 自动安装）进入待办队列；之前装的会话用 `session-memory file-projects` 补进队列并立即尝试 `<state>/codex-assign-pending.json`，每次同步也会重试。
 3. 只在桌面应用没在运行时写（`ps` 里没有 `ChatGPT.app` / `Codex.app` 主进程；写前再查一次）。应用开着就留在队列，下一轮应用关闭时补上。
 4. 按会话 rollout 第一行的 `cwd`，选应用里 `local-projects.rootPaths` 覆盖它的最深一个项目；没有项目覆盖时留在队列（最多 14 天），提示用户在应用里把该文件夹添加为项目一次，之后自动归入。
 5. 已有归属记录的会话不动（用户或应用已决定）。只加三处：`thread-project-assignments`；已有 `thread-project-membership-host-ids` 键时加 `"local"`；从 `projectless-thread-ids` 里去掉。其他键原样保留。
 6. 写前把原文件备份到 `<state>/backups/codex-global-state.<时间>.json`（保留最近 10 份），用临时文件加原子替换写回。
 7. 测试：`projects_test.go`（最深项目、已有归属、无项目、应用运行时不写、没有改动不备份、无 membership 键不新建）、`assign_test.go`（应用运行时排队，关闭后同步补上；选项关闭时不排队）。
 
-未验证：B 机真实应用上，写入后应用重新打开是否把会话显示在 SessionMemory 项目下。
+B 机实测（Intel、26.901 / 0.153.4、project12）：应用关闭后 `sync` + `file-projects` 写入 `01a17781` 的归属，备份生成，除 `thread-project-assignments` 与 `projectless-thread-ids` 外无其他键变化；用户重新打开应用后，该会话出现在 SessionMemory 项目下（已确认）。排查中发现两处体验问题并修复：后台同步写入成功时不打印 `filed N`；应用在运行时即使会话已归好也一直留在队列。现在只有真要写入才检查应用是否运行，提示里带上命中的进程。未解释：应用已关闭时 `file-projects` 仍两次报"应用在运行"，新版会打印命中的进程以便下次定位。新增命令 `session-memory file-projects` 补归此前已装的会话。
+
+## 本机目录自动匹配与跨机器路径改写（2026-10-27）
+
+1. **路径改写补全**：会话装进本机时，除 `cwd`、`runtime_workspace_roots` 外，`turn_context.workspace_roots`、`world_state` 和环境说明块里的 `<root>…</root>`、`<cwd>…</cwd>` 也按"源目录→本机目录"改写（普通对话文字不动）。原因：A→B→A 回到 A 的会话里残留了 B 的路径（A 机实测 4 行）。已装好的旧会话不会被改，`adopt` 重装后生效。
+2. **本机目录自动匹配**（`internal/engine/autodir.go`）：装会话时没有 `--cwd`、本机没有该会话的目录、也没有项目映射，且会话原目录在本机不存在时，找本机同名文件夹：先看 Codex 应用已有的项目文件夹（`local-projects.rootPaths`），再扫 `~/Documents`、`~/Desktop`、`~/Developer`、`~/Projects`、`~/Code`、`~/src`、`~/work`、`~/workspace`、`~/repos`、`~/GitHub`、`~/dev` 下最多 3 层（跳过隐藏目录、`node_modules`、`Library` 等）。恰好找到一个才用，计划里带 `cwd_auto_matched:<路径>` 提示；多个或没有都不猜，报错并说明原因。`project restore` 在项目未映射且没给 `--cwd` 时同样先自动匹配，找到就保存映射。
+3. 测试：`internal/engine/autodir_test.go`（唯一匹配、多个不猜、应用项目列表优先、太深不找、根目录）、`paths_test.go`、`project_test.go`（无目录时报"no folder named …"、两个同名时报"2 folders named …"、唯一时不带 `--cwd` 成功并保存映射）。
 
 ## 一条命令接力（2026-10-27）
 
