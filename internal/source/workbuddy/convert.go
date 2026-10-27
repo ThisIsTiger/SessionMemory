@@ -19,7 +19,7 @@ import (
 )
 
 // ConvertVersion identifies the conversion serialiser in import receipts.
-const ConvertVersion = "workbuddy-convert/0.1"
+const ConvertVersion = "workbuddy-convert/0.2"
 
 // titleOf derives a short title from the first human message.
 func titleOf(out convert.Output) string {
@@ -71,7 +71,7 @@ func (a *Adapter) SerializeConverted(out convert.Output, t convert.Target) (conv
 	}
 	ms := func(t time.Time) int64 {
 		v := t.UnixMilli()
-		if t.IsZero() || v < last {
+		if t.IsZero() {
 			v = last
 		}
 		last = v

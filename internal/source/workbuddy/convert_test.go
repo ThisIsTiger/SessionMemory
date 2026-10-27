@@ -95,6 +95,32 @@ func TestSerializeConvertedRefusesNativeToolRecords(t *testing.T) {
 	}
 }
 
+func TestWorkBuddyConversionPreservesHistoricalTimes(t *testing.T) {
+	a := New(config.DefaultConfig())
+	out := sampleOutput()
+	built, err := a.SerializeConverted(out, convert.Target{Cwd: "/work/app", Now: out.Records[0].Time.AddDate(0, 1, 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var messages []canonical.Item
+	if err := a.Extract(context.Background(), built.Snapshot, func(it canonical.Item) error {
+		if it.Kind == canonical.KindMessage {
+			messages = append(messages, it)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != len(out.Records) {
+		t.Fatal("messages lost")
+	}
+	for i, it := range messages {
+		if !it.Time.Equal(out.Records[i].Time) {
+			t.Fatalf("message timestamp rewritten: %v != %v", it.Time, out.Records[i].Time)
+		}
+	}
+}
+
 // Codex -> WorkBuddy -> (continue) -> Codex through the engine: the full
 // history appears natively, the import boundary hides it from capture, the
 // user's own records become the next revision, and converting back yields a new
@@ -199,6 +225,37 @@ func TestCrossAgentRoundTrip(t *testing.T) {
 	}
 
 	// --- WorkBuddy -> Codex: a new thread with everything; the old Codex binding is superseded
+	original, _ := os.ReadFile(p)
+	appendOld := func(tail []byte) {
+		t.Helper()
+		if err := os.WriteFile(p, append(append([]byte{}, original...), tail...), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tail := range [][]byte{[]byte("{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"uncaptured old target progress\"}}\n"), []byte("{\"type\":")} {
+		appendOld(tail)
+		if _, _, err := e.ConvertRestore(ctx, wb, cx, cb.SessionID, engine.RestoreOptions{Home: codexHome, Cwd: cwdA, ClientClosed: true}); errcode.CodeOf(err) != errcode.NeedsAction {
+			t.Fatalf("uncaptured target retired: %v", err)
+		}
+		os.WriteFile(p, original, 0600)
+	}
+	// A client can also advance the old target after planning but before the
+	// replacement binding is committed. Keep it active and undo only the new thread.
+	hooked := verifyHookCodex{Adapter: cx, hook: func() {
+		appendOld([]byte("{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"late old target progress\"}}\n"))
+	}}
+	if _, _, err := e.ConvertRestore(ctx, wb, hooked, cb.SessionID, engine.RestoreOptions{Home: codexHome, Cwd: cwdA, ClientClosed: true}); errcode.CodeOf(err) != errcode.NeedsAction {
+		t.Fatalf("late old target retired: %v", err)
+	}
+	if files, _ := filepath.Glob(filepath.Join(codexHome, "sessions", "*", "*", "*", "rollout-*.jsonl")); len(files) != 1 {
+		t.Fatal("failed conversion left a new thread")
+	}
+	for _, b := range mustBindings(t, e, cb.SessionID) {
+		if b.AgentProfile.Agent == "codex" && b.State != session.StateActive {
+			t.Fatal("retired old target with uncaptured progress")
+		}
+	}
+	os.WriteFile(p, original, 0600)
 	_, rec2, err := e.ConvertRestore(ctx, wb, cx, cb.SessionID, engine.RestoreOptions{Home: codexHome, Cwd: cwdA, ClientClosed: true})
 	if err != nil {
 		t.Fatal(err)
@@ -239,6 +296,32 @@ func TestCrossAgentRoundTrip(t *testing.T) {
 	}
 }
 
+type verifyHookCodex struct {
+	*codex.Adapter
+	hook func()
+}
+
+func (a verifyHookCodex) WriterWith(closed bool) agent.Writer {
+	return &verifyHookWriter{Writer: a.Adapter.WriterWith(closed), hook: a.hook}
+}
+
+type verifyHookWriter struct {
+	agent.Writer
+	hook func()
+}
+
+func (w *verifyHookWriter) Verify(ctx context.Context, in agent.WriteInput, r agent.Receipt) error {
+	if err := w.Writer.Verify(ctx, in, r); err != nil {
+		return err
+	}
+	if w.hook != nil {
+		fn := w.hook
+		w.hook = nil
+		fn()
+	}
+	return nil
+}
+
 func mustBindings(t *testing.T, e *engine.Engine, sid string) []session.Binding {
 	t.Helper()
 	bs, err := e.Store.Bindings(sid)
@@ -246,4 +329,103 @@ func mustBindings(t *testing.T, e *engine.Engine, sid string) []session.Binding 
 		t.Fatal(err)
 	}
 	return bs
+}
+
+// Two computers can independently convert the same Codex revision, producing
+// distinct native WorkBuddy IDs. A later WB continuation is still one logical
+// session; native restore must migrate the local binding rather than attach
+// new cursors to the old native ID.
+func TestNativeRestoreAcrossConvertedIdentities(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS writer")
+	}
+	ctx := context.Background()
+	cxHome, waHome, wbHome, pa, pb := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	testRegistry(t, waHome, "account-A")
+	testRegistry(t, wbHome, "account-B")
+	cfg := config.DefaultConfig()
+	cfg.Agents.Codex.Home = cxHome
+	cx := codex.New(cfg)
+	a := writerTestAdapter{New(cfg), testWriter()}
+	b := writerTestAdapter{New(cfg), testWriter()}
+	tid := codexgen.ThreadIDFor(73)
+	path := filepath.Join(cxHome, "sessions", "2026", "09", "01", "rollout-2026-09-01T01-46-53-"+tid+".jsonl")
+	os.MkdirAll(filepath.Dir(path), 0700)
+	os.WriteFile(path, codexgen.Rollout(codexgen.Options{Seed: 73, Turns: 1, Cwd: pa}), 0600)
+	sa := writerStore(t)
+	sb := peerStore(t, sa)
+	ea := &engine.Engine{Store: sa, DeviceID: session.NewDeviceID()}
+	eb := &engine.Engine{Store: sb, DeviceID: session.NewDeviceID()}
+	binding, _, err := ea.Track(ctx, cx, agent.NativeRef{Home: cxHome, NativeID: tid}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mirrorRevisions(t, sa, sb, binding.SessionID)
+	_, ra, err := ea.ConvertRestore(ctx, cx, a, binding.SessionID, engine.RestoreOptions{Home: waHome, Cwd: pa, ClientClosed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rb, err := eb.ConvertRestore(ctx, cx, b, binding.SessionID, engine.RestoreOptions{Home: wbHome, Cwd: pb, ClientClosed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ra.NativeSessionID == rb.NativeSessionID {
+		t.Fatal("conversions unexpectedly share a native ID")
+	}
+	dirA := strings.Trim(strings.ReplaceAll(pa, "/", "-"), "-")
+	dirB := strings.Trim(strings.ReplaceAll(pb, "/", "-"), "-")
+	oldPath := filepath.Join(waHome, "projects", dirA, ra.NativeSessionID+".jsonl")
+	oldBytes, _ := os.ReadFile(oldPath)
+	pathB := filepath.Join(wbHome, "projects", dirB, rb.NativeSessionID+".jsonl")
+	f, err := os.OpenFile(pathB, os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(line(map[string]any{"type": "message", "id": "b-u2", "parentId": rb.Import.LastMarker, "role": "user", "content": "<user_query>B continued</user_query>", "cwd": pb, "sessionId": rb.NativeSessionID, "timestamp": time.Now().Add(time.Minute).UnixMilli()}))
+	f.Close()
+	bs, _ := sb.Bindings(binding.SessionID)
+	var bb session.Binding
+	for _, candidate := range bs {
+		if candidate.AgentProfile.Agent == AgentName {
+			bb = candidate
+		}
+	}
+	if _, changed, err := eb.Checkpoint(ctx, b, bb.BindingID, "", session.CaptureCheckpoint); err != nil || !changed {
+		t.Fatalf("B continuation: %v", err)
+	}
+	mirrorRevisions(t, sb, sa, binding.SessionID)
+	_, restored, err := ea.Restore(ctx, a, binding.SessionID, engine.RestoreOptions{Home: waHome, ClientClosed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.NativeSessionID != rb.NativeSessionID {
+		t.Fatal("remote native identity was not installed")
+	}
+	active := 0
+	for _, candidate := range mustBindings(t, ea, binding.SessionID) {
+		if candidate.AgentProfile.Agent != AgentName {
+			continue
+		}
+		if candidate.State == session.StateActive {
+			active++
+			if candidate.NativeSessionID != rb.NativeSessionID || candidate.LocalCwd != pa {
+				t.Fatalf("binding identity/cwd mismatch: %+v", candidate)
+			}
+			if _, changed, err := ea.Checkpoint(ctx, a, candidate.BindingID, "", session.CaptureCheckpoint); err != nil || changed {
+				t.Fatalf("import captured again: %v changed=%v", err, changed)
+			}
+		} else if candidate.NativeSessionID == ra.NativeSessionID && candidate.State != session.StateSuperseded {
+			t.Fatal("old native binding not retired")
+		}
+	}
+	if active != 1 {
+		t.Fatalf("active WB bindings=%d", active)
+	}
+	if current, _ := os.ReadFile(oldPath); !bytes.Equal(current, oldBytes) {
+		t.Fatal("old native session was modified")
+	}
+	newPath := filepath.Join(waHome, "projects", dirA, rb.NativeSessionID+".jsonl")
+	if content, _ := os.ReadFile(newPath); !bytes.Contains(content, []byte("B continued")) {
+		t.Fatal("remote continuation lost")
+	}
 }

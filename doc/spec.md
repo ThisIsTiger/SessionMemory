@@ -2150,16 +2150,20 @@ type Serializer interface { SerializeConverted(out Output, t Target) (Serialized
 `agent.MemSnapshot` 是内存中的 `SnapshotReader`。流程（`engine.ConvertRestore(ctx, from, dst, sessionID, RestoreOptions)`）：
 
 1. 取要转换的 revision（默认有效头；冲突则拒绝），来源 Agent 必须与 revision 的 `AgentProfile.Agent` 一致，且与目标不同；
-2. 幂等：本设备上同目标 Agent 已有 `ImportReceipt.SourceRevision == 该 revision` 的 converted binding → 返回 `not_found`（附已有 `native_session_id`），不产生第二个会话；已有的 active binding 若包含本 revision 没有的进展（`LandingFor` = NeedsAction）→ `needs_action`，若落后则在本次提交时 **superseded**；
+2. 幂等：本设备上同目标 Agent 已有 `ImportReceipt.SourceRevision == 该 revision` 的 converted binding → 返回 `not_found`（附已有 `native_session_id`），不产生第二个会话；已有的 active binding 若包含本 revision 没有的进展（`LandingFor` = NeedsAction）→ `needs_action`，若落后则在本次提交时 **superseded**。替换前检查目标 home 与绑定一致、客户端已关闭，并用只读 Capture 拒绝未采集数据、半行或 Unsafe；在安装锁内及提交前复核，失败只撤销新安装，旧绑定保持 active；
 3. `ConversionReport` 得到 `Output`（`ToolMaps` 当前对两个目标都为空：所有工具调用/结果渲染成文本，因为外来工具的名称与参数形状未经验证，E3/E4）；
 4. `restoreWorkspace`（沿用原生恢复的 cwd、路径映射、代码状态缺口与 `--allow-code-mismatch`），目标 cwd 必须是本机已存在的绝对目录；
 5. `Serializer` 生成**新的**原生会话（新原生 ID）的文件，放入 `MemSnapshot`；目标原生 Writer 的 `Plan`/`Apply`/`Verify` 照原样处理它（`Mode` 在 Writer 内为 native，`Plan.Mode` 随后改为 `ModeConvert` 并附上 `Report`，重新计算 `Digest`）；
 6. 共用的 `runInstall`（`Restore` 与 `ConvertRestore` 同一条尾部）完成锁、备份、journal、适配采集（adoption）、校验、binding 提交；崩溃矩阵与原生恢复相同；
 7. 新 binding：`install_mode = converted`，`AgentProfile` = 目标原生会话的 profile，`BaseRevisionID` = `InstalledRevisionID` = 来源 revision，`ImportReceipt{WriterVersion, SourceRevision, LastMarker, WrittenCount, BoundaryOffset, BoundaryHash}`；被替换的同 Agent active binding 写入 `InstallData.Superseded`，在 `binding_committed` 一并置为 `superseded`（恢复前滚时同样执行，保证任何时刻恰有一个 active）；发布的 receipt 带 `install_mode=converted`。
 
-**回采**：adoption 的游标指向整个已写入文件，因此 `checkpoint` 不会把导入内容当作新记录；用户在目标里继续后，新记录形成下一个 revision，`ParentRevisionID` 为来源 revision（同一 `session_id` 的链），`AgentProfile` 为目标 Agent。再次转换回来源 Agent 时转换的是整条链的最新 revision（整体转换，不是“来源段落原样回放”）。
+**同 Agent 的原生身份迁移**：两端分别转换同一来源时会产生不同原生 ID。`Restore` 通过适配器 `SnapshotIdentity` 比对快照与绑定；ID 不同时按新原生会话安装、沿用本地 cwd，并执行上述旧绑定保护与事务 supersede，保留旧原生文件/登记行，不把新快照的游标记到旧 ID 上。
 
-**Codex 序列化**（`source/codex/convert.go`，Codex CLI 0.162.1 实测）：新线程 UUIDv7；文件 `sessions/YYYY/MM/DD/rollout-<本地时间>-<id>.jsonl`；记录带连续 `ordinal`；`session_meta` 含 `session_id/id/timestamp/cwd/runtime_workspace_roots/originator("Codex Desktop")/cli_version/source("vscode")/thread_source("user")/model_provider(取目标 `config.toml`，缺省 openai)/history_mode("paginated")/context_window`；每条用户消息开一个 turn（`task_started`，上一个以 `task_complete` 收尾）；用户/助手消息各写两层：`response_item`（模型可见）与 `event_msg item_completed`（`UserMessage` 的 `content:[{type:"text",...}]`、`AgentMessage` 的 `content:[{type:"Text",...}]`，含 `thread_id/turn_id/started_at_ms/completed_at_ms`）。**不要**写旧式 `user_message`/`agent_message` 事件：0.162.1 只从 `item_completed` 重建 turn，只写旧事件会得到“模型看得到、界面 turn 为空”的会话（实测）。compaction 摘要作为带来源标注的助手消息。
+**回采**：`sync` 自动采集 native 和 converted 的 active binding；`checkpoint SESSION_ID [--agent A]` 在有多个匹配的本地 active binding 时要求指定 Agent，不任意选择。adoption 的游标指向整个已写入文件，因此 `checkpoint` 不会把导入内容当作新记录；用户在目标里继续后，新记录形成下一个 revision，`ParentRevisionID` 为来源 revision（同一 `session_id` 的链），`AgentProfile` 为目标 Agent。再次转换回来源 Agent 时转换的是整条链的最新 revision（整体转换，不是“来源段落原样回放”）。
+
+**Codex 序列化**（`source/codex/convert.go`，Codex CLI 0.162.1 实测）：新线程 UUIDv7；文件 `sessions/YYYY/MM/DD/rollout-<本地时间>-<id>.jsonl`；记录带连续 `ordinal`；`session_meta` 含 `session_id/id/timestamp/cwd/runtime_workspace_roots/originator("Codex Desktop")/cli_version/source("vscode")/thread_source("user")/model_provider(按 TOML 解析目标 `config.toml` 根配置及 `profile` 选中的 `profiles.<name>` 覆盖值，缺省 openai；配置读取/解析或 profile 无效则拒绝且不输出配置正文)/history_mode("paginated")/context_window`；每条用户消息开一个 turn（`task_started`，上一个以 `task_complete` 收尾）；用户/助手消息各写两层：`response_item`（模型可见）与 `event_msg item_completed`（`UserMessage` 的 `content:[{type:"text",...}]`、`AgentMessage` 的 `content:[{type:"Text",...}]`，含 `thread_id/turn_id/started_at_ms/completed_at_ms`）。**不要**写旧式 `user_message`/`agent_message` 事件：0.162.1 只从 `item_completed` 重建 turn，只写旧事件会得到“模型看得到、界面 turn 为空”的会话（实测）。compaction 摘要作为带来源标注的助手消息。
+
+**历史时间与提取**：两个 Serializer 均保留非零历史消息时间，只在缺失时填充；顺序按 ordinal/parentId，而非导入时间排序。Codex Extract 关联 `item_completed` 与同角色、同文本的模型记录，显式非空 UserMessage 可确认正文为人类问题；孤立系统注入仍过滤。Codex AdapterVersion = 0.1.1，两个 Serializer 的 WriterVersion = `codex-convert/0.2`、`workbuddy-convert/0.2`。
 
 **WorkBuddy 序列化**（`source/workbuddy/convert.go`）：新会话 UUID；`projects/<编码目录>/<id>.jsonl`；首条 `session-meta`；消息按 `parentId` 链接，每条带 `sessionId`、`cwd`；用户消息用 WorkBuddy 自己的 `<user_query>…</user_query>` 包装；第一条用户消息后写 `ai-title`（标题取首条用户消息前 40 字）；不写 `file-history-snapshot`、推理、工具原生记录（遇到 `OutToolCall` 返回 unsupported）。写入走 §8.4 的原生 Writer（登记行等同原生恢复，默认关闭、版本受限）。
 
@@ -2431,7 +2435,7 @@ JSON 输出统一为“包内类型的 JSON”，类型名在括号里；未列�
 | `discover --agent A` | 列出可纳管的原生会话（`[]agent.NativeSession`：含标题与 cwd 这类设备本地展示文本，只输出到用户自己的终端，绝不写入日志或同步；不含任何记录正文） | M2 |
 | `track --agent A --native-session ID [--project REF]` | 纳管：创建 `session_id`、binding、首个 revision | M3 |
 | `list [--agent A] [--project REF]` | 以 session/revision 为入口，包含已收到但没有本地 binding 的会话（`state=received`） | M3 |
-| `checkpoint SESSION_ID` | 立即采集并发布 | M3 |
+| `checkpoint SESSION_ID [--agent A]` | 立即采集并发布 | M3 |
 | `sync [--watch] [--auto-install]` | 采集、发布、接收、（可选）自动安装 | M4/M5 |
 | `status [SESSION_ID]` | 设计 §11.3 的状态（§7.5） | M3 |
 | `project map REF --path DIR [--rule FROM=TO]...` | 建立/更新 `projects/<ref>.json` | M5 |
@@ -2839,7 +2843,7 @@ M5–M7 的任务在各自里程碑开始前按同样格式补充（依赖 P0 �
 | 账号/权限/沙箱字段是否需要剔除或改写 | §8.3 | E1c | 不修改这些字段，也不声称覆盖 |
 | 子线程是否随父会话一并采集安装 | §8.3、`Options.IncludeSubagents` | E1c | 作为依赖列出缺口，不一并安装 |
 | 运行检测的最终信号与“运行中是否需重启”矩阵 | §8.3 运行检测 | E2a、E2b | **已定（命令行级）**：线程锁；运行中的 app-server 无需重启即可看见新文件；Desktop 界面刷新待肉眼确认 |
-| WorkBuddy 是否需要登记行及最小行内容 | §8.4 Writer | E3 | **5.8.3 手动原生模式已定**：文件与最小登记；默认关闭、版本/schema 白名单、目标本地账号；真实续写回传与 28 项恢复矩阵通过。转换写入见 §9.3（合成会话测试与 14+13 个崩溃点通过，WorkBuddy GUI 上的转换会话显示待肉眼确认） |
+| WorkBuddy 是否需要登记行及最小行内容 | §8.4 Writer | E3 | **5.8.3 手动原生模式已定**：文件与最小登记；默认关闭、版本/schema 白名单、目标本地账号；真实续写回传与 28 项恢复矩阵通过。转换写入见 §9.3（合成会话测试与 14+13 个崩溃点通过，WorkBuddy GUI 上转换会话的显示、真实模型续写和重开已通过，见跨 Agent 验收报告） |
 | Codex Desktop 是否需要 UI 层记录与连续 `ordinal` | §9.3、Codex 序列化 | E4 | **已定（0.162.1 app-server 级）**：转换写入必须带 `item_completed` UI 层记录与连续 `ordinal`，否则 turn 为空；同 Agent 原生恢复仍原样安装不生成 |
 | 导入边界与回采 | `ImportReceipt`、§8.2 | E5 | 无法划定边界则不开放往返续写 |
 | 转换后模型的接受度、上下文容量、compaction 映射 | §9.2 | E6 | 规则按表；报告注明容量风险 |

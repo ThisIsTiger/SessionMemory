@@ -8,9 +8,91 @@ import (
 	"strings"
 	"testing"
 
+	"session-memory/internal/session"
 	"session-memory/internal/testutil/codexgen"
 	"session-memory/internal/vault"
 )
+
+func TestSyncCapturesConvertedContinuation(t *testing.T) {
+	root := t.TempDir()
+	a := &machine{t: t, home: filepath.Join(root, "a"), keys: vault.MemStore{}}
+	os.MkdirAll(a.home, 0700)
+	a.must("init")
+	a.must("transport", "attach-folder", filepath.Join(root, "shared"))
+	proj := filepath.Join(root, "project")
+	os.MkdirAll(proj, 0700)
+	wb := filepath.Join(a.home, "wb")
+	cx := filepath.Join(a.home, "codex")
+	a.must("config", "set", "agents.workbuddy.home", wb)
+	a.must("config", "set", "agents.codex.home", cx)
+	dir := filepath.Join(wb, "projects", "fixture")
+	os.MkdirAll(dir, 0700)
+	var content strings.Builder
+	for _, msg := range []map[string]any{
+		{"type": "message", "id": "u1", "role": "user", "cwd": proj, "content": "first question", "timestamp": int64(1793000000000)},
+		{"type": "message", "id": "a1", "parentId": "u1", "role": "assistant", "cwd": proj, "content": "first answer", "timestamp": int64(1793000000001)},
+	} {
+		b, _ := json.Marshal(msg)
+		content.Write(b)
+		content.WriteByte('\n')
+	}
+	os.WriteFile(filepath.Join(dir, "wb-sync.jsonl"), []byte(content.String()), 0600)
+	var tracked struct{ SessionID string }
+	// Track's JSON uses snake_case.
+	var track map[string]string
+	if err := json.Unmarshal([]byte(a.must("track", "--agent", "workbuddy", "--native-session", "wb-sync", "--json")), &track); err != nil {
+		t.Fatal(err)
+	}
+	tracked.SessionID = track["session_id"]
+	a.must("convert", tracked.SessionID, "--agent", "codex", "--cwd", proj, "--client-closed")
+	if code, _, _ := a.run("checkpoint", tracked.SessionID); code != 2 {
+		t.Fatalf("ambiguous checkpoint must require an agent, got %d", code)
+	}
+	a.must("checkpoint", tracked.SessionID, "--agent", "codex")
+	a.must("sync")
+	files, _ := filepath.Glob(filepath.Join(cx, "sessions", "*", "*", "*", "rollout-*.jsonl"))
+	if len(files) != 1 {
+		t.Fatalf("converted rollout missing: %v", files)
+	}
+	f, err := os.OpenFile(files[0], os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(map[string]any{"type": "event_msg", "payload": map[string]any{"type": "agent_message", "message": "continued after conversion"}})
+	f.Write(append(b, '\n'))
+	f.Close()
+	var result map[string]int
+	if err := json.Unmarshal([]byte(a.must("sync", "--json")), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["captured"] != 1 {
+		t.Fatalf("converted continuation skipped: %+v", result)
+	}
+	var graph struct{ Revisions []session.Revision }
+	if err := json.Unmarshal([]byte(a.must("revisions", tracked.SessionID, "--json")), &graph); err != nil {
+		t.Fatal(err)
+	}
+	revisions := graph.Revisions
+	if len(revisions) != 2 {
+		t.Fatalf("expected one source root and one continuation, got %d", len(revisions))
+	}
+	var child session.Revision
+	for _, r := range revisions {
+		if r.ParentRevisionID != "" {
+			child = r
+		}
+	}
+	if child.AgentProfile.Agent != "codex" {
+		t.Fatalf("continuation has wrong producer profile: %+v", child)
+	}
+	result = nil
+	if err := json.Unmarshal([]byte(a.must("sync", "--json")), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["captured"] != 0 {
+		t.Fatal("unchanged imported history captured again")
+	}
+}
 
 // two simulated computers: separate HOME, SM_HOME and key stores
 type machine struct {

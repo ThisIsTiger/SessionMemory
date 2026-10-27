@@ -1,6 +1,6 @@
 # 实施状态
 
-> 日期：2026-10-27  
+> 日期：2026-10-27
 > 依据：[spec.md](spec.md)（实现规格）、[dev.md](dev.md)（开发计划）、[设计文档](unified-agent-session-sync-design.md)（v0.6）
 
 本文记录**代码已经做到哪里、与规格有哪些偏差、什么还不能做以及为什么**。规格仍是规范性文档；这里的偏差中，已影响格式的都已回写 spec。
@@ -28,7 +28,7 @@
 
 实测修复了 WorkBuddy 把 `<system-reminder>` 与 `<user_query>` 放在同一输入块、导致用户问题全部被过滤的问题（适配器 0.1.1）；以及 macOS 缺默认钥匙串时初始化可能挂起的问题。新增回归、完整默认/failpoint/dev 测试和相应 race/vet 已复核。
 
-第二轮中，WorkBuddy 仅恢复文件后重启不显示；补充同账号完整登记行后成功续写，确定了路线 3 的候选。第三轮已把原生 Writer 接入主 CLI，详见下文；跨 Agent 原生转换、Codex Desktop GUI、真实双机及微云仍待验收。
+第二轮中，WorkBuddy 仅恢复文件后重启不显示；补充同账号完整登记行后成功续写，确定了路线 3 的候选。第三轮已把原生 Writer 接入主 CLI，详见下文；当时跨 Agent 原生转换待验收，现已由第四轮补齐。Codex Desktop GUI、真实双机及微云仍待验收。
 
 ## WorkBuddy 原生 Writer 接入与验收（2026-10-26～27，第三轮）
 
@@ -37,6 +37,12 @@
 正式二进制在隔离配置中完成 track → 加密同步 → restore → GUI 两轮历史 → 真实模型第 3 轮 → checkpoint/同步 → 源端 restore，模型返回 ACK_WRITER_E2E_OK；新增记录 cwd 为目标目录。客户端仍有后台进程时，即使显式 client-closed 也拒绝。新增/快进各 14 个中断点、共 28 项恢复断言通过；全量默认/failpoint/dev 测试、race、vet 和交叉 vet 通过。
 
 此能力仍须手动 opt-in 并完全退出客户端；不启用 WorkBuddy 自动安装，不声称支持其他版本、任意路径编码和超大安装。具体限制、命令及实测证据见 [p0-workbuddy-writer-report.md](p0-workbuddy-writer-report.md)。
+
+## 跨 Agent 续写闭环（2026-10-27，第四轮）
+
+正式 CLI 在隔离配置中完成 Codex 三轮 → WorkBuddy GUI 导入 → GLM-5.3-Flash 真实模型第四轮 → 自动同步回传 → 转回 Codex → CLI 第五轮 → app-server 重开完整五轮；WorkBuddy 退出重开后四轮完整。Codex 模型端使用本地受控服务，WorkBuddy 使用真实服务。详见 [跨 Agent 报告](p0-convert-report.md)。
+
+补齐 converted binding 的自动回采、checkpoint Agent 选择、旧目标未采集进展/半行/运行状态的提交前保护、不同转换原生 ID 的同 Agent 恢复。修正历史时间、字面 HTML 用户消息与 Codex UI 记录关联；provider 改为完整 TOML 与 profile 解析，拒绝无效配置且不泄露正文。多 session 合并仍按设计延期。
 
 ## 1. 已实现并有测试
 
@@ -48,7 +54,7 @@
 | M4 | vault 加解密与加入包、凭据存储接口（系统钥匙串）、FolderTransport、发布/接收算法、隔离与 `device_id` 克隆检测、发布崩溃矩阵 | `internal/{vault,transport,sync,device}` |
 | M5 | `init`、`transport attach-folder`、`device invite/join/regenerate-id`、`discover`、`track`、`list`、`status`、`checkpoint`、`sync [--watch] [--auto-install]`、`revisions`、`choose`、`project map`、`restore [--plan]`、`open`、`verify [--deep]`、`auto-install`；冲突检测与落地 | `cmd/session-memory`、`internal/session` |
 | M6（读取侧与规则） | WorkBuddy 适配器（发现含软删除、采集含旁路文件与 blob、探测）；Canonical 提取（Codex 主流/链接、WorkBuddy 活动路径）；`convert.Convert` 全部规则与保真度报告；`convert --plan`、`fidelity`、`continue` | `internal/{source/workbuddy,convert,canonical}` |
-| M6（跨 Agent 转换写入） | `convert.Serializer`、`agent.MemSnapshot`、`engine.ConvertRestore`（与 `Restore` 共用 `runInstall`）、binding supersede、Codex/WorkBuddy 序列化、`convert` 命令；Codex 目标已用真实 app-server 与 CLI（本地桩模型）验证 | `internal/{convert,engine,agent}`、`internal/source/{codex,workbuddy}/convert*.go` |
+| M6（跨 Agent 转换写入） | `convert.Serializer`、`agent.MemSnapshot`、`engine.ConvertRestore`（与 `Restore` 共用 `runInstall`）、binding supersede、Codex/WorkBuddy 序列化、`convert` 命令；Codex CLI / app-server（本地桩模型）及 WorkBuddy GUI（真实模型）往返、重开验证 | `internal/{convert,engine,agent}`、`internal/source/{codex,workbuddy}/convert*.go` |
 | M6（WorkBuddy 原生写入） | 手动路线 3、版本/schema 白名单、目标本地账号、文件及行级回滚、路径映射与续写往返；默认 opt-out | `internal/source/workbuddy/{writer,registry,runtime}.go` |
 | M7（兜底） | Resume Pack（确定性，不依赖 LLM）、`resume-pack` | `internal/bridge` |
 | P0 工具 | `dev sandbox/inventory/scrub/codex write/codex append/codex locks/report`（`-tags dev`，发布构建没有），沙箱安全守卫 | `internal/p0`、`cmd/session-memory/dev_*.go` |
@@ -75,7 +81,7 @@
 | 项 | 原因 |
 |---|---|
 | Codex Desktop GUI 上的显示/继续/重开验证 | CLI / app-server 已通过；仍需独立 GUI 配置，不把日常客户端用于实验 |
-| WorkBuddy 更广版本/路径/容量；转换的原生工具记录、附件、压缩边界 | 原生 Writer 已限量接通；转换写入已通（文本渲染）；原生工具记录/附件/压缩（E4/E6）及 WorkBuddy GUI 显示转换会话仍待验证 |
+| WorkBuddy 更广版本/路径/容量；转换的原生工具记录、附件、压缩边界 | 原生 Writer 已限量接通；转换写入已通（文本渲染）；原生工具记录/附件/压缩（E4/E6）仍待验证；WorkBuddy GUI 转换会话显示/续写/重开已通过 |
 | 客户端运行检测与无人值守安装 | Codex 线程锁与 macOS WorkBuddy 进程检测已实现；WorkBuddy 没有已证实的厂商协作写锁，不允许无人值守安装；Windows/Linux 仍未实测 |
 | 后台常驻（登录项注册、钥匙串解锁策略） | 设计 §6.4 第 6 点，M5 的系统集成部分 |
 | `mcp serve`（兜底路径的只读 MCP） | M7，低优先级；Resume Pack 文件已可用 |
@@ -120,11 +126,11 @@ source "$HOME/.session-memory/dev/sandboxes/e1/env.sh"      # 然后从这个终
 
 ## 验证结果
 
-最近一次全量运行（2026-10-26）：
+最近一次全量运行（2026-10-27）：
 
 - `gofmt -l`：无输出；
 - `go vet ./...`，以及 `-tags failpoint`、`-tags dev`，并对 `GOOS=linux`、`GOOS=windows` 交叉 vet：通过（Windows 上的测试本身未在 Windows 实机运行，只在 CI 三平台矩阵里跑）；
-- `go test ./...`、`go test -race ./internal/...`、`go test -tags failpoint ./...`（含 CLI）、`go test -tags dev ./cmd/... ./internal/p0/...`：全部通过；
+- `go test ./...`、`go test -tags failpoint ./...`（含 CLI）、`go test -tags dev ./cmd/... ./internal/p0/...`：全部通过；本轮受影响包 `internal/engine`、`internal/source/codex`、`internal/source/workbuddy` 与 `cmd/session-memory` 的 race 测试全部通过；
 - 崩溃矩阵：采集 10 个点、发布 9 个点、安装 11 个点，逐点注入失败 + 恢复后断言；
 - WorkBuddy 新增/快进各 14 个中断点，共 28 项；包含 SQLite 登记提交后、binding 提交前的恢复；
 - 大会话采集：144 MiB 的合成会话，峰值堆增长 26 MiB。

@@ -40,6 +40,13 @@ func (e *Engine) ConvertRestore(ctx context.Context, from, dst agent.Adapter, se
 	}
 	bs, _ := e.Store.Bindings(sessionID)
 	var supersede []string
+	var retired []session.Binding
+	var w agent.Writer
+	if cw, ok := dst.(closedWriter); ok {
+		w = cw.WriterWith(opt.ClientClosed)
+	} else {
+		w = dst.Writer()
+	}
 	for _, b := range bs {
 		if b.DeviceID != e.DeviceID || b.AgentProfile.Agent != dst.Name() {
 			continue
@@ -50,6 +57,9 @@ func (e *Engine) ConvertRestore(ctx context.Context, from, dst agent.Adapter, se
 		if b.State != session.StateActive {
 			continue
 		}
+		if b.NativeHome != opt.Home {
+			return agent.Plan{}, nil, errcode.New(errcode.NeedsAction, "the active target binding belongs to another agent home")
+		}
 		switch session.LandingFor(g, b.InstalledRevisionID, rev.RevisionID) {
 		case session.LandUpToDate:
 			return agent.Plan{}, nil, errcode.New(errcode.NotFound, "the existing "+dst.Name()+" session is already at this revision").With("native_session_id", b.NativeSessionID)
@@ -57,6 +67,13 @@ func (e *Engine) ConvertRestore(ctx context.Context, from, dst agent.Adapter, se
 			return agent.Plan{}, nil, errcode.New(errcode.NeedsAction, "the existing "+dst.Name()+" session has progress this revision does not include; choose or merge first")
 		}
 		supersede = append(supersede, b.BindingID)
+		retired = append(retired, b)
+	}
+	checkRetired := func(ctx context.Context) error {
+		return checkConversionRetirement(ctx, dst, w, retired, opt.ClientClosed)
+	}
+	if err := checkRetired(ctx); err != nil {
+		return agent.Plan{}, nil, err
 	}
 	out, err := e.ConversionReport(ctx, ex, rev, dst.Name())
 	if err != nil {
@@ -77,11 +94,14 @@ func (e *Engine) ConvertRestore(ctx context.Context, from, dst agent.Adapter, se
 	if err != nil {
 		return agent.Plan{}, nil, err
 	}
-	var w agent.Writer
-	if cw, ok := dst.(closedWriter); ok {
-		w = cw.WriterWith(opt.ClientClosed)
-	} else {
-		w = dst.Writer()
+	checkEnvironment := check
+	check = func(ctx context.Context) error {
+		if checkEnvironment != nil {
+			if err := checkEnvironment(ctx); err != nil {
+				return err
+			}
+		}
+		return checkRetired(ctx)
 	}
 	in := agent.WriteInput{SessionID: sessionID, RevisionID: rev.RevisionID, Mode: agent.ModeNative, Source: built.Snapshot, SourceProfile: built.Profile,
 		Target: built.Profile, TargetState: agent.TargetState{Home: opt.Home}, Cwd: cwd, ValidateEnvironment: check}
@@ -95,6 +115,9 @@ func (e *Engine) ConvertRestore(ctx context.Context, from, dst agent.Adapter, se
 	report.Route = plan.Route
 	plan.Report = &report
 	plan.Warnings = append(plan.Warnings, gaps...)
+	if len(supersede) > 0 {
+		plan.Warnings = append(plan.Warnings, "previous_target_binding_superseded")
+	}
 	if len(gaps) > 0 && opt.AllowCodeMismatch {
 		plan.Warnings = append(plan.Warnings, "code_state_override")
 	}
@@ -108,7 +131,7 @@ func (e *Engine) ConvertRestore(ctx context.Context, from, dst agent.Adapter, se
 	writerVersion, last, count := built.WriterVersion, built.Last, int64(built.Records)
 	src := rev.RevisionID
 	return e.runInstall(ctx, installSpec{sessionID: sessionID, revisionID: rev.RevisionID, ad: dst, w: w, in: in, plan: plan, opt: opt, cwd: cwd, gaps: gaps,
-		mode: session.InstallConverted, profile: built.Profile, supersede: supersede,
+		mode: session.InstallConverted, profile: built.Profile, supersede: supersede, beforeCommit: checkRetired,
 		boundary: func(r *session.ImportReceipt) {
 			r.WriterVersion, r.SourceRevision, r.LastMarker, r.WrittenCount = writerVersion, src, last, count
 			r.At = session.FormatTime(time.Now())

@@ -1,6 +1,6 @@
-# 跨 Agent 转换写入验证（命令行 / app-server 级）
+# 跨 Agent 转换写入与真实客户端往返验证
 
-> 日期：2026-10-27。macOS arm64，Codex CLI `0.162.1`。设计见 [spec §9.3](spec.md)。
+> 日期：2026-10-27。macOS arm64，Codex CLI `0.162.1`、WorkBuddy `5.8.3`。设计见 [spec §9.3](spec.md)。
 
 ## 验证了什么
 
@@ -26,12 +26,39 @@
 - 命令行（`TestCrossAgentPlanAndResumePack`）：缺本地项目目录拒绝；`--plan` 不写文件并列出将创建的文件；真实执行创建线程；重复转换同一 revision 被拒。
 - 崩溃矩阵（`-tags failpoint`）：转换安装 14 个点（各状态前后、`mid_write`、`after_registry`）；转回并 supersede 13 个点。`verified` 之前全部撤销（无文件、无登记行、无 binding），之后前滚到完整的 converted binding 且只有一个 active。
 
+## 第四轮：主 CLI 的 Codex → WorkBuddy → Codex 往返（2026-10-27）
+
+本轮使用正式构建、同一 Mac 上两套独立状态目录与系统钥匙串、共享加密目录。全部原生写入位于 `~/.session-memory/dev/sandboxes/live-20261026-pw1nxsm0/`，WorkBuddy 由用户在隔离窗口登录；没有复制账号凭据。WorkBuddy 使用真实 GLM-5.3-Flash，Codex 使用真实 CLI / app-server 与本地受控 Responses 服务，后者验证的是客户端上下文传递。
+
+| 步骤 | 实测结果 |
+|---|---|
+| Codex 原生三轮 → 同步 → WorkBuddy 转换安装 | 新会话出现在侧边栏；GUI 展示完整三轮及来源的昨日时间 |
+| WorkBuddy 第四轮真实模型续写 | 正确列出 `ACK_ALPHA`、`ACK_BETA`、`ACK_GAMMA`，另答 `ACK_CROSS_WB_OK`；未调用工具 |
+| 退出并重开隔离 WorkBuddy | 同一会话完整保留四轮及时间，无需重新导入 |
+| WorkBuddy `sync` → 源端 `sync` → 转回 Codex | 无显式 checkpoint，自动捕获 1 个 WorkBuddy 子 revision，父版本等于转换来源版本 |
+| Codex app-server 加载转换线程 | 四轮历史完整，包含 WorkBuddy 的真实模型回答 |
+| Codex CLI 第五轮续写、app-server 重开 | 模型请求含全部历史标记；回答 `ACK_CROSS_BACK_OK`，重开后完整五轮；本地请求无 Authorization |
+| Codex `sync` 回采、另一端接收、Resume Pack | 自动捕获 1 个 Codex 子 revision，父版本为 WorkBuddy 续写版本；导出完整五轮 |
+| 防重复与运行保护 | 同一来源版本重复转换拒绝；WorkBuddy 运行时即使声明关闭仍拒绝安装 |
+
+另用真实 Codex CLI / app-server 验证了包含字面 `<user_query><b>…</b></user_query>` 的用户问题：转换、续写、回采和 Resume Pack 均保留用户正文，历史时间保留为 `2026-10-26T07:33:20.000Z`。
+
+本轮补齐的实现与回归：
+
+- `sync` 同时采集 native 与 converted binding；同一逻辑会话有多个 active Agent 时，单次 `checkpoint` 需 `--agent`，避免随机选中旧客户端。
+- 替换旧目标绑定前，以只读 Capture 检查未采集数据、半行、Unsafe 与运行状态；安装锁内和提交绑定前再次检查，拒绝后只撤销新安装，保留旧文件和 active binding。回归覆盖 Verify 期间旧会话追加数据的竞争情形。
+- 两端独立转换会生成不同原生 ID；同 Agent 恢复这类后续版本时，创建匹配快照的新身份并 supersede 旧绑定，保留本地 cwd、旧文件和旧登记行，防止 ID 与游标错配。
+- 历史消息时间不再被导入时间覆盖；Codex `item_completed` 的 UserMessage/AgentMessage 与模型记录关联，`Text` 正确提取。仅有匹配的明确用户 UI 记录才提升正文的人类消息身份，孤立注入上下文仍过滤；Codex AdapterVersion 为 0.1.1。
+- Codex provider 使用 `go-toml/v2` v2.4.3 解析目标 TOML 与选中 profile，覆盖根配置；配置读取/解析失败拒绝转换，诊断不包含配置正文。两个 Serializer 版本均为 0.2。
+
 ## 没有验证（不要当作已支持）
 
-- Codex Desktop **图形界面**里转换会话的显示、继续与重开；WorkBuddy 图形界面里**转换会话**的显示与真实模型续写（只验证了 WorkBuddy 目标的文件/登记/回采与 Codex 目标的真实客户端）。
+- Codex Desktop **图形界面**里转换会话的显示、真实模型续写与重开；Codex 当前证据限 CLI / app-server，WorkBuddy GUI 的显示、真实模型续写和重开已通过。
 - 原生工具调用记录（外来工具映射）、附件、子代理、compaction 的原生边界、编辑分支：转换时按文本渲染或丢弃并计入保真度报告。
 - 跨账号（E1c）、Windows/Linux 实机、两台物理电脑。
 
 ## 复现
 
 门控测试 `TestLiveConvertToCodex`（`internal/source/workbuddy/convert_live_test.go`，`SM_LIVE_OUT` 与 `SM_LIVE_PHASE=convert|capture` 控制）生成并回采；外部脚本在 `$SM_HOME/dev/sandboxes/convert-live-*/` 起本地桩模型服务、写隔离 `CODEX_HOME/config.toml`、驱动 `codex app-server` 与 `codex exec resume`。桩服务按请求里出现的标记回答，请求不含任何凭据。
+
+第四轮现场脚本及脱敏断言结果保存在沙箱的 `workbuddy/cross_e2e.py`、`workbuddy/cross_back_live.py`、`workbuddy/cross-e2e/results.json`；字面 HTML 与历史时间验证见 `workbuddy/convert_html_live.py`、`workbuddy/html-convert-live/results.json`。脚本仅可对该隔离夹具分阶段执行，重复安装会按幂等规则拒绝；不应直接用于日常客户端。回归测试见 `TestSyncCapturesConvertedContinuation`、`TestCrossAgentRoundTrip`、`TestNativeRestoreAcrossConvertedIdentities`、`TestTargetProviderUsesTomlAndSelectedProfile`。

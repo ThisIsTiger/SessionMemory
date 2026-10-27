@@ -58,7 +58,7 @@ func blocks(raw json.RawMessage) (text string, images []string) {
 	var parts []string
 	for _, b := range bs {
 		switch b.Type {
-		case "input_text", "output_text", "text":
+		case "input_text", "output_text", "text", "Text":
 			parts = append(parts, b.Text)
 		case "input_image":
 			if strings.HasPrefix(b.ImageURL, "data:") {
@@ -203,12 +203,23 @@ func extractStream(rc io.ReadCloser, path string, gen int) ([]canonical.Item, er
 			var ev struct {
 				Type    string `json:"type"`
 				Message string `json:"message"`
+				Item    struct {
+					Type    string
+					Content json.RawMessage
+				}
 			}
 			json.Unmarshal(env.Payload, &ev)
 			role := map[string]string{"user_message": "user", "agent_message": "assistant"}[ev.Type]
+			if ev.Type == "item_completed" {
+				role = map[string]string{"UserMessage": "user", "AgentMessage": "assistant"}[ev.Item.Type]
+				ev.Message, _ = blocks(ev.Item.Content)
+			}
 			if role != "" {
 				if i, ok := lastMsg[role+"|"+ev.Message]; ok {
 					items[i].Links = append(items[i].Links, raw)
+					if role == "user" && ev.Type == "item_completed" && ev.Message != "" {
+						items[i].Human = true
+					}
 					continue
 				}
 			}

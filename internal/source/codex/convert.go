@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	toml "github.com/pelletier/go-toml/v2"
 
 	"session-memory/internal/agent"
 	"session-memory/internal/convert"
@@ -19,23 +19,55 @@ import (
 )
 
 // ConvertVersion identifies the conversion serialiser in import receipts.
-const ConvertVersion = "codex-convert/0.1"
+const ConvertVersion = "codex-convert/0.2"
 
 // defaultCLIVersion is written into session_meta when the target's own version
 // is unknown. Codex reads it for compatibility decisions only.
 const defaultCLIVersion = "0.162.1"
 
-var providerRe = regexp.MustCompile(`(?m)^\s*model_provider\s*=\s*"([^"]+)"`)
-
 // targetProvider reads the default model provider from the target's own
 // config.toml, so a converted thread uses the account the target already has.
-func targetProvider(home string) string {
-	if b, err := os.ReadFile(filepath.Join(home, "config.toml")); err == nil {
-		if m := providerRe.FindSubmatch(b); m != nil {
-			return string(m[1])
+func targetProvider(home string) (string, error) {
+	b, err := os.ReadFile(filepath.Join(home, "config.toml"))
+	if os.IsNotExist(err) {
+		return "openai", nil
+	}
+	if err != nil {
+		return "", errcode.New(errcode.NeedsAction, "cannot read the target Codex configuration")
+	}
+	var cfg map[string]any
+	if toml.Unmarshal(b, &cfg) != nil {
+		return "", errcode.New(errcode.UnknownFormat, "cannot parse the target Codex configuration")
+	}
+	provider := "openai"
+	readProvider := func(table map[string]any) error {
+		if raw, ok := table["model_provider"]; ok {
+			value, ok := raw.(string)
+			if !ok || strings.TrimSpace(value) == "" {
+				return errcode.New(errcode.UnknownFormat, "invalid target Codex model_provider")
+			}
+			provider = value
+		}
+		return nil
+	}
+	if err := readProvider(cfg); err != nil {
+		return "", err
+	}
+	if raw, ok := cfg["profile"]; ok {
+		name, ok := raw.(string)
+		if !ok || name == "" {
+			return "", errcode.New(errcode.UnknownFormat, "invalid target Codex profile")
+		}
+		profiles, _ := cfg["profiles"].(map[string]any)
+		selected, ok := profiles[name].(map[string]any)
+		if !ok {
+			return "", errcode.New(errcode.NeedsAction, "the selected target Codex profile is missing")
+		}
+		if err := readProvider(selected); err != nil {
+			return "", err
 		}
 	}
-	return "openai"
+	return provider, nil
 }
 
 type rolloutWriter struct {
@@ -47,7 +79,7 @@ type rolloutWriter struct {
 }
 
 func (w *rolloutWriter) stamp(t time.Time) time.Time {
-	if t.IsZero() || t.Before(w.last) {
+	if t.IsZero() {
 		t = w.last
 	}
 	w.last = t
@@ -119,6 +151,10 @@ func (a *Adapter) SerializeConverted(out convert.Output, t convert.Target) (conv
 	if !filepath.IsAbs(t.Cwd) {
 		return convert.Serialized{}, errcode.New(errcode.NeedsAction, "a converted Codex thread needs an absolute local project directory")
 	}
+	provider, err := targetProvider(t.Home)
+	if err != nil {
+		return convert.Serialized{}, err
+	}
 	now := t.Now
 	if now.IsZero() {
 		now = time.Now()
@@ -129,7 +165,7 @@ func (a *Adapter) SerializeConverted(out convert.Output, t convert.Target) (conv
 		"session_id": id, "id": id, "timestamp": now.UTC().Format("2006-01-02T15:04:05.000Z"),
 		"cwd": t.Cwd, "runtime_workspace_roots": []string{t.Cwd},
 		"originator": "Codex Desktop", "cli_version": defaultCLIVersion, "source": "vscode", "thread_source": "user",
-		"model_provider": targetProvider(t.Home), "history_mode": "paginated",
+		"model_provider": provider, "history_mode": "paginated",
 		"context_window": map[string]any{"window_id": uuid.Must(uuid.NewV7()).String()},
 	}
 	if err := w.rec(now, "session_meta", meta); err != nil {

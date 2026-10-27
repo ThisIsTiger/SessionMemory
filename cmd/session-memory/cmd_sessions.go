@@ -211,7 +211,7 @@ func newStatusCmd(a *App) *cobra.Command {
 }
 
 func newCheckpointCmd(a *App) *cobra.Command {
-	return &cobra.Command{Use: "checkpoint <session_id>", Short: "Capture now and publish", Args: cobra.ExactArgs(1),
+	c := &cobra.Command{Use: "checkpoint <session_id>", Short: "Capture now and publish", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := a.openRT(cmd.Context(), false)
 			if err != nil {
@@ -219,9 +219,13 @@ func newCheckpointCmd(a *App) *cobra.Command {
 			}
 			defer r.Close()
 			bs, _ := r.Store.Bindings(args[0])
+			name, _ := cmd.Flags().GetString("agent")
 			var active *session.Binding
 			for i := range bs {
-				if bs[i].State == session.StateActive && bs[i].DeviceID == r.Info.DeviceID {
+				if bs[i].State == session.StateActive && bs[i].DeviceID == r.Info.DeviceID && (name == "" || bs[i].AgentProfile.Agent == name) {
+					if active != nil {
+						return errcode.New(errcode.Usage, "multiple active agent bindings; select --agent or use sync to capture all")
+					}
 					active = &bs[i]
 				}
 			}
@@ -249,6 +253,8 @@ func newCheckpointCmd(a *App) *cobra.Command {
 			fmt.Fprintf(a.Out, "changed=%v revision=%s published=%d\n", changed, rev.RevisionID, published)
 			return nil
 		}}
+	c.Flags().String("agent", "", "capture this agent when the session has multiple active bindings")
+	return c
 }
 
 func newSyncCmd(a *App) *cobra.Command {
@@ -264,7 +270,7 @@ func newSyncCmd(a *App) *cobra.Command {
 				out := map[string]int{}
 				bs, _ := r.Store.Bindings("")
 				for _, b := range bs {
-					if b.State != session.StateActive || b.DeviceID != r.Info.DeviceID || b.InstallMode != session.InstallNative {
+					if b.State != session.StateActive || b.DeviceID != r.Info.DeviceID || (b.InstallMode != session.InstallNative && b.InstallMode != session.InstallConverted) {
 						continue
 					}
 					ad, err := a.adapter(b.AgentProfile.Agent)

@@ -236,6 +236,11 @@ func (a *Adapter) Workspace(ctx context.Context, src agent.SnapshotReader) (stri
 	return "", errcode.New(errcode.NeedsAction, "WorkBuddy snapshot has no workspace; select --cwd")
 }
 
+func (a *Adapter) SnapshotIdentity(_ context.Context, src agent.SnapshotReader) (string, error) {
+	_, id, err := mainArtifact(src)
+	return id, err
+}
+
 func (w *Writer) build(ctx context.Context, in agent.WriteInput) (nativeBuild, error) {
 	b := nativeBuild{files: map[string][]byte{}, beforeFiles: map[string]fileBaseline{}}
 	if !w.AllowRegistryWrite {

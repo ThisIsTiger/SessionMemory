@@ -3,6 +3,7 @@ package codex
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"testing"
 
@@ -11,6 +12,26 @@ import (
 	"session-memory/internal/session"
 	"session-memory/internal/testutil/codexgen"
 )
+
+func TestExplicitUserUILayerDoesNotPromoteInjectedContext(t *testing.T) {
+	var data bytes.Buffer
+	for _, record := range []map[string]any{
+		{"type": "response_item", "payload": map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "<system-reminder>runtime context</system-reminder>"}}}},
+		{"type": "response_item", "payload": map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "<b>literal user question</b>"}}}},
+		{"type": "event_msg", "payload": map[string]any{"type": "item_completed", "item": map[string]any{"type": "UserMessage", "id": "user-id", "content": []any{map[string]any{"type": "text", "text": "<b>literal user question</b>"}}}}},
+	} {
+		b, _ := json.Marshal(record)
+		data.Write(b)
+		data.WriteByte('\n')
+	}
+	var items []canonical.Item
+	if err := New(configDefault()).Extract(context.Background(), bufSnap{data.Bytes()}, func(it canonical.Item) error { items = append(items, it); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 || items[0].Human || !items[1].Human || len(items[1].Links) != 1 {
+		t.Fatalf("wrong user provenance: %+v", items)
+	}
+}
 
 type bufSnap struct{ data []byte }
 

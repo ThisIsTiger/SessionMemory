@@ -121,13 +121,84 @@ func TestSerializeConvertedRelativeCwdRefused(t *testing.T) {
 
 func TestTargetProviderFromConfig(t *testing.T) {
 	home := t.TempDir()
-	if got := targetProvider(home); got != "openai" {
+	if got, err := targetProvider(home); err != nil || got != "openai" {
 		t.Fatalf("default provider = %q", got)
 	}
 	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("model = \"x\"\nmodel_provider = \"corp\"\n[model_providers.corp]\nname=\"c\"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if got := targetProvider(home); got != "corp" {
+	if got, err := targetProvider(home); err != nil || got != "corp" {
 		t.Fatalf("provider = %q", got)
+	}
+}
+
+func TestConvertedHistoricalTimesAndLiteralMarkupSurvive(t *testing.T) {
+	a := New(config.DefaultConfig())
+	past := time.Date(2026, 9, 1, 1, 0, 0, 0, time.UTC)
+	out := convert.Output{Records: []convert.OutRecord{
+		{Kind: convert.OutUser, Time: past, Text: "<b>literal question</b>"},
+		{Kind: convert.OutAssistant, Time: past.Add(time.Second), Text: "historical answer"},
+	}}
+	built, err := a.SerializeConverted(out, convert.Target{Cwd: t.TempDir(), Now: past.AddDate(0, 1, 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var messages []canonical.Item
+	if err := a.Extract(context.Background(), built.Snapshot, func(it canonical.Item) error {
+		if it.Kind == canonical.KindMessage {
+			messages = append(messages, it)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 || !messages[0].Human || messages[0].Norm["text"] != out.Records[0].Text {
+		t.Fatalf("literal markup lost its human origin: %+v", messages)
+	}
+	for i, it := range messages {
+		if !it.Time.Equal(out.Records[i].Time) {
+			t.Fatalf("message timestamp rewritten: %v != %v", it.Time, out.Records[i].Time)
+		}
+		if len(it.Links) != 1 {
+			t.Fatal("model/UI layers were not linked")
+		}
+	}
+}
+
+func TestTargetProviderUsesTomlAndSelectedProfile(t *testing.T) {
+	cases := []struct {
+		name, body, want string
+		bad              bool
+	}{
+		{"single-quoted", "model_provider='corp'\n", "corp", false},
+		{"selected-profile", "model_provider='root'\nprofile='office'\n[profiles.office]\nmodel_provider='corp'\n", "corp", false},
+		{"profile-inherits", "model_provider='root'\nprofile='office'\n[profiles.office]\nmodel='fixture'\n", "root", false},
+		{"unselected-profile", "[profiles.office]\nmodel_provider='other'\n", "openai", false},
+		{"multiline-not-a-key", "instructions='''\nmodel_provider=\"forged\"\n'''\nmodel_provider='real'\n", "real", false},
+		{"missing-profile", "profile='missing'\n", "", true},
+		{"invalid-provider", "model_provider={ secret='PRIVATE-SENTINEL' }\n", "", true},
+		{"malformed", "env_http_headers={AUTH='PRIVATE-SENTINEL'\n", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			os.WriteFile(filepath.Join(home, "config.toml"), []byte(tc.body), 0600)
+			got, err := targetProvider(home)
+			if tc.bad {
+				if err == nil {
+					t.Fatal("ambiguous target provider silently accepted")
+				}
+				if strings.Contains(err.Error(), "PRIVATE-SENTINEL") {
+					t.Fatal("configuration content leaked in error")
+				}
+			} else if err != nil || got != tc.want {
+				t.Fatalf("got %q %v, want %q", got, err, tc.want)
+			}
+		})
+	}
+	home := t.TempDir()
+	os.Mkdir(filepath.Join(home, "config.toml"), 0700)
+	if _, err := targetProvider(home); err == nil {
+		t.Fatal("unreadable configuration silently fell back to openai")
 	}
 }

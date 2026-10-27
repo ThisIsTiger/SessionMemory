@@ -11,7 +11,7 @@ import (
 const AgentName = "codex"
 
 // AdapterVersion is recorded in profiles and bindings.
-const AdapterVersion = "0.1.0"
+const AdapterVersion = "0.1.1"
 
 // rolloutName is Codex's file name for a rollout (spec §8.3).
 var rolloutName = regexp.MustCompile(`^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:_([0-9a-fA-F-]{36}))?\.jsonl(\.zst)?$`)

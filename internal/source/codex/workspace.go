@@ -8,6 +8,14 @@ import (
 	"session-memory/internal/jsonl"
 )
 
+func (a *Adapter) SnapshotIdentity(_ context.Context, src agent.SnapshotReader) (string, error) {
+	id := nativeIDOf(agent.WriteInput{Source: src})
+	if id == "" {
+		return "", errcode.New(errcode.UnknownFormat, "snapshot does not identify a Codex thread")
+	}
+	return id, nil
+}
+
 // Workspace reads only the structural cwd of a captured session, never
 // inferring a project path from a filename or a historical tool argument.
 func (a *Adapter) Workspace(ctx context.Context, snap agent.SnapshotReader) (string, error) {

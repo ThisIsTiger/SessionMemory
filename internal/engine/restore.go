@@ -26,6 +26,10 @@ type rollbackGuard interface {
 	CanRollback(context.Context, agent.WriteInput) error
 }
 
+type snapshotIdentity interface {
+	SnapshotIdentity(context.Context, agent.SnapshotReader) (string, error)
+}
+
 // Restore installs a synced revision into this device's agent home (spec §4.4,
 // design §6.2). It refuses conflicts and non-fast-forward landings.
 func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string, opt RestoreOptions) (agent.Plan, *agent.Receipt, error) {
@@ -45,6 +49,9 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 		}
 	}
 	if bnd != nil {
+		if bnd.NativeHome != opt.Home {
+			return agent.Plan{}, nil, errcode.New(errcode.NeedsAction, "the active binding belongs to another agent home")
+		}
 		switch session.LandingFor(g, bnd.InstalledRevisionID, target) {
 		case session.LandUpToDate:
 			return agent.Plan{}, nil, errcode.New(errcode.NotFound, "already installed at this revision")
@@ -56,6 +63,22 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 	if err != nil {
 		return agent.Plan{}, nil, err
 	}
+	var retiring []session.Binding
+	if bnd != nil {
+		if identity, ok := ad.(snapshotIdentity); ok {
+			id, err := identity.SnapshotIdentity(ctx, src)
+			if err != nil {
+				return agent.Plan{}, nil, err
+			}
+			if id != bnd.NativeSessionID {
+				retiring = append(retiring, *bnd)
+				if opt.Cwd == "" {
+					opt.Cwd = bnd.LocalCwd
+				}
+				bnd = nil // install as a new native identity; never keep the old ID with new cursors
+			}
+		}
+	}
 	cwd, pmap, gaps, checkEnvironment, err := e.restoreWorkspace(ctx, ad, src, rev, bnd, opt)
 	if err != nil {
 		return agent.Plan{}, nil, err
@@ -65,6 +88,23 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 		w = cw.WriterWith(opt.ClientClosed)
 	} else {
 		w = ad.Writer()
+	}
+	checkRetired := func(ctx context.Context) error {
+		return checkConversionRetirement(ctx, ad, w, retiring, opt.ClientClosed)
+	}
+	if len(retiring) > 0 {
+		if err := checkRetired(ctx); err != nil {
+			return agent.Plan{}, nil, err
+		}
+		originalCheck := checkEnvironment
+		checkEnvironment = func(ctx context.Context) error {
+			if originalCheck != nil {
+				if err := originalCheck(ctx); err != nil {
+					return err
+				}
+			}
+			return checkRetired(ctx)
+		}
 	}
 	in := agent.WriteInput{SessionID: sessionID, RevisionID: target, Mode: agent.ModeNative, Source: src, SourceProfile: rev.AgentProfile,
 		PathMap: pmap, Target: session.AgentProfile{Agent: ad.Name(), Format: rev.AgentProfile.Format}, TargetState: agent.TargetState{Home: opt.Home}, Cwd: cwd, ValidateEnvironment: checkEnvironment}
@@ -76,6 +116,9 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 		return plan, nil, err
 	}
 	plan.Warnings = append(plan.Warnings, gaps...)
+	if len(retiring) > 0 {
+		plan.Warnings = append(plan.Warnings, "native_identity_changed")
+	}
 	if len(gaps) > 0 && opt.AllowCodeMismatch {
 		plan.Warnings = append(plan.Warnings, "code_state_override")
 	}
@@ -87,26 +130,31 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 	if len(plan.Writes) == 0 {
 		return plan, nil, errcode.New(errcode.NotFound, "the target already matches this revision")
 	}
+	var superseded []string
+	for _, b := range retiring {
+		superseded = append(superseded, b.BindingID)
+	}
 	return e.runInstall(ctx, installSpec{sessionID: sessionID, revisionID: target, ad: ad, w: w, in: in, plan: plan, opt: opt, cwd: cwd, gaps: gaps, bnd: bnd,
-		mode: session.InstallNative, profile: rev.AgentProfile})
+		mode: session.InstallNative, profile: rev.AgentProfile, supersede: superseded, beforeCommit: checkRetired})
 }
 
 // installSpec is everything the shared install tail needs.
 type installSpec struct {
-	sessionID  string
-	revisionID string // the revision this install represents (source revision for a conversion)
-	ad         agent.Adapter
-	w          agent.Writer
-	in         agent.WriteInput
-	plan       agent.Plan
-	opt        RestoreOptions
-	cwd        string
-	gaps       []string
-	bnd        *session.Binding // existing binding being advanced (native only)
-	mode       string           // session.InstallNative | session.InstallConverted
-	profile    session.AgentProfile
-	supersede  []string // active bindings retired when the new binding commits
-	boundary   func(*session.ImportReceipt)
+	sessionID    string
+	revisionID   string // the revision this install represents (source revision for a conversion)
+	ad           agent.Adapter
+	w            agent.Writer
+	in           agent.WriteInput
+	plan         agent.Plan
+	opt          RestoreOptions
+	cwd          string
+	gaps         []string
+	bnd          *session.Binding // existing binding being advanced (native only)
+	mode         string           // session.InstallNative | session.InstallConverted
+	profile      session.AgentProfile
+	supersede    []string // active bindings retired when the new binding commits
+	boundary     func(*session.ImportReceipt)
+	beforeCommit func(context.Context) error
 }
 
 // runInstall executes a planned install under the journal: locks, apply,
@@ -176,6 +224,14 @@ func (e *Engine) runInstall(ctx context.Context, sp installSpec) (agent.Plan, *a
 			return plan, &rec, errcode.Wrap(errcode.RecoveryNeeded, "post-adoption rollback failed", rollbackErr)
 		}
 		return plan, &rec, err
+	}
+	if sp.beforeCommit != nil {
+		if err := sp.beforeCommit(ctx); err != nil {
+			if rollbackErr := rollback(); rollbackErr != nil {
+				return plan, &rec, errcode.Wrap(errcode.RecoveryNeeded, "conversion retirement rollback failed", rollbackErr)
+			}
+			return plan, &rec, err
+		}
 	}
 	if opt.AllowCodeMismatch && rec.Import != nil {
 		rec.Import.CodeStateOverride = gaps
