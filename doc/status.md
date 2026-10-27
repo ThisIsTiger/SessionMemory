@@ -60,6 +60,21 @@
 
 B 机实测（project2 版 + 手动触发登记并重启应用后）：会话出现在「最近」、点开历史完整、输入框可用。未验证：会话归入「项目」分组（需在应用里添加该项目目录，工具不改应用的项目列表）；登记后不重启应用是否直接显示；`runtime_workspace_roots` 里指向 A 机 `~/.codex` 下目录的第二项在 B 机 `resume` 时是否被接受。跨 Agent（转换）暂不按项目批量处理。
 
+## Codex 会话自动归入项目（2026-10-27，B 机只读确认后实现）
+
+**机制**（A 机 0.164 与 B 机 26.901/0.153.4 都确认）：会话属于哪个项目只记在桌面应用私有的 `~/.codex/.codex-global-state.json`：`thread-project-assignments[会话 id] = {projectKind:"local", projectId:<local-projects 里的项目 id>}`。`state_5.sqlite` 的 `threads.project_id` 全是 NULL，app-server 也没有对应请求。没有这条记录的会话进「最近」，并出现在 `projectless-thread-ids`。`thread-project-membership-host-ids` 只在 A 机存在（值 `"local"`），B 机没有这个键。
+
+**实现**（`internal/source/codex/projects.go`、`cmd/session-memory/cmd_assign.go`）：
+1. 选项 `agents.codex.assign_projects`，默认开；`session-memory config set agents.codex.assign_projects false` 关闭。
+2. 会话装进 Codex 后（restore / project restore / adopt / relay / 自动安装）进入待办队列 `<state>/codex-assign-pending.json`，每次同步也会重试。
+3. 只在桌面应用没在运行时写（`ps` 里没有 `ChatGPT.app` / `Codex.app` 主进程；写前再查一次）。应用开着就留在队列，下一轮应用关闭时补上。
+4. 按会话 rollout 第一行的 `cwd`，选应用里 `local-projects.rootPaths` 覆盖它的最深一个项目；没有项目覆盖时留在队列（最多 14 天），提示用户在应用里把该文件夹添加为项目一次，之后自动归入。
+5. 已有归属记录的会话不动（用户或应用已决定）。只加三处：`thread-project-assignments`；已有 `thread-project-membership-host-ids` 键时加 `"local"`；从 `projectless-thread-ids` 里去掉。其他键原样保留。
+6. 写前把原文件备份到 `<state>/backups/codex-global-state.<时间>.json`（保留最近 10 份），用临时文件加原子替换写回。
+7. 测试：`projects_test.go`（最深项目、已有归属、无项目、应用运行时不写、没有改动不备份、无 membership 键不新建）、`assign_test.go`（应用运行时排队，关闭后同步补上；选项关闭时不排队）。
+
+未验证：B 机真实应用上，写入后应用重新打开是否把会话显示在 SessionMemory 项目下。
+
 ## 一条命令接力（2026-10-27）
 
 `session-memory relay`：离开前、到达后各跑一次，等价于 `sync` + 对本机每个已映射项目的 `project restore`（快进安装，装完让 Codex 登记）；只剩「新电脑上每个项目选一次本地目录」这一步。`TestRelayHandsWorkOverAndBack` 覆盖 A→B→A→B 两圈：B 首次提示映射、B 续写后回传、A 收到并装入（A 的原生文件里出现 B 的新内容）、空闲时无事可做、A 再续写后 B 同样快进。真实两机运行（A 机 Apple 芯片 + B 机 Intel，微云）已跑通一圈：A 纳管项目 → B 加入并恢复 → 两边在同一版本后各自续写形成冲突 → A 机 `choose` → B 机把旧分支文件移走后 `relay` 取到所选版本，历史完整、投影条目数与文件一致 → B 机新建的会话自动回到 A 机并装入 Codex。期间修了两处：本机文件已与目标版本字节一致时计划里的写入列表为 nil 导致规范 JSON 报 null（现在规范成空列表，并把绑定推进到目标版本避免日后分叉）；放弃分支的原生文件被用户移走后允许装入所选版本。随后补了两个命令：`adopt`（冲突后输掉的一台一条命令取所选版本，自己的副本备份、失败回滚；`TestRelayConflictChooseThenLoserTakesChosen` 覆盖整个流程含备份内容）与 `autosync`（launchd 每 2 分钟 `relay --quiet`，令牌存系统钥匙串，plist 里没有令牌）。A 机已真实启用，登录项无需环境变量即能完成一次完整同步（退出码 0）。未验证：长时间运行、休眠唤醒、Codex 运行中的后台安装是否总被正确挡住；B 机尚未启用。原先写的"未验证：定时/后台自动运行（目前需手动或由 agent 执行 `relay`）；真实 Codex 客户端里 A→B→A 的整圈。

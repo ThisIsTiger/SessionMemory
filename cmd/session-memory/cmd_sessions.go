@@ -332,6 +332,7 @@ func syncOnce(ctx context.Context, a *App, r *rt) (map[string]int, error) {
 	}
 	out["received_manifests"], out["received_revisions"] = res.Applied, res.Revisions
 	out["pending_objects"], out["quarantined"] = res.PendingObjs, res.Quarantined
+	flushCodexAssign(a, false)
 	return out, nil
 }
 

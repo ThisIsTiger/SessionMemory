@@ -2245,6 +2245,8 @@ DiscoverHomes *bool `json:"discover_homes,omitempty"`
 4. 校验：`homes` 的每一项必须是绝对路径（展开 `~` 后）；`homes` 最多 16 项；
 5. 测试：环境变量优先级、重复目录去重、符号链接指向同一目录只算一次、`discover_homes` 只看目录名且不读 `auth.json`（用权限为 000 的 `auth.json` 构造目录：发现仍然成功，即说明没有打开它）。
 
+Codex 另增布尔键 `agents.codex.assign_projects`（默认 true，`AgentConfig.AssignProjects`）：会话装进 Codex 后，在桌面应用关闭时把它写进应用私有状态文件 `.codex-global-state.json` 的 `thread-project-assignments`，使其归入覆盖其 cwd 的应用项目；写前备份、原子替换，只在没有归属记录时添加，其他内容不改。细节见 `doc/status.md`“Codex 会话自动归入项目”。
+
 WorkBuddy 原生恢复另增布尔键 `agents.workbuddy.allow_registry_write`（默认 false），对应 `AgentConfig.AllowRegistryWrite`。该开关仅允许版本/结构白名单内的手动恢复；`auto_install` 不启用 WorkBuddy 安装，也不绕过 `--client-closed`。
 
 ## 12. 命令行

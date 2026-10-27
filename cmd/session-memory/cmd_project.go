@@ -350,6 +350,7 @@ func registerWithCodex(ctx context.Context, a *App, r *rt, home string, sessionI
 	if len(ids) == 0 {
 		return
 	}
+	defer queueCodexAssign(a, home, ids)
 	found, err := codex.Register(ctx, home, os.Getenv("SM_CODEX_BIN"), ids)
 	switch {
 	case err != nil:

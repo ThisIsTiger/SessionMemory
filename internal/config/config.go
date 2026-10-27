@@ -41,6 +41,9 @@ type AgentConfig struct {
 	// home whose name starts with ".codex" or "codex" and that contain a
 	// "sessions" directory. Only names and that directory are examined.
 	DiscoverHomes *bool `json:"discover_homes,omitempty"`
+	// AssignProjects (Codex only) files installed threads under the matching
+	// project of the desktop app while the app is closed. On by default.
+	AssignProjects *bool `json:"assign_projects,omitempty"`
 }
 
 // IsEnabled reports whether the agent is enabled (default true).
@@ -48,6 +51,10 @@ func (a AgentConfig) IsEnabled() bool { return a.Enabled == nil || *a.Enabled }
 
 // IsAutoInstall reports whether background install is enabled (default false).
 func (a AgentConfig) IsAutoInstall() bool { return a.AutoInstall != nil && *a.AutoInstall }
+
+// IsAssignProjects reports whether installed Codex threads are filed under
+// their desktop-app project (default true).
+func (a AgentConfig) IsAssignProjects() bool { return a.AssignProjects == nil || *a.AssignProjects }
 
 // IsDiscoverHomes reports whether sibling-home discovery is on (default false).
 func (a AgentConfig) IsDiscoverHomes() bool { return a.DiscoverHomes != nil && *a.DiscoverHomes }
@@ -357,6 +364,7 @@ func agentKeys(prefix string, sel func(*Config) *AgentConfig) []keySpec {
 var keys = func() []keySpec {
 	ks := []keySpec{{"home", kindPath, func(c Config) string { return c.Home }}}
 	ks = append(ks, agentKeys("agents.codex", func(c *Config) *AgentConfig { return &c.Agents.Codex })...)
+	ks = append(ks, keySpec{"agents.codex.assign_projects", kindBool, func(c Config) string { return boolStr(c.Agents.Codex.AssignProjects, true) }})
 	ks = append(ks, agentKeys("agents.claude", func(c *Config) *AgentConfig { return &c.Agents.Claude })...)
 	ks = append(ks, agentKeys("agents.workbuddy", func(c *Config) *AgentConfig { return &c.Agents.WorkBuddy })...)
 	ks = append(ks,
