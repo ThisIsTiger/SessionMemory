@@ -92,6 +92,8 @@ func (a *App) keyMarker(name string) string { return filepath.Join(a.Cfg.StateDi
 const (
 	markKeyRemoved = "key-removed-from-cloud" // the user took the key out: do not put it back by itself
 	markKeyHint    = "key-hint-pending"       // this computer joined from the cloud key: offer to remove it after the next sync
+	markKeyPending = "key-publish-pending"    // putting the key in the cloud failed: setup and relay try again
+	markTrackNew   = "track-new-folders"      // setup ran: every sync also takes on sessions in new project folders
 )
 
 func touch(path string) { _ = platform.AtomicWrite(path, []byte("1\n"), 0600) }

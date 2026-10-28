@@ -240,3 +240,18 @@ source "$HOME/.session-memory/dev/sandboxes/e1/env.sh"      # 然后从这个终
 ## 轮询只剩一次调用
 
 之前每个后台进程都要先列账号根目录、再列 vault 目录，才知道 `manifests` 的目录键，一轮轮询至少 3 次调用。现在目录键记在 `<状态目录>/weiyun-keys-<账号>.json`：轮询新 manifest 只剩列 `manifests` 目录这一次（manifest 超过 50 个时每多 50 个再加一次）。记下的键失效时（目录被换掉），第一次出错就丢掉重新学一遍。账号根目录里每多一个文件（比如放二进制包）也不再拖慢轮询。
+
+## 一步接入（setup）与安装页（2026-10-29）
+
+目标：普通用户只把一个链接发给 AI 助手，之后什么都不用想；每个对用户可见的步骤都必须是必要的。
+
+- `session-memory setup`：无提问、可重复运行（可能要几分钟；被打断后重跑即可）。依次：检查微云（环境变量 → 已保存 → 微云 skill 的 `~/.mcporter/mcporter.json`，三处都没有则输出 `NEEDS_WEIYUN` 并给出 skill 安装指引）→ 检测 Codex / WorkBuddy（一个都没有就报错，此时云端什么都没创建）→ 微云里已有同步库就用云端密钥加入（`device join --from-cloud`），没有就 `init` + `attach-weiyun`；云端有库但密钥被移除、或读云端失败时明确报错，绝不新建第二个库 → WorkBuddy 自动打开 `allow_registry_write` → 把最近 `--days`（默认 60）天、工作目录存在且不是 home 的会话按目录建项目（只在本地，不上传；输出“N covered, M skipped (no project folder)”）→ 写下标记 `track-new-folders` → 开后台同步（沙盒里 launchd 加载失败时在桌面留 `开启同步.command`，输出 `NEEDS_USER`）→ `relay`（由它把所有未上传的内容一次发布）。
+- 最后一行说明结果：`done: FIRST_COMPUTER`（微云里第一台；若用户其实配过别的电脑，多半是登录了另一个微云账号）/ `done: JOINED` / `done: ALREADY_CONNECTED`。relay 因微云额度、网络或 `recovery_needed` 失败时，输出 `PENDING: connected; the first upload will finish by itself` 并以 0 退出，由后台同步接着完成；其他错误照常报错。`NEEDS_*` 里的命令都用程序的完整路径。
+- 标记 `track-new-folders`（状态目录）存在时，每次 sync 还会在本地把新文件夹里的新会话纳入（`trackFolders(..., onlyNew)`：已在某个项目目录内的子文件夹不新建项目，home、`/`、已不存在的目录跳过），随同一轮上传，不增加微云调用。没跑过 setup 的用户行为不变。
+- 云端密钥放不进去时（`attach-*` 的警告分支）写 `key-publish-pending`；setup 和手动 relay 看到它就补放一次，成功或已存在则清掉。用户主动移除过密钥（`key-removed-from-cloud`）时不会放回。
+- 令牌优先级不变：环境变量 > 已保存 > skill 配置（只在前两者都没有时用，并会保存下来供后台使用），避免已切换的账号被旧 skill 配置覆盖。
+- relay 现在也会把“恰好只有一个同名文件夹”的项目自动映射，不再只限 WorkBuddy 任务目录；还没有文件夹的项目只说一句“有 N 个来自其他电脑的项目暂时没有对应文件夹（名字…），有了同名文件夹会自动加入”，后台静默运行不再因此每次输出。
+- `project restore` 不写 `--agent` 时按项目会话的来源自动选；`--plan` 不再写入映射，输出 `would install`。
+- 分发：`install.sh`（下载 → sha256 校验 → `~/.local/bin` → `setup`），`.github/workflows/release.yml` 在打 `v*` 标签时构建 darwin/linux × arm64/amd64 并附 `checksums.txt`，并在仍有 `OWNER/` 占位时让发布失败；`INSTALL.md` 是给 AI 助手的执行说明（列出程序输出的每个标记及处理办法），README 顶部是给用户复制的一句话。只支持 macOS（Linux 没有后台同步）。
+- 对话保存在用户自己的微云里，保护程度等同于其微云账号；云端密钥与数据同处一个文件夹，不是对账号持有人的强加密。
+- 待办：仓库地址目前是占位 `OWNER/session-memory`（install.sh、INSTALL.md、README，发布前由 release.yml 检查）；仓库需公开、README 的“private / unlicensed”说明要改；没有同名文件夹的空间项目（如 GEO）仍需指定目录；未在真实第二台电脑上端到端验证（单元测试用文件夹传输和假微云模拟）。

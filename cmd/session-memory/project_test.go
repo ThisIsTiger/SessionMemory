@@ -179,13 +179,24 @@ func TestRelayHandsWorkOverAndBack(t *testing.T) {
 	A.must("config", "set", "agents.workbuddy.home", filepath.Join(A.home, "wb"))
 	os.MkdirAll(bcodex, 0700)
 
-	// B arrives: the project has no folder yet, relay says what to do once
+	// B arrives: the project has no folder yet, relay says it is added by itself once one exists
 	out := B.must("relay", "--client-closed")
-	if !strings.Contains(out, "has no folder on this computer") || !strings.Contains(out, pt.ProjectRef) {
+	if !strings.Contains(out, "have no folder here yet (app)") || strings.Contains(out, "<") {
 		t.Fatalf("first relay on B: %s", out)
 	}
 	projB := filepath.Join(B.home, "work", "app")
 	os.MkdirAll(projB, 0700)
+	// a plan only looks: nothing is mapped or installed, and it says "would"
+	plan := B.must("project", "restore", pt.ProjectRef, "--cwd", projB, "--client-closed", "--allow-code-mismatch", "--plan")
+	if strings.Contains(plan, "installed ") || !strings.Contains(plan, "would install") {
+		t.Fatalf("plan output: %s", plan)
+	}
+	if out := B.must("project", "list"); strings.Contains(out, projB) {
+		t.Fatalf("a plan must not map the project:\n%s", out)
+	}
+	if got, _ := filepath.Glob(filepath.Join(bcodex, "sessions", "*", "*", "*", "*.jsonl")); len(got) != 0 {
+		t.Fatalf("a plan installed %v", got)
+	}
 	B.must("project", "restore", pt.ProjectRef, "--cwd", projB, "--client-closed", "--allow-code-mismatch")
 	files, _ := filepath.Glob(filepath.Join(bcodex, "sessions", "*", "*", "*", "*.jsonl"))
 	if len(files) != 1 {

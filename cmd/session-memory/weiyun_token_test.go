@@ -19,6 +19,7 @@ func tokens(a *App) map[string]string {
 }
 
 func TestWeiyunTokensSurviveWithoutEnvironment(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // not the real Weiyun skill config
 	a := &App{Keys: vault.MemStore{}}
 	t.Setenv(envWeiyunToken, "")
 	t.Setenv(envWeiyunToken2, "")

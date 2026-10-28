@@ -314,7 +314,14 @@ func syncOnce(ctx context.Context, a *App, r *rt) (map[string]int, error) {
 	if r.Multi != nil {
 		r.Multi.CatchUp(ctx) // an account that missed writes is brought level; failures are reported by the mirror
 	}
-	out["auto_tracked"] = autoTrackProjects(ctx, a, r)
+	if exists(a.keyMarker(markTrackNew)) { // set by setup: new project folders are followed
+		n, _, err := a.trackFolders(ctx, r, a.installedAgents(), 60, true)
+		if err != nil {
+			fmt.Fprintf(a.Err, "warning: could not look for new project folders: %v\n", err)
+		}
+		out["auto_tracked"] += n
+	}
+	out["auto_tracked"] += autoTrackProjects(ctx, a, r)
 	bs, _ := r.Store.Bindings("")
 	for _, b := range bs {
 		if b.State != session.StateActive || b.DeviceID != r.Info.DeviceID || (b.InstallMode != session.InstallNative && b.InstallMode != session.InstallConverted) {

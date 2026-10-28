@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -56,8 +57,9 @@ func relayClientState(ctx context.Context, ad agent.Adapter, name string, opt en
 }
 
 // mapTaskProjects gives a project that arrived from another computer its folder
-// here when that folder is one the agent makes by itself (WorkBuddy tasks), so
-// handing a task over needs no command on the receiving side.
+// here when that folder is one the agent makes by itself (WorkBuddy tasks) or
+// the one existing folder with the same name, so handing work over needs no
+// command on the receiving side.
 func mapTaskProjects(ctx context.Context, a *App, r *rt, agents []string) error {
 	mapped := map[string]bool{}
 	for _, pm := range loadProjects(a.Cfg.StateDir()) {
@@ -82,7 +84,7 @@ func mapTaskProjects(ctx context.Context, a *App, r *rt, agents []string) error 
 	for _, ref := range refs {
 		for _, name := range agents {
 			dir, note := autoProjectDirWith(ctx, a, r, ref, name)
-			if dir == "" || !strings.HasPrefix(note, taskFolderNote) {
+			if dir == "" || !(strings.HasPrefix(note, taskFolderNote) || strings.HasPrefix(note, sameNameNote)) {
 				continue
 			}
 			if err := os.MkdirAll(dir, 0755); err != nil {
@@ -95,6 +97,31 @@ func mapTaskProjects(ctx context.Context, a *App, r *rt, agents []string) error 
 		}
 	}
 	return nil
+}
+
+// unmappedNames names projects that have no folder here: the folder name the
+// sessions were recorded in (the ref when that is not known), a few of them.
+func unmappedNames(ctx context.Context, a *App, r *rt, refs, agents []string) string {
+	var names []string
+	for _, ref := range refs {
+		name := ref
+		for _, n := range agents {
+			if ad, err := a.adapter(n); err == nil {
+				if ids, err := projectSessions(r, ref); err == nil {
+					if origin := projectOrigin(ctx, r, ad, ids); origin != "" {
+						name = filepath.Base(origin)
+						break
+					}
+				}
+			}
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) > 5 {
+		return strings.Join(names[:5], ", ") + ", ..."
+	}
+	return strings.Join(names, ", ")
 }
 
 // newRelayCmd is the one command a person needs day to day: run it when
@@ -229,7 +256,7 @@ func newRelayCmd(a *App) *cobra.Command {
 				a.noteRound(active)
 			}
 			if quiet && !a.JSON {
-				noteworthy := sync["published"] > 0 || sync["received_revisions"] > 0 || sync["quarantined"] > 0 || len(unmapped) > 0 || failed > 0 || waiting > 0
+				noteworthy := sync["published"] > 0 || sync["received_revisions"] > 0 || sync["quarantined"] > 0 || failed > 0 || waiting > 0
 				for _, p := range projects {
 					noteworthy = noteworthy || p.Updated > 0
 				}
@@ -257,8 +284,12 @@ func newRelayCmd(a *App) *cobra.Command {
 						fmt.Fprintf(a.Err, "  %s\n", pr)
 					}
 				}
-				for _, u := range unmapped {
-					fmt.Fprintf(a.Out, "project %s (%d session(s)) has no folder on this computer; run once: session-memory project restore %s --cwd <folder> --client-closed\n", u.Ref, u.Sessions, u.Ref)
+				if len(unmapped) > 0 {
+					var refs []string
+					for _, u := range unmapped {
+						refs = append(refs, u.Ref)
+					}
+					fmt.Fprintf(a.Out, "%d project(s) from your other computers have no folder here yet (%s); they are added automatically once a folder with that name exists.\n", len(unmapped), unmappedNames(cmd.Context(), a, r, refs, names))
 				}
 				if sync["quarantined"] > 0 {
 					fmt.Fprintf(a.Out, "%d received item(s) were set aside as invalid\n", sync["quarantined"])
@@ -271,6 +302,7 @@ func newRelayCmd(a *App) *cobra.Command {
 				return errcode.New(errcode.RecoveryNeeded, fmt.Sprintf("%d session(s) need attention (conflict or divergence); see the messages above", failed))
 			}
 			if !quiet { // a background run has nobody to ask
+				a.repairCloudKey(cmd.Context(), func(f string, v ...any) { fmt.Fprintf(a.Err, f+"\n", v...) })
 				offerKeyRemoval(cmd.Context(), a)
 			}
 			return nil

@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -48,6 +49,9 @@ func (a *App) weiyunAccounts() []wyAccount {
 				t = string(b)
 			}
 		}
+		if t == "" && slot.label == "primary" {
+			t = mcporterWeiyunToken() // Weiyun is already connected for the agent's own skill
+		}
 		if t != "" {
 			slot.token = t
 			sum := sha256.Sum256([]byte(t))
@@ -58,12 +62,47 @@ func (a *App) weiyunAccounts() []wyAccount {
 	return out
 }
 
+// mcporterWeiyunToken is the token the Weiyun skill keeps in its mcporter
+// configuration once the user has authorised it, so a computer where Weiyun
+// already works needs no token to be handed over. It is only the last resort:
+// an environment or saved token wins.
+func mcporterWeiyunToken() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(home, ".mcporter", "mcporter.json"))
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		Servers map[string]struct {
+			Headers map[string]string `json:"headers"`
+		} `json:"mcpServers"`
+	}
+	if json.Unmarshal(b, &cfg) != nil {
+		return ""
+	}
+	h := cfg.Servers["weiyun"].Headers["WyHeader"]
+	const key = "mcp_token="
+	if i := strings.Index(h, key); i >= 0 {
+		return strings.TrimSpace(h[i+len(key):])
+	}
+	return ""
+}
+
 // saveWeiyunToken keeps the environment's tokens in the credential store so
 // that background runs, which do not see the shell environment, can use them.
 func (a *App) saveWeiyunToken() error {
 	saved := 0
 	for _, slot := range wyAccountSlots {
-		if t := os.Getenv(slot.envName); t != "" {
+		t := os.Getenv(slot.envName)
+		if t == "" && slot.label == "primary" {
+			if _, err := a.Keys.Load(slot.storeKey); err != nil {
+				t = mcporterWeiyunToken() // nothing saved yet: keep the one the Weiyun skill holds
+			}
+		}
+		if t != "" {
 			if err := a.Keys.Store(slot.storeKey, []byte(t)); err != nil {
 				return err
 			}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -254,8 +255,15 @@ func newProjectRestoreCmd(a *App) *cobra.Command {
 			if !session.ValidProjectRef(ref) {
 				return errcode.New(errcode.Usage, "bad project ref")
 			}
+			if name == "" { // not said: the agent the project's sessions came from
+				var err error
+				if name, err = projectAgent(cmd.Context(), a, ref); err != nil {
+					return err
+				}
+			}
 			cwd, _ := cmd.Flags().GetString("cwd")
 			autoTask := false
+			previewOnly := false // --plan on an unmapped project uses the folder and remembers nothing
 			if _, err := loadProject(a.Cfg.StateDir(), ref); err != nil {
 				if cwd == "" {
 					found, note := autoProjectDir(cmd.Context(), a, ref, name)
@@ -278,12 +286,19 @@ func newProjectRestoreCmd(a *App) *cobra.Command {
 				if st, err := os.Stat(abs); err != nil || !st.IsDir() {
 					return errcode.New(errcode.Usage, "--cwd must be an existing directory")
 				}
-				if err := saveProject(a, session.ProjectMap{SchemaVersion: 1, ProjectRef: ref, LocalPath: abs}); err != nil {
+				if planOnly {
+					previewOnly = true
+					if err := cmd.Flags().Set("cwd", abs); err != nil {
+						return err
+					}
+				} else if err := saveProject(a, session.ProjectMap{SchemaVersion: 1, ProjectRef: ref, LocalPath: abs}); err != nil {
 					return err
 				}
 			}
-			if err := cmd.Flags().Set("project", ref); err != nil {
-				return err
+			if !previewOnly {
+				if err := cmd.Flags().Set("project", ref); err != nil {
+					return err
+				}
 			}
 			if pm, err := loadProject(a.Cfg.StateDir(), ref); err == nil && !planOnly {
 				// sessions created later on this device under the mapped directory flow back
@@ -322,8 +337,12 @@ func newProjectRestoreCmd(a *App) *cobra.Command {
 			}
 			installed, upToDate, skipped, failed := res.Installed, res.UpToDate, res.Skipped, res.Failed+res.Waiting
 			if !a.JSON { // JSON mode prints one document and nothing else
+				verb := "installed"
+				if opt.PlanOnly {
+					verb = "would install"
+				}
 				for _, d := range res.Done {
-					fmt.Fprintf(a.Out, "installed %s\n", d)
+					fmt.Fprintf(a.Out, "%s %s\n", verb, d)
 				}
 			}
 			for _, pr := range res.Problems {
@@ -343,9 +362,39 @@ func newProjectRestoreCmd(a *App) *cobra.Command {
 			}
 			return nil
 		}}
-	c.Flags().String("agent", "codex", "agent name")
+	c.Flags().String("agent", "", "agent name (default: the one the project's sessions came from)")
 	addInstallFlags(c)
 	return c
+}
+
+// projectAgent is the agent a project's sessions were recorded by, when that
+// is one agent; with several, the caller has to say which.
+func projectAgent(ctx context.Context, a *App, ref string) (string, error) {
+	r, err := a.openRT(ctx, true)
+	if err != nil {
+		return "", err
+	}
+	defer r.Close()
+	ids, err := projectSessions(r, ref)
+	if err != nil {
+		return "", err
+	}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if revs, _ := r.Store.Revisions(id); len(revs) > 0 {
+			seen[revs[len(revs)-1].AgentProfile.Agent] = true
+		}
+	}
+	if len(seen) == 0 {
+		return "codex", nil // nothing to go by: what it always was
+	}
+	if len(seen) > 1 {
+		return "", errcode.New(errcode.Usage, "cannot tell which agent to install for (the project has sessions of "+strconv.Itoa(len(seen))+" agents); pass --agent codex|workbuddy")
+	}
+	for n := range seen {
+		return n, nil
+	}
+	return "", nil
 }
 
 // registerWithCodex has Codex itself register freshly installed threads, so the
@@ -434,7 +483,10 @@ func autoProjectDir(ctx context.Context, a *App, ref, agentName string) (string,
 	return autoProjectDirWith(ctx, a, r, ref, agentName)
 }
 
-const taskFolderNote = "the agent's own task folder "
+const (
+	taskFolderNote = "the agent's own task folder "
+	sameNameNote   = "same folder name as "
+)
 
 func autoProjectDirWith(ctx context.Context, a *App, r *rt, ref, agentName string) (string, string) {
 	ad, err := a.adapter(agentName)
@@ -449,14 +501,7 @@ func autoProjectDirWith(ctx context.Context, a *App, r *rt, ref, agentName strin
 	if agentName == "codex" {
 		hints = codex.AppProjectRoots(a.Cfg.CodexHome())
 	}
-	var origins []string
-	for _, id := range ids {
-		if origin, err := r.Eng.OriginDir(ctx, ad, id); err == nil && origin != "" {
-			origins = append(origins, origin)
-		}
-	}
-	// sessions may sit in subfolders; the project's folder is what they share
-	origin := commonDir(origins)
+	origin := projectOrigin(ctx, r, ad, ids)
 	if origin == "" {
 		return "", "the sessions do not record a folder"
 	}
@@ -470,11 +515,23 @@ func autoProjectDirWith(ctx context.Context, a *App, r *rt, ref, agentName strin
 	c := engine.LocalDirCandidates(origin, hints)
 	switch {
 	case len(c) == 1:
-		return c[0], "same folder name as " + filepath.Base(origin)
+		return c[0], sameNameNote + filepath.Base(origin)
 	case len(c) > 1:
 		return "", fmt.Sprintf("%d folders named %s: %s", len(c), filepath.Base(origin), strings.Join(c, ", "))
 	}
 	return "", "no folder named " + filepath.Base(origin) + " in the usual places"
+}
+
+// projectOrigin is the folder a project's sessions were recorded in: sessions
+// may sit in subfolders, so it is what they share ("" when unknown).
+func projectOrigin(ctx context.Context, r *rt, ad agent.Adapter, ids []string) string {
+	var origins []string
+	for _, id := range ids {
+		if origin, err := r.Eng.OriginDir(ctx, ad, id); err == nil && origin != "" {
+			origins = append(origins, origin)
+		}
+	}
+	return commonDir(origins)
 }
 
 // commonDir is the deepest directory containing every given path ("" when

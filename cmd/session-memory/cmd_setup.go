@@ -116,6 +116,7 @@ func newTransportCmd(a *App) *cobra.Command {
 				fmt.Fprintf(a.Err, "warning: could not save the Weiyun token(s) for background runs: %v\n", err)
 			}
 			if put, err := a.publishCloudKey(cmd.Context(), false); err != nil {
+				touch(a.keyMarker(markKeyPending)) // setup and relay try again
 				fmt.Fprintf(a.Err, "warning: could not put the vault key in the cloud folder (%v); a new computer will need an invite bundle\n", err)
 			} else if put {
 				fmt.Fprintln(a.Err, "note: the vault key is stored in the cloud folder so new computers can join without a passphrase")
@@ -157,6 +158,7 @@ func newTransportCmd(a *App) *cobra.Command {
 			}
 			a.Cfg.Transport.Folder = abs
 			if put, err := a.publishCloudKey(cmd.Context(), false); err != nil {
+				touch(a.keyMarker(markKeyPending)) // setup and relay try again
 				fmt.Fprintf(a.Err, "warning: could not put the vault key in the folder (%v); a new computer will need an invite bundle\n", err)
 			} else if put {
 				fmt.Fprintln(a.Err, "note: the vault key is stored in the folder so new computers can join without a passphrase")
