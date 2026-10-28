@@ -526,3 +526,60 @@ func TestNativeWorkBuddyEngineRoundTrip(t *testing.T) {
 		t.Fatal("source account migrated")
 	}
 }
+
+func TestSupportedVersionIsTheFiveLine(t *testing.T) {
+	for v, want := range map[string]bool{"5.8.3": true, "5.9.3": true, "5.10.0": true, "6.0.0": false, "4.9.9": false, "": false} {
+		if got := supportedVersion(v); got != want {
+			t.Errorf("%q: %v, want %v", v, got, want)
+		}
+	}
+}
+
+// A task (WorkBuddy's own ~/WorkBuddy/<timestamp> folder, shown under 任务) stays
+// a task on the other computer; a session of a real project folder does not
+// become one.
+func TestWriterKeepsTasksAsTasks(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name, from, to string
+		task           bool
+	}{
+		{"task", "/Users/a/WorkBuddy/2026-10-09-09-25-53", "/Users/b/WorkBuddy/2026-10-09-09-25-53", true},
+		{"project", "/Users/a/Documents/proj", "/Users/b/Documents/proj", false},
+		{"task folder replaced by a project folder", "/Users/a/WorkBuddy/2026-10-09-09-25-53", "/Users/b/Documents/proj", false},
+	} {
+		home := t.TempDir()
+		testRegistry(t, home, "target-account")
+		path := "projects/source/" + testNativeID + ".jsonl"
+		in := writerInput(home)
+		in.Source = writerSnapshot{map[string][]byte{path: nativeFixture(c.from)}}
+		in.Cwd = c.to
+		in.PathMap = agent.PathMap{Rules: []agent.PathRule{{From: c.from, To: c.to}}}
+		b, err := testWriter().build(ctx, in)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		got := b.after["is_playground"]
+		if c.task && (got != int64(1) || b.after["mode"] != "craft") {
+			t.Errorf("%s: is_playground=%v mode=%v", c.name, got, b.after["mode"])
+		}
+		if !c.task && got != int64(0) {
+			t.Errorf("%s: is_playground=%v, want the default 0", c.name, got)
+		}
+	}
+}
+
+func TestTaskWorkspaceFollowsTheUsersHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	a := &Adapter{}
+	got, ok := a.TaskWorkspace("/Users/someone/WorkBuddy/2026-10-09-09-25-53")
+	if !ok || got != filepath.Join(home, "WorkBuddy", "2026-10-09-09-25-53") {
+		t.Fatalf("%q %v", got, ok)
+	}
+	for _, o := range []string{"/Users/someone/WorkBuddy/Claw", "/Users/someone/Documents/2026-10-09-09-25-53", "/Users/someone/WorkBuddy/2026-10-09-09-25-53/sub"} {
+		if _, ok := a.TaskWorkspace(o); ok {
+			t.Errorf("%s is not a task folder", o)
+		}
+	}
+}

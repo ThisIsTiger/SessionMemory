@@ -90,8 +90,10 @@ func newAutosyncCmd(a *App) *cobra.Command {
 			}
 			launchctl("bootout", domain+"/"+autosyncLabel) // replace a running older definition
 			if out, err := launchctl("bootstrap", domain, p); err != nil {
-				if _, err2 := launchctl("load", "-w", p); err2 != nil {
-					return errcode.New(errcode.Internal, "launchd refused to start the job now ("+out+"). The job file is in place and starts at your next login; to start it now run this command from the Terminal app of your own login session")
+				launchctl("load", "-w", p) // the old interface; its exit status is not to be trusted
+				// only launchd's own answer says whether the job is there
+				if _, perr := launchctl("print", domain+"/"+autosyncLabel); perr != nil {
+					return errcode.New(errcode.Internal, "launchd refused to load the job ("+strings.TrimSpace(out)+"). The job file is in place and loads at your next login (log out and in, or restart)")
 				}
 			}
 			fmt.Fprintf(a.Out, "autosync is on: relay runs every %d seconds; log: %s\n", interval, logPath)
@@ -124,6 +126,21 @@ func newAutosyncCmd(a *App) *cobra.Command {
 				return nil
 			}
 			fmt.Fprintln(a.Out, "autosync is on: running (scheduled)")
+			accts := a.weiyunAccounts()
+			stopped := 0
+			for _, ac := range accts {
+				if until, paused := a.quotaPausedUntil(ac.id); paused {
+					stopped++
+					fmt.Fprintf(a.Out, "Weiyun account %s: daily quota used up; left alone until %s\n", ac.id, until.Format("2006-01-02 15:04"))
+				}
+			}
+			if stopped > 0 && stopped < len(accts) {
+				fmt.Fprintln(a.Out, "syncing continues through the other account")
+			} else if stopped > 0 {
+				fmt.Fprintln(a.Out, "paused: every account is out of quota; background runs resume when the first one is back (a run you start yourself still tries)")
+			} else if w := idleWait(a.loadIdle().Quiet); w > 0 {
+				fmt.Fprintf(a.Out, "quiet: nothing has changed for a while, so it checks about every %d minutes (any change brings it back to every 2)\n", int(w.Minutes()))
+			}
 			if b, err := os.ReadFile(filepath.Join(a.Cfg.StateDir(), "autosync.log")); err == nil {
 				lines := strings.Split(strings.TrimSpace(string(b)), "\n")
 				if len(lines) > 8 {

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"session-memory/internal/testutil/gitrepo"
 	"testing"
+	"time"
 )
 
 func TestInspectAndNormalizeRemote(t *testing.T) {
@@ -24,5 +25,28 @@ func TestInspectAndNormalizeRemote(t *testing.T) {
 	missing, err := Inspect(context.Background(), filepath.Join(t.TempDir(), "absent"))
 	if err != nil || missing.Status != "unavailable" {
 		t.Fatalf("missing=%+v err=%v", missing, err)
+	}
+}
+
+// A git that never returns must not hang the caller (it would hold the store lock).
+func TestInspectGivesUpOnAGitThatHangs(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	old := gitTimeout
+	gitTimeout = 300 * time.Millisecond
+	defer func() { gitTimeout = old }()
+	start := time.Now()
+	st, err := Inspect(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took > 10*time.Second {
+		t.Fatalf("Inspect waited %v for a hung git", took)
+	}
+	if st.Status != "unavailable" {
+		t.Fatalf("status %q, want unavailable", st.Status)
 	}
 }

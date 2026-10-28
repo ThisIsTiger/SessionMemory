@@ -17,7 +17,15 @@ import (
 	"session-memory/internal/store"
 )
 
-const supportedVersion = "5.8.3"
+// The registry writer is tied to the 5.x line, not to one release: what it
+// really depends on (the sessions table layout, no triggers, the file format)
+// is checked on every write by the schema fingerprint and the record checks.
+const supportedMajor = "5"
+
+func supportedVersion(v string) bool {
+	major, _, _ := strings.Cut(strings.TrimSpace(v), ".")
+	return major == supportedMajor
+}
 
 type runtimeDetector struct{}
 
@@ -64,18 +72,27 @@ func checkVersion(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "/usr/bin/plutil", "-extract", "CFBundleShortVersionString", "raw", "-o", "-", "/Applications/WorkBuddy.app/Contents/Info.plist").Output()
-	if err != nil || strings.TrimSpace(string(out)) != supportedVersion {
-		return errcode.New(errcode.UnknownFormat, "installed WorkBuddy version is outside the registry writer allowlist")
+	if err != nil {
+		return errcode.New(errcode.UnknownFormat, "cannot read the installed WorkBuddy version")
+	}
+	if v := strings.TrimSpace(string(out)); !supportedVersion(v) {
+		return errcode.New(errcode.UnknownFormat, "installed WorkBuddy "+v+" is outside the 5.x line the registry writer supports")
 	}
 	return nil
 }
 
 func checkClosed(ctx context.Context, home string) error {
 	state, _, err := (runtimeDetector{}).Running(ctx, home, "")
-	if err != nil || state != agent.NotRunning {
-		return errcode.New(errcode.ClientRunning, "quit WorkBuddy completely before restoring its sessions")
+	if err != nil {
+		return errcode.New(errcode.ClientRunning, "cannot tell whether WorkBuddy is running ("+err.Error()+"); nothing was written")
 	}
-	return nil
+	switch state {
+	case agent.NotRunning:
+		return nil
+	case agent.Unknown:
+		return errcode.New(errcode.ClientRunning, "cannot tell whether WorkBuddy is running; nothing was written")
+	}
+	return errcode.New(errcode.ClientRunning, "quit WorkBuddy completely before restoring its sessions")
 }
 
 // This lock serializes SessionMemory writers, not WorkBuddy itself. Explicit

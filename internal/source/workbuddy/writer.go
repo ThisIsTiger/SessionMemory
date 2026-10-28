@@ -212,6 +212,27 @@ func readArtifact(ctx context.Context, src agent.SnapshotReader, art session.Art
 	return b, nil
 }
 
+// WorkBuddy keeps a "task" (a session that belongs to no project folder) in a
+// folder it makes itself: ~/WorkBuddy/<yyyy-mm-dd-hh-mm-ss>. Its registry row
+// carries is_playground=1, which is what puts it under 任务 instead of 空间.
+var taskDirPattern = regexp.MustCompile(`^(/.+)/WorkBuddy/(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})$`)
+
+func isTaskDir(dir string) bool { return taskDirPattern.MatchString(filepath.Clean(dir)) }
+
+// TaskWorkspace maps a task folder recorded on another computer to the same
+// task folder under this user's home. Other folders are not task folders.
+func (a *Adapter) TaskWorkspace(origin string) (string, bool) {
+	m := taskDirPattern.FindStringSubmatch(filepath.Clean(origin))
+	if m == nil {
+		return "", false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", false
+	}
+	return filepath.Join(home, "WorkBuddy", m[2]), true
+}
+
 func (a *Adapter) Workspace(ctx context.Context, src agent.SnapshotReader) (string, error) {
 	main, _, err := mainArtifact(src)
 	if err != nil {
@@ -380,6 +401,11 @@ func (w *Writer) build(ctx context.Context, in agent.WriteInput) (nativeBuild, e
 		b.after["id"] = id
 		b.after["user_id"] = user
 		b.after["created_at"] = first
+		if origin, err := (&Adapter{}).Workspace(ctx, in.Source); err == nil && isTaskDir(origin) && isTaskDir(in.Cwd) {
+			b.after["is_playground"] = int64(1) // a task stays a task here, not a project
+			b.after["mode"] = "craft"
+			b.after["source_mode"] = "craft"
+		}
 		// Model, permissions and account-private settings are target defaults.
 	}
 	if custom != "" {

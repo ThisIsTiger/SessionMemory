@@ -32,7 +32,7 @@
 
 ## WorkBuddy 原生 Writer 接入与验收（2026-10-26～27，第三轮）
 
-已实现默认关闭、限 macOS / WorkBuddy 5.8.3 / 已知 schema 的手动原生 Writer：目标账号与本地私有设置、文件和登记行基线、路径映射、进程检测、备份/journal、行级 CAS 与回滚、adoption 后完整后置条件验证。CLI `restore --agent workbuddy` 已接通，默认 home 改为 WorkBuddy 配置，不再落到 Codex home。
+已实现默认关闭、限 macOS / WorkBuddy 5.x / 已知 schema 的手动原生 Writer：目标账号与本地私有设置、文件和登记行基线、路径映射、进程检测、备份/journal、行级 CAS 与回滚、adoption 后完整后置条件验证。CLI `restore --agent workbuddy` 已接通，默认 home 改为 WorkBuddy 配置，不再落到 Codex home。
 
 正式二进制在隔离配置中完成 track → 加密同步 → restore → GUI 两轮历史 → 真实模型第 3 轮 → checkpoint/同步 → 源端 restore，模型返回 ACK_WRITER_E2E_OK；新增记录 cwd 为目标目录。客户端仍有后台进程时，即使显式 client-closed 也拒绝。新增/快进各 14 个中断点、共 28 项恢复断言通过；全量默认/failpoint/dev 测试、race、vet 和交叉 vet 通过。
 
@@ -80,6 +80,33 @@ B 机实测（Intel、26.901 / 0.153.4、project12）：应用关闭后 `sync` +
 1. **路径改写补全**：会话装进本机时，除 `cwd`、`runtime_workspace_roots` 外，`turn_context.workspace_roots`、`world_state` 和环境说明块里的 `<root>…</root>`、`<cwd>…</cwd>` 也按"源目录→本机目录"改写（普通对话文字不动）。原因：A→B→A 回到 A 的会话里残留了 B 的路径（A 机实测 4 行）。已装好的旧会话不会被改，`adopt` 重装后生效。
 2. **本机目录自动匹配**（`internal/engine/autodir.go`）：装会话时没有 `--cwd`、本机没有该会话的目录、也没有项目映射，且会话原目录在本机不存在时，找本机同名文件夹：先看 Codex 应用已有的项目文件夹（`local-projects.rootPaths`），再扫 `~/Documents`、`~/Desktop`、`~/Developer`、`~/Projects`、`~/Code`、`~/src`、`~/work`、`~/workspace`、`~/repos`、`~/GitHub`、`~/dev` 下最多 3 层（跳过隐藏目录、`node_modules`、`Library` 等）。恰好找到一个才用，计划里带 `cwd_auto_matched:<路径>` 提示；多个或没有都不猜，报错并说明原因。`project restore` 在项目未映射且没给 `--cwd` 时同样先自动匹配，找到就保存映射。
 3. 测试：`internal/engine/autodir_test.go`（唯一匹配、多个不猜、应用项目列表优先、太深不找、根目录）、`paths_test.go`、`project_test.go`（无目录时报"no folder named …"、两个同名时报"2 folders named …"、唯一时不带 `--cwd` 成功并保存映射）。
+
+## WorkBuddy 库结构指纹改为与列顺序无关（2026-10-28）
+
+**问题**：B 机真实测试（WorkBuddy 5.8.3）写入被拒：`WorkBuddy registry schema is outside the allowlist`。原因：原指纹是隔离夹具里 `PRAGMA table_info(sessions)` 的**有序**哈希，而真实安装经过多次迁移，同样的 40 列、相同类型/非空/默认值/主键，但**列的顺序不同**（A、B 机真实库互相一致，与夹具不同）。写入器按列名读写，顺序无关。
+
+**修复**：指纹改为先对每列 `名称:类型:非空:默认值:主键` 排序再取哈希（新值 `f8b32580…a680`），夹具与 A 机真实库的哈希相同；多一列、少一列、改类型/非空/默认值仍然拒绝。A 机真实库只读验证通过。测试：`registry_test.go`（两种列顺序都通过；额外列、改类型、改非空、改默认值都被拒绝）。
+
+## relay / autosync 支持 WorkBuddy（2026-10-27）
+
+`relay` 不带 `--agent` 时处理 Codex，并在用户开启 `agents.workbuddy.allow_registry_write` 后同时处理 WorkBuddy（`relayAgents`）；`--agent X` 只处理 X。后台自动同步运行的是不带 `--agent` 的 `relay --quiet`，所以开启后 WorkBuddy 也随之自动更新。每个项目按各 Agent 分别安装（会话属于哪个 Agent 就由哪个装入，另一个计为"其他 Agent"跳过），结果合并进同一行。
+
+**安全条件**（没有放宽）：WorkBuddy 写入器本来就要求声明"应用已关闭"；后台没有人声明，relay 只在进程检测明确是"未运行"时才替它声明（`relayClientState`），而写入器在写之前还会再查一次进程、版本（仅 macOS 5.8.3）和库结构。应用在运行或状态未知时，这些会话计为"等待应用关闭"，下一轮应用退出后自动补上。默认关闭，不开启则完全不碰 WorkBuddy。`sync --auto-install` 和 `agents.workbuddy.auto_install` 的语义不变（仍不装 WorkBuddy）。
+
+测试：`relay_agents_test.go`（Agent 选择、各运行状态下的关闭声明）；`TestRelayHandsWorkOverAndBack` 在两台电脑都开启 WorkBuddy 的情况下跑完 A→B→A，确认 Codex 接力不受影响。未覆盖：真实 WorkBuddy 应用上的无人值守安装（写入器依赖固定的 `/Applications/WorkBuddy.app`，不能在 CI 里命令行级验证；写入器本身的往返和 28 个中断点测试仍在）。
+
+## 云端密钥：新电脑不用口令也不用邀请包（2026-10-27）
+
+**取舍**：加密的目的是防"随手看一眼"（网页预览、搜索、分享链接），不防能登录这个微云目录的人，所以不引入口令。密钥文件和数据放在同一个云目录里，防护等同于云盘登录本身。
+
+**做法**：
+1. `transport attach-weiyun` / `attach-folder` 把本机的 vault 密钥以 `public/vault-key.json`（格式 `smkey1`）放进云目录（已有就不动；用户删过则不再自动放回）。
+2. 新电脑：`session-memory device join --from-cloud`（可加 `--weiyun <目录名>`），只需要微云令牌，读到密钥后用云目录里的 `vault.json` 校验、保存到本机钥匙串并建立设备身份。邀请包加口令的方式仍可用。
+3. 加入后的第一次前台 `sync` / `relay` 提示一次：密钥仍在云端，所有电脑都加入后可以删除。有人在终端时询问 y/N；Agent 或脚本只打印，由 Agent 问用户，同意后运行 `session-memory key remove --yes`。后台 `relay --quiet` 不提示。
+4. `key remove` 把云端密钥文件移到微云回收站（不是永久删除）；已加入的电脑不受影响（密钥在各自钥匙串里），新电脑要加入需先 `key publish`。`key status` 查看云端有没有。
+5. 云端密钥文件不走普通同步：`Mirror` 的 `Pull`/`Push` 都跳过它，只有 `PutKey`/`GetKey`/`DeleteKey` 碰它，所以另一台电脑的本地缓存不会把已删除的密钥再传回去。删除的标记是每台电脑各自记的。
+
+测试：`weiyun_test.go`（密钥文件独立于普通同步、删除后不被 Push 还原）、`key_test.go`（B 无邀请包加入并读到 A 的会话、提示只说一次、无人确认时拒绝删除、删除后已加入的电脑照常同步、新电脑加入要先 `key publish`）。
 
 ## 一条命令接力（2026-10-27）
 
@@ -175,3 +202,41 @@ source "$HOME/.session-memory/dev/sandboxes/e1/env.sh"      # 然后从这个终
 - 崩溃矩阵：采集 10 个点、发布 9 个点、安装 11 个点，逐点注入失败 + 恢复后断言；
 - WorkBuddy 新增/快进各 14 个中断点，共 28 项；包含 SQLite 登记提交后、binding 提交前的恢复；
 - 大会话采集：144 MiB 的合成会话，峰值堆增长 26 MiB。
+
+## WorkBuddy：版本放宽与「任务」会话
+
+**版本**：写入器不再要求 WorkBuddy 恰好是 5.8.3，改为 5.x 系列都可以（A 机已升到 5.9.3，sessions 表指纹与 5.8.3 完全相同）。每次写入前仍检查：表结构指纹、无触发器、会话文件格式、应用未运行。大版本变化（6.x）或读不到版本时拒绝。
+
+**任务与空间**：WorkBuddy 把「不属于任何项目」的会话（任务）放在自己建的 `~/WorkBuddy/<年-月-日-时-分-秒>` 目录里，登记行 `is_playground=1`，界面归在「任务」；其余会话是「空间」里的项目。此前同步到另一台电脑的任务会话用了表默认值（`is_playground=0`），所以被当成项目放进「空间」。现在：
+- 来源目录是这种任务目录、目标目录也是时，新建的登记行写 `is_playground=1`、`mode=craft`、`source_mode=craft`（和这类会话在原机上的取值一致）；真正的项目目录不受影响。
+- 目录自动对应：任务目录在另一台电脑的用户目录下时，自动对应到本机 `~/WorkBuddy/<同名>`，安装时建立（预览不建），不再需要 `--cwd`。
+- relay 会为收到的、尚无本机目录的任务项目自动建立映射，接收端不用任何命令。
+
+**已装好的会话不会自动改**：之前以 `is_playground=0` 装进去的行需要手动改一次（见本次说明）。
+
+## 微云额度与后台同步的调用量
+
+微云每天有调用额度，两台电脑共用同一个账号。后台同步每 2 分钟一轮，原先每轮都要列出整个云端目录（含最大的 `objects`），额度很快耗尽，之后两台电脑的后台同步都会报 `code:117401 … daily quota used up`。
+
+- **额度用完后暂停**：识别到该错误（`transport.ErrQuota`）后，记到 `<状态目录>/weiyun-quota.json`：第一次拒绝，后台运行（`relay --quiet`）停到次日 00:05；到点再试一次，还被拒就再多等 1 小时（每次递增，最多 6 小时）；任何一次调用成功就清除。你手动运行的 `relay` 不受暂停影响，仍会尝试。`autosync status` 显示暂停到几点。
+- **按目录列出**：轮询新 manifest 只列云端根目录和 `manifests`，不再列 `objects`；`objects` 只在确实缺对象、要下载时才列。Push/Pull 的全量路径不变。
+- **安静时自动放慢**：后台连续 3 轮没有任何变化（没发布、没收到、没采集、没安装）后，间隔依次放到 4、8、10 分钟；有任何变化立即回到 2 分钟。`autosync status` 会写出当前间隔。
+
+## 两个微云账号互为备份
+
+一个微云账号有每日额度，用完就整体停摆。现在可以配两个账号，各存一份完整的库，其中一个出问题，另一个继续同步。
+
+- **配置**：`WEIYUN_MCP_TOKEN` 是主账号（primary），`WEIYUN_MCP_TOKEN_2` 是备份账号（backup）；只配一个就和以前一样。`transport attach-weiyun` 和 `autosync enable` 会把环境里的令牌存进系统凭据库，后台运行读它们。两个账号里的目录名相同（默认 `SessionMemory`），共用本机同一份缓存。
+- **写**：每个新文件写到所有能写的账号；某个账号这次没写成（额度用尽、网络错），记到 `<状态目录>/weiyun-behind.json`，之后它能用时由下一轮同步（`CatchUp`）按本地缓存补齐。至少一个账号成功就算成功。
+- **读**：从所有能读的账号取并集（所以另一台电脑只写进了备份账号的东西，这台也能看到）。轮询只列根目录和 `manifests`。全部账号都失败才报错。
+- **额度**：暂停状态按账号分别记（`weiyun-quota.json`）。某个账号用尽只绕开它，另一个照常；两个都用尽，后台运行才整体暂停到次日 00:05，之后每次递增 1 小时（最多 6 小时）再试。`autosync status` 会逐个账号说明。
+- **云端钥匙**：`key remove` 会从所有账号里移除，任一账号没清掉就报错，不会假装完成。
+- **两个账号各自的调用量**：每个账号的轮询量和单账号时相同（各一次根目录加 `manifests`）；安静时同样放慢到 10 分钟一次。
+
+## git 调用有超时
+
+后台同步曾被一个不返回的 `git` 卡死 10 分钟以上：采集时检查代码状态要调 `git`，而它在持有存储锁的情况下一直不返回，之后所有同步和命令都报 `another session-memory is running`。现在每次 `git` 调用最多 60 秒，超时即杀掉，该项代码状态记为 `unavailable`（与 git 不可用时的既有降级相同）。
+
+## 轮询只剩一次调用
+
+之前每个后台进程都要先列账号根目录、再列 vault 目录，才知道 `manifests` 的目录键，一轮轮询至少 3 次调用。现在目录键记在 `<状态目录>/weiyun-keys-<账号>.json`：轮询新 manifest 只剩列 `manifests` 目录这一次（manifest 超过 50 个时每多 50 个再加一次）。记下的键失效时（目录被换掉），第一次出错就丢掉重新学一遍。账号根目录里每多一个文件（比如放二进制包）也不再拖慢轮询。

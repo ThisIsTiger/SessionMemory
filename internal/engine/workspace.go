@@ -18,6 +18,13 @@ type workspaceReader interface {
 	Workspace(context.Context, agent.SnapshotReader) (string, error)
 }
 
+// taskWorkspace is implemented by agents whose project-less sessions live in a
+// folder the agent makes itself (WorkBuddy tasks): the same folder is made
+// here, under this user's home, instead of asking for one.
+type taskWorkspace interface {
+	TaskWorkspace(origin string) (string, bool)
+}
+
 func (e *Engine) restoreWorkspace(ctx context.Context, ad agent.Adapter, src agent.SnapshotReader, rev session.Revision, bnd *session.Binding, opt RestoreOptions) (string, agent.PathMap, []string, func(context.Context) error, error) {
 	cwd, pm, gaps, check, _, err := e.restoreWorkspaceNotes(ctx, ad, src, rev, bnd, opt)
 	return cwd, pm, gaps, check, err
@@ -43,6 +50,15 @@ func (e *Engine) restoreWorkspaceNotes(ctx context.Context, ad agent.Adapter, sr
 	if cwd == "" {
 		if mapped, ok := pm.Apply(origin); ok {
 			cwd = mapped
+		}
+	}
+	autoCreate := false
+	if cwd == "" && origin != "" && !dirExists(origin) {
+		if tw, ok := ad.(taskWorkspace); ok {
+			if dir, ok := tw.TaskWorkspace(origin); ok {
+				cwd, autoCreate = dir, true
+				notes = append(notes, "cwd_task_folder:"+dir)
+			}
 		}
 	}
 	if cwd == "" && origin != "" && !dirExists(origin) {
@@ -87,7 +103,7 @@ func (e *Engine) restoreWorkspaceNotes(ctx context.Context, ad agent.Adapter, sr
 	}
 	gaps := project.Gaps(ctx, source, target, cwd)
 	st, statErr := os.Stat(cwd)
-	dirOK := statErr == nil && st.IsDir() && filepath.IsAbs(cwd)
+	dirOK := (statErr == nil && st.IsDir() && filepath.IsAbs(cwd)) || (autoCreate && os.IsNotExist(statErr))
 	if !dirOK {
 		gaps = append(gaps, "project_directory_missing")
 	}
@@ -96,6 +112,21 @@ func (e *Engine) restoreWorkspaceNotes(ctx context.Context, ad agent.Adapter, sr
 		return cwd, pm, nil, nil, notes, err
 	}
 	check := func(ctx context.Context) error {
+		if autoCreate {
+			if _, err := os.Stat(cwd); os.IsNotExist(err) {
+				// made now, empty: the state to compare against is that of the new folder
+				if err := os.MkdirAll(cwd, 0755); err != nil {
+					return err
+				}
+				fresh, err := project.Inspect(ctx, cwd)
+				if err != nil {
+					return err
+				}
+				if baseline, err = canonjson.Hash(fresh); err != nil {
+					return err
+				}
+			}
+		}
 		st, err := os.Stat(cwd)
 		if err != nil || !st.IsDir() || !filepath.IsAbs(cwd) {
 			return errcode.New(errcode.NeedsAction, "select an existing local project directory with --cwd or project map")

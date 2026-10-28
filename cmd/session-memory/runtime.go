@@ -34,6 +34,7 @@ type rt struct {
 	Info   device.Info
 	Eng    *engine.Engine
 	Sync   *syncpkg.Sync
+	Multi  *transport.MultiMirror // the Weiyun accounts, when Weiyun is the transport
 	unlock func()
 }
 
@@ -128,6 +129,7 @@ func (a *App) openRT(ctx context.Context, needSync bool) (*rt, error) {
 			return nil, err
 		}
 		r.Sync = syncpkg.New(st, m, v, root, info)
+		r.Multi = m
 	} else if folder := a.Cfg.Transport.Folder; folder != "" {
 		r.Sync = syncpkg.New(st, transport.NewFolder(config.ExpandPath(folder)), v, root, info)
 	} else if needSync {

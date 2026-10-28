@@ -27,6 +27,9 @@ type App struct {
 	Now  func() time.Time
 	Log  *slog.Logger
 	Keys vault.KeyStore
+	// quietRun is set by a background run (relay --quiet): it leaves a Weiyun
+	// account alone while that account's quota is known to be used up.
+	quietRun bool
 }
 
 // printJSON writes exactly one JSON document.

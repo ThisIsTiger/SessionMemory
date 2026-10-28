@@ -111,6 +111,15 @@ func newTransportCmd(a *App) *cobra.Command {
 			if err := config.Set("transport.weiyun", name); err != nil {
 				return errcode.Wrap(errcode.Usage, err.Error(), err)
 			}
+			a.Cfg.Transport.Weiyun = name
+			if err := a.saveWeiyunToken(); err != nil { // background runs read the saved tokens
+				fmt.Fprintf(a.Err, "warning: could not save the Weiyun token(s) for background runs: %v\n", err)
+			}
+			if put, err := a.publishCloudKey(cmd.Context(), false); err != nil {
+				fmt.Fprintf(a.Err, "warning: could not put the vault key in the cloud folder (%v); a new computer will need an invite bundle\n", err)
+			} else if put {
+				fmt.Fprintln(a.Err, "note: the vault key is stored in the cloud folder so new computers can join without a passphrase")
+			}
 			if a.JSON {
 				return a.printJSON(map[string]string{"weiyun": name})
 			}
@@ -145,6 +154,12 @@ func newTransportCmd(a *App) *cobra.Command {
 			}
 			if err := config.Set("transport.folder", abs); err != nil {
 				return errcode.Wrap(errcode.Usage, err.Error(), err)
+			}
+			a.Cfg.Transport.Folder = abs
+			if put, err := a.publishCloudKey(cmd.Context(), false); err != nil {
+				fmt.Fprintf(a.Err, "warning: could not put the vault key in the folder (%v); a new computer will need an invite bundle\n", err)
+			} else if put {
+				fmt.Fprintln(a.Err, "note: the vault key is stored in the folder so new computers can join without a passphrase")
 			}
 			if a.JSON {
 				return a.printJSON(map[string]string{"folder": abs})
@@ -183,19 +198,37 @@ func newDeviceCmd(a *App) *cobra.Command {
 		}}
 	inv.Flags().String("out", "", "bundle file to write")
 	inv.Flags().String("passphrase-file", "", "file containing the bundle passphrase")
-	join := &cobra.Command{Use: "join <bundle>", Short: "Join an existing vault", Args: cobra.ExactArgs(1),
+	join := &cobra.Command{Use: "join [bundle]", Short: "Join an existing vault (with a bundle and passphrase, or --from-cloud)", Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			pass, err := readPassphrase(cmd)
-			if err != nil {
-				return err
-			}
-			b, err := os.ReadFile(args[0])
-			if err != nil {
-				return errcode.Wrap(errcode.Usage, "cannot read the bundle", err)
-			}
-			id, key, err := vault.OpenBundle(b, pass)
-			if err != nil {
-				return errcode.Wrap(errcode.AuthFailed, "wrong passphrase or damaged bundle", err)
+			var id string
+			var key []byte
+			fromCloud, _ := cmd.Flags().GetBool("from-cloud")
+			if fromCloud {
+				if wy, _ := cmd.Flags().GetString("weiyun"); wy != "" {
+					if err := config.Set("transport.weiyun", wy); err != nil {
+						return errcode.Wrap(errcode.Usage, err.Error(), err)
+					}
+					a.Cfg.Transport.Weiyun = wy
+				}
+				var err error
+				if id, key, err = a.fetchCloudKey(cmd.Context()); err != nil {
+					return err
+				}
+			} else {
+				if len(args) != 1 {
+					return errcode.New(errcode.Usage, "give the invite bundle (with --passphrase-file), or use --from-cloud")
+				}
+				pass, err := readPassphrase(cmd)
+				if err != nil {
+					return err
+				}
+				b, err := os.ReadFile(args[0])
+				if err != nil {
+					return errcode.Wrap(errcode.Usage, "cannot read the bundle", err)
+				}
+				if id, key, err = vault.OpenBundle(b, pass); err != nil {
+					return errcode.Wrap(errcode.AuthFailed, "wrong passphrase or damaged bundle", err)
+				}
 			}
 			v, err := vault.New(id, key)
 			if err != nil {
@@ -234,10 +267,15 @@ func newDeviceCmd(a *App) *cobra.Command {
 			if a.JSON {
 				return a.printJSON(map[string]string{"vault_id": id, "device_id": info.DeviceID})
 			}
+			if fromCloud {
+				touch(a.keyMarker(markKeyHint)) // offer to remove the cloud key after the first sync
+			}
 			fmt.Fprintf(a.Out, "joined vault %s as %s\n", id, info.DeviceID)
 			return nil
 		}}
 	join.Flags().String("passphrase-file", "", "file containing the bundle passphrase")
+	join.Flags().Bool("from-cloud", false, "take the vault key from the cloud folder instead of an invite bundle")
+	join.Flags().String("weiyun", "", "Weiyun directory to use with --from-cloud (token from WEIYUN_MCP_TOKEN)")
 	regen := &cobra.Command{Use: "regenerate-id", Short: "Give this device a new id (after a restore or clone)", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			unlock, err := lockStore(a.Cfg.StateDir())

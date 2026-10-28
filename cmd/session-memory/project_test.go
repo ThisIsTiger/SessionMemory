@@ -172,6 +172,11 @@ func TestRelayHandsWorkOverAndBack(t *testing.T) {
 	B.must("device", "join", bundle, "--passphrase-file", pf)
 	bcodex := filepath.Join(B.home, "codex")
 	B.must("config", "set", "agents.codex.home", bcodex)
+	// with the WorkBuddy writer switched on relay also looks after WorkBuddy; the Codex hand-over must not change
+	A.must("config", "set", "agents.workbuddy.allow_registry_write", "true")
+	B.must("config", "set", "agents.workbuddy.allow_registry_write", "true")
+	B.must("config", "set", "agents.workbuddy.home", filepath.Join(B.home, "wb"))
+	A.must("config", "set", "agents.workbuddy.home", filepath.Join(A.home, "wb"))
 	os.MkdirAll(bcodex, 0700)
 
 	// B arrives: the project has no folder yet, relay says what to do once
@@ -375,5 +380,105 @@ func TestSyncReportsSessionsItCouldNotCapture(t *testing.T) {
 	code, _, errs := A.run("sync")
 	if code == 0 || !strings.Contains(errs, "could not capture") {
 		t.Fatalf("sync of an unreadable session: exit %d, stderr %q", code, errs)
+	}
+}
+
+// The chosen version builds on the installed one, yet this computer's thread
+// has changed underneath (the agent rewrote a line in place): relay refuses to
+// overwrite it, and adopt, which used to say "run relay", takes the chosen
+// version and keeps the copy.
+func TestAdoptReplacesACopyThatDivergedFromItsInstalledVersion(t *testing.T) {
+	root := t.TempDir()
+	shared := filepath.Join(root, "cloud")
+	A := &machine{t: t, home: filepath.Join(root, "a"), keys: vault.MemStore{}}
+	B := &machine{t: t, home: filepath.Join(root, "b"), keys: vault.MemStore{}}
+	os.MkdirAll(A.home, 0700)
+	os.MkdirAll(B.home, 0700)
+	A.must("init")
+	A.must("transport", "attach-folder", shared)
+	acodex := filepath.Join(A.home, "codex")
+	A.must("config", "set", "agents.codex.home", acodex)
+	projA := filepath.Join(A.home, "code", "app")
+	os.MkdirAll(projA, 0700)
+	tid := codexgen.ThreadIDFor(32)
+	ap := filepath.Join(acodex, "sessions", "2026", "09", "01", "rollout-2026-09-01T01-46-53-"+tid+".jsonl")
+	os.MkdirAll(filepath.Dir(ap), 0700)
+	os.WriteFile(ap, codexgen.Rollout(codexgen.Options{Seed: 32, Turns: 2, Cwd: projA}), 0600)
+	var pt struct {
+		ProjectRef string `json:"project_ref"`
+	}
+	json.Unmarshal([]byte(A.must("project", "track", "--cwd", projA, "--json")), &pt)
+	pf := filepath.Join(root, "pass")
+	os.WriteFile(pf, []byte("correct horse battery\n"), 0600)
+	bundle := filepath.Join(root, "j.bundle")
+	A.must("device", "invite", "--out", bundle, "--passphrase-file", pf)
+	B.must("config", "set", "transport.folder", shared)
+	B.must("device", "join", bundle, "--passphrase-file", pf)
+	bcodex := filepath.Join(B.home, "codex")
+	B.must("config", "set", "agents.codex.home", bcodex)
+	os.MkdirAll(bcodex, 0700)
+	projB := filepath.Join(B.home, "work", "app")
+	os.MkdirAll(projB, 0700)
+	B.must("project", "restore", pt.ProjectRef, "--cwd", projB, "--client-closed", "--allow-code-mismatch")
+	bfiles, _ := filepath.Glob(filepath.Join(bcodex, "sessions", "*", "*", "*", "*.jsonl"))
+
+	// A moves on; B's file is changed in place, same size and time, so nothing
+	// notices before the next version arrives
+	f, _ := os.OpenFile(ap, os.O_APPEND|os.O_WRONLY, 0600)
+	f.WriteString(`{"timestamp":"2026-09-01T02:00:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"FROM_A"}}` + "\n")
+	f.Close()
+	A.must("relay", "--client-closed")
+	st, _ := os.Stat(bfiles[0])
+	raw, _ := os.ReadFile(bfiles[0])
+	i := strings.Index(string(raw), "\"type\"")
+	raw[i+2] ^= 0x01 // "type" -> "uype": same length, no longer the installed content
+	os.WriteFile(bfiles[0], raw, 0600)
+	os.Chtimes(bfiles[0], st.ModTime(), st.ModTime())
+
+	var list []struct {
+		SessionID string `json:"session_id"`
+	}
+	json.Unmarshal([]byte(B.must("list", "--json")), &list)
+	if out := B.must("adopt", list[0].SessionID, "--client-closed", "--plan"); !strings.Contains(out, "nothing changed") {
+		t.Fatalf("adopt --plan: %s", out)
+	}
+	// B's unseen change is first kept as its own version, so the chosen one is named again
+	if code, _, errs := B.run("adopt", list[0].SessionID, "--client-closed"); code != 3 || !strings.Contains(errs, "run choose again") {
+		t.Fatalf("first adopt: exit %d %s", code, errs)
+	}
+	var g struct {
+		Revisions []struct {
+			RevisionID string `json:"revision_id"`
+			Parent     string `json:"parent_revision_id"`
+			Producer   string `json:"producer_device_id"`
+		} `json:"revisions"`
+		Heads []string `json:"heads"`
+	}
+	json.Unmarshal([]byte(B.must("revisions", list[0].SessionID, "--json")), &g)
+	aDev, aHead := "", ""
+	for _, r := range g.Revisions {
+		if r.Parent == "" {
+			aDev = r.Producer
+		}
+	}
+	for _, r := range g.Revisions {
+		for _, h := range g.Heads {
+			if r.RevisionID == h && r.Producer == aDev {
+				aHead = h
+			}
+		}
+	}
+	if aHead == "" {
+		t.Fatalf("no head from A: %+v", g)
+	}
+	B.must("choose", list[0].SessionID, "--revision", aHead)
+	if out := B.must("adopt", list[0].SessionID, "--client-closed"); !strings.Contains(out, "your previous copy is in") {
+		t.Fatalf("adopt: %s", out)
+	}
+	if out := B.must("relay", "--client-closed"); !strings.Contains(out, "up to date 1") {
+		t.Fatalf("B relay after adopt: %s", out)
+	}
+	if raw, _ := os.ReadFile(bfiles[0]); !strings.Contains(string(raw), "FROM_A") || strings.Contains(string(raw), "uype") {
+		t.Fatal("B did not end up on the chosen version")
 	}
 }

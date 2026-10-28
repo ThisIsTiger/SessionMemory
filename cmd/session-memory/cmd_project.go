@@ -255,9 +255,11 @@ func newProjectRestoreCmd(a *App) *cobra.Command {
 				return errcode.New(errcode.Usage, "bad project ref")
 			}
 			cwd, _ := cmd.Flags().GetString("cwd")
+			autoTask := false
 			if _, err := loadProject(a.Cfg.StateDir(), ref); err != nil {
 				if cwd == "" {
 					found, note := autoProjectDir(cmd.Context(), a, ref, name)
+					autoTask = found != "" && strings.HasPrefix(note, taskFolderNote)
 					if found == "" {
 						return errcode.New(errcode.NotFound, "project is not mapped on this device and its folder was not found automatically ("+note+"); pass --cwd <local project directory>")
 					}
@@ -267,6 +269,11 @@ func newProjectRestoreCmd(a *App) *cobra.Command {
 				abs, err := filepath.Abs(cwd)
 				if err != nil {
 					return err
+				}
+				if autoTask { // a task folder the agent itself would make
+					if err := os.MkdirAll(abs, 0755); err != nil {
+						return err
+					}
 				}
 				if st, err := os.Stat(abs); err != nil || !st.IsDir() {
 					return errcode.New(errcode.Usage, "--cwd must be an existing directory")
@@ -414,10 +421,6 @@ func installProject(ctx context.Context, a *App, r *rt, ad agent.Adapter, name, 
 // mapping here: the folder named like the one its sessions were recorded in.
 // The second result says what was matched, or why nothing was.
 func autoProjectDir(ctx context.Context, a *App, ref, agentName string) (string, string) {
-	ad, err := a.adapter(agentName)
-	if err != nil {
-		return "", err.Error()
-	}
 	r, err := a.openRT(ctx, true)
 	if err != nil {
 		return "", err.Error()
@@ -427,6 +430,16 @@ func autoProjectDir(ctx context.Context, a *App, ref, agentName string) (string,
 		if _, err := r.Sync.Reconcile(ctx); err != nil {
 			return "", err.Error()
 		}
+	}
+	return autoProjectDirWith(ctx, a, r, ref, agentName)
+}
+
+const taskFolderNote = "the agent's own task folder "
+
+func autoProjectDirWith(ctx context.Context, a *App, r *rt, ref, agentName string) (string, string) {
+	ad, err := a.adapter(agentName)
+	if err != nil {
+		return "", err.Error()
 	}
 	ids, err := projectSessions(r, ref)
 	if err != nil || len(ids) == 0 {
@@ -446,6 +459,13 @@ func autoProjectDir(ctx context.Context, a *App, ref, agentName string) (string,
 	origin := commonDir(origins)
 	if origin == "" {
 		return "", "the sessions do not record a folder"
+	}
+	if tw, ok := ad.(interface {
+		TaskWorkspace(string) (string, bool)
+	}); ok {
+		if dir, ok := tw.TaskWorkspace(origin); ok {
+			return dir, taskFolderNote + filepath.Base(origin)
+		}
 	}
 	c := engine.LocalDirCandidates(origin, hints)
 	switch {

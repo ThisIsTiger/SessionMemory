@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -58,12 +59,25 @@ func newAdoptCmd(a *App) *cobra.Command {
 			if res.Conflict || res.Effective == "" {
 				return errcode.New(errcode.NeedsAction, "the session is still in conflict; run choose on one computer first")
 			}
+			if proj := projectOfSession(r, sid); proj != "" {
+				if _, err := loadProject(a.Cfg.StateDir(), proj); err == nil {
+					cmd.Flags().Set("project", proj)
+				}
+			}
+			if strict, _ := cmd.Flags().GetBool("strict"); !strict {
+				cmd.Flags().Set("allow-code-mismatch", "true")
+			}
 			switch session.LandingFor(g, bnd.InstalledRevisionID, res.Effective) {
 			case session.LandUpToDate:
 				fmt.Fprintln(a.Out, "already on the chosen version")
 				return nil
 			case session.LandFastForward:
-				return errcode.New(errcode.Usage, "this copy can simply be updated; run relay instead")
+				// the chosen version builds on the installed one, but a thread whose
+				// own content no longer matches the installed version cannot be
+				// updated in place: relay refuses it, so replacing it is the way out
+				if !localCopyDiverged(cmd, a, r, ad, name, sid) {
+					return errcode.New(errcode.Usage, "this copy can simply be updated; run relay instead")
+				}
 			}
 			if planOnly, _ := cmd.Flags().GetBool("plan"); planOnly {
 				// a preview changes nothing: no move, no capture, no install
@@ -126,14 +140,6 @@ func newAdoptCmd(a *App) *cobra.Command {
 					done = append(done, moved{from, to})
 				}
 			}
-			if proj := projectOfSession(r, sid); proj != "" {
-				if _, err := loadProject(a.Cfg.StateDir(), proj); err == nil {
-					cmd.Flags().Set("project", proj)
-				}
-			}
-			if strict, _ := cmd.Flags().GetBool("strict"); !strict {
-				cmd.Flags().Set("allow-code-mismatch", "true")
-			}
 			opt, err := installOptions(a, cmd, name)
 			if err != nil {
 				undo()
@@ -153,6 +159,19 @@ func newAdoptCmd(a *App) *cobra.Command {
 	c.Flags().Bool("strict", false, "refuse when the recorded code state differs from this computer's")
 	addInstallFlags(c)
 	return c
+}
+
+// localCopyDiverged reports whether installing the chosen version over this
+// computer's copy is refused only because the copy's content has moved away
+// from the version it was installed from.
+func localCopyDiverged(cmd *cobra.Command, a *App, r *rt, ad agent.Adapter, name, sid string) bool {
+	opt, err := installOptions(a, cmd, name)
+	if err != nil {
+		return false
+	}
+	opt.PlanOnly = true
+	_, _, err = r.Eng.Restore(cmd.Context(), ad, sid, opt)
+	return err != nil && errcode.CodeOf(err) == errcode.NeedsAction && strings.Contains(err.Error(), "diverged")
 }
 
 func projectOfSession(r *rt, sid string) string {

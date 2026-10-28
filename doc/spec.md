@@ -1892,7 +1892,7 @@ rollout-<YYYY-MM-DDTHH-MM-SS>-<线程 UUID>[_<分段 UUID>].jsonl[.zst]
 - 软删除：`workbuddy.db` 的 `sessions.deleted_at` 非空的会话不当作活跃会话。读取该库一律用 URI `file:<path>?mode=ro&immutable=1`；读不到时不排除任何会话并在 Diag 记 `registry_unreadable`；
 - 子代理文件的键归属父会话（`NativeID` 取其上级会话目录名）；
 - 采集算法同 §8.2；
-- **Writer**：原生模式使用路线 3，默认关闭；`agents.workbuddy.allow_registry_write=true` 后支持手动 `restore --agent workbuddy --client-closed`。仅允许 macOS、安装在 `/Applications/WorkBuddy.app` 的 5.8.3，以及 PRAGMA table_info 指纹 `884179348b27ff0de44059fc1483fb289a6edf29f5ae5a310428495a21eb928f` 的 sessions 表；拒绝未知列/类型/默认值、额外触发器、符号链接和未纳管的同 ID 数据。转换写入（§9.3）以新原生会话经同一 Writer 安装，沿用全部限制。
+- **Writer**：原生模式使用路线 3，默认关闭；`agents.workbuddy.allow_registry_write=true` 后支持手动 `restore --agent workbuddy --client-closed`。仅允许 macOS、安装在 `/Applications/WorkBuddy.app` 的 5.x 系列（不再限定到某个小版本：5.8.3 与 5.9.3 的 sessions 表指纹相同；真正的保护是下面的表结构指纹、触发器检查和会话文件格式检查），以及 PRAGMA table_info 指纹 `f8b325800c48b7c558caff1330e2c4a15aaa6419777a5fc691b8074250b3a680`（逐列 `名称:类型:非空:默认值:主键` 排序后取哈希，与列顺序无关）的 sessions 表；拒绝未知列/类型/默认值、额外触发器、符号链接和未纳管的同 ID 数据。转换写入（§9.3）以新原生会话经同一 Writer 安装，沿用全部限制。
 - 目标目录编码目前只接受已验证的无空格 ASCII 绝对路径；只改主流/旁路 JSONL 及 meta.json 已知顶层 `cwd` 字符串，保留其他字节以支持映射后往返；不推断历史工具参数。单个 artifact 超过 64 MiB 或单次安装超过 128 MiB 时明确返回 unsupported。
 - 新登记从目标 schema 默认值构造，仅设 ID/cwd/title/status/时间与本地唯一非删除账号的 user_id；不复制源账号、模型、权限或专家设置。目标配置需专用于一个账号且已有本地会话；多账号或空库返回 needs_action。已有登记仅在受管理 binding 下更新，并保留目标私有字段；不复活软删除。
 - 安装要求客户端完全退出并显式声明 client-closed；macOS 进程及 SingletonLock PID 检测为运行中时不能用声明覆盖。home 下的安装锁只串行化 SessionMemory 写入，不是假设厂商会遵守的锁；安装过程中反复检查进程、文件和行基线，禁止自动安装。若写入后发现客户端启动，保留 recovery_needed，等退出后由恢复守卫处理，不在客户端运行中撤销。
@@ -2852,7 +2852,7 @@ M5–M7 的任务在各自里程碑开始前按同样格式补充（依赖 P0 �
 | 账号/权限/沙箱字段是否需要剔除或改写 | §8.3 | E1c | 不修改这些字段，也不声称覆盖 |
 | 子线程是否随父会话一并采集安装 | §8.3、`Options.IncludeSubagents` | E1c | 作为依赖列出缺口，不一并安装 |
 | 运行检测的最终信号与“运行中是否需重启”矩阵 | §8.3 运行检测 | E2a、E2b | **已定（命令行级）**：线程锁；运行中的 app-server 无需重启即可看见新文件；Desktop 界面刷新待肉眼确认 |
-| WorkBuddy 是否需要登记行及最小行内容 | §8.4 Writer | E3 | **5.8.3 手动原生模式已定**：文件与最小登记；默认关闭、版本/schema 白名单、目标本地账号；真实续写回传与 28 项恢复矩阵通过。转换写入见 §9.3（合成会话测试与 14+13 个崩溃点通过，WorkBuddy GUI 上转换会话的显示、真实模型续写和重开已通过，见跨 Agent 验收报告） |
+| WorkBuddy 是否需要登记行及最小行内容 | §8.4 Writer | E3 | **5.x 手动原生模式已定**（实测 5.8.3、5.9.3）：文件与最小登记；默认关闭、大版本/schema 白名单、目标本地账号；真实续写回传与 28 项恢复矩阵通过。转换写入见 §9.3（合成会话测试与 14+13 个崩溃点通过，WorkBuddy GUI 上转换会话的显示、真实模型续写和重开已通过，见跨 Agent 验收报告） |
 | Codex Desktop 是否需要 UI 层记录与连续 `ordinal` | §9.3、Codex 序列化 | E4 | **已定（0.162.1 app-server 级）**：转换写入必须带 `item_completed` UI 层记录与连续 `ordinal`，否则 turn 为空；同 Agent 原生恢复仍原样安装不生成 |
 | 导入边界与回采 | `ImportReceipt`、§8.2 | E5 | 无法划定边界则不开放往返续写 |
 | 转换后模型的接受度、上下文容量、compaction 映射 | §9.2 | E6 | 规则按表；报告注明容量风险 |

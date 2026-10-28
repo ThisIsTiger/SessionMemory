@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -32,6 +34,30 @@ type WeiyunClient struct {
 	Token string
 	HTTP  *http.Client
 	id    int64
+	// OnQuota is called when Weiyun says today's quota is used up; OnOK once,
+	// at the first call that goes through.
+	OnQuota func(error)
+	OnOK    func()
+	okSeen  bool
+}
+
+// ErrQuota means Weiyun refused the call because the day's quota is used up;
+// nothing helps until it resets.
+var ErrQuota = errors.New("weiyun daily quota used up")
+
+func isQuotaMessage(msg string) bool {
+	return strings.Contains(msg, "117401") || strings.Contains(msg, "daily quota")
+}
+
+func (c *WeiyunClient) failure(tool, msg string) error {
+	if isQuotaMessage(msg) {
+		err := fmt.Errorf("weiyun: %s: %w (%s)", tool, ErrQuota, msg)
+		if c.OnQuota != nil {
+			c.OnQuota(err)
+		}
+		return err
+	}
+	return fmt.Errorf("weiyun: %s: %s", tool, msg)
 }
 
 // NewWeiyunClient returns a client for the public endpoint.
@@ -74,7 +100,7 @@ func (c *WeiyunClient) call(ctx context.Context, tool string, args map[string]an
 		return fmt.Errorf("weiyun: %s: %w", tool, err)
 	}
 	if env.Error != nil {
-		return fmt.Errorf("weiyun: %s: %s", tool, env.Error.Message)
+		return c.failure(tool, env.Error.Message)
 	}
 	for _, it := range env.Result.Content {
 		if it.Type != "text" {
@@ -85,7 +111,13 @@ func (c *WeiyunClient) call(ctx context.Context, tool string, args map[string]an
 		}
 		json.Unmarshal([]byte(it.Text), &e)
 		if e.Error != "" {
-			return fmt.Errorf("weiyun: %s: %s", tool, e.Error)
+			return c.failure(tool, e.Error)
+		}
+		if !c.okSeen {
+			c.okSeen = true
+			if c.OnOK != nil {
+				c.OnOK()
+			}
 		}
 		if out != nil {
 			return json.Unmarshal([]byte(it.Text), out)
@@ -341,9 +373,15 @@ type Mirror struct {
 	mu      sync.Mutex
 	rootKey string
 	dirKeys map[string]string
-	remote  map[string]wyFile // key: slash path
-	fresh   time.Time
-	TTL     time.Duration
+	// KeyCache, when set, is a file that remembers the vault folder's key and
+	// its subdirectories' keys, so a poll does not have to list the account
+	// root and the vault folder just to learn them (every call counts against
+	// a daily quota).
+	KeyCache string
+	cached   bool                 // the keys came from KeyCache and no listing has confirmed them yet
+	remote   map[string]wyFile    // key: slash path
+	fresh    map[string]time.Time // per top-level directory ("" = the vault folder itself)
+	TTL      time.Duration
 }
 
 // NewMirror returns a Mirror over local.
@@ -368,8 +406,64 @@ func joinRemote(dir, name string) string {
 	return dir + "/" + strings.ReplaceAll(name, wySep, "/")
 }
 
+type keyCacheFile struct {
+	Root string            `json:"root_name"`
+	Key  string            `json:"root_key"`
+	Dirs map[string]string `json:"dirs"`
+}
+
+func (m *Mirror) loadKeys() bool {
+	if m.KeyCache == "" {
+		return false
+	}
+	b, err := os.ReadFile(m.KeyCache)
+	if err != nil {
+		return false
+	}
+	var f keyCacheFile
+	if json.Unmarshal(b, &f) != nil || f.Root != m.Root || f.Key == "" {
+		return false
+	}
+	m.rootKey = f.Key
+	m.dirKeys = map[string]string{"": f.Key}
+	for name, k := range f.Dirs {
+		if name != "" && k != "" {
+			m.dirKeys[name] = k
+		}
+	}
+	m.cached = true
+	return true
+}
+
+func (m *Mirror) saveKeys() {
+	if m.KeyCache == "" || m.rootKey == "" {
+		return
+	}
+	f := keyCacheFile{Root: m.Root, Key: m.rootKey, Dirs: map[string]string{}}
+	for name, k := range m.dirKeys {
+		if name != "" {
+			f.Dirs[name] = k
+		}
+	}
+	if b, err := json.Marshal(f); err == nil {
+		os.MkdirAll(filepath.Dir(m.KeyCache), 0o700)
+		os.WriteFile(m.KeyCache, b, 0o600)
+	}
+}
+
+// dropKeys forgets the remembered keys (they pointed at something that is gone).
+func (m *Mirror) dropKeys() {
+	m.rootKey, m.dirKeys, m.cached, m.remote, m.fresh = "", nil, false, nil, nil
+	if m.KeyCache != "" {
+		os.Remove(m.KeyCache)
+	}
+}
+
 func (m *Mirror) root(ctx context.Context) (string, error) {
 	if m.rootKey != "" {
+		return m.rootKey, nil
+	}
+	if m.loadKeys() {
 		return m.rootKey, nil
 	}
 	k, err := m.C.ensureDir(ctx, "", m.Root)
@@ -378,36 +472,90 @@ func (m *Mirror) root(ctx context.Context) (string, error) {
 	}
 	m.rootKey = k
 	m.dirKeys = map[string]string{"": k}
+	m.saveKeys()
 	return k, nil
 }
 
-func (m *Mirror) refresh(ctx context.Context, force bool) error {
-	if !force && m.remote != nil && time.Since(m.fresh) < m.TTL {
-		return nil
+// firstSegment is the top-level remote directory a slash path lives in.
+func firstSegment(path string) string {
+	dir, _, ok := strings.Cut(path, "/")
+	if !ok {
+		return ""
+	}
+	return dir
+}
+
+// refresh brings the remote view up to date. only names one top-level
+// directory ("" = all of them): a poll for new manifests has no business
+// listing the objects directory, which is by far the largest.
+func (m *Mirror) refresh(ctx context.Context, force bool, only string) error {
+	err := m.refreshOnce(ctx, force, only)
+	if err != nil && m.cached && !errors.Is(err, ErrQuota) {
+		m.dropKeys() // remembered keys that no longer work: learn them again
+		err = m.refreshOnce(ctx, force, only)
+	}
+	return err
+}
+
+func (m *Mirror) refreshOnce(ctx context.Context, force bool, only string) error {
+	stale := func(scope string) bool {
+		t, ok := m.fresh[scope]
+		return force || !ok || time.Since(t) >= m.TTL
 	}
 	rk, err := m.root(ctx)
 	if err != nil {
 		return err
 	}
-	dirs, files, _, err := m.C.list(ctx, rk)
-	if err != nil {
-		return err
+	if m.remote == nil {
+		m.remote, m.fresh = map[string]wyFile{}, map[string]time.Time{}
 	}
-	remote := map[string]wyFile{}
-	for _, f := range files {
-		remote[f.Name] = f
-	}
-	for _, d := range dirs {
-		m.dirKeys[d.Name] = d.Key
-		_, fs, _, err := m.C.list(ctx, d.Key)
+	// the vault folder itself is listed to learn its subdirectories and root-level
+	// files; when only one known subdirectory is wanted, that listing is not needed
+	if stale("") && !(only != "" && m.dirKeys[only] != "") {
+		dirs, files, _, err := m.C.list(ctx, rk)
 		if err != nil {
 			return err
 		}
-		for _, f := range fs {
-			remote[joinRemote(d.Name, f.Name)] = f
+		for p := range m.remote {
+			if !strings.Contains(p, "/") {
+				delete(m.remote, p)
+			}
+		}
+		for _, f := range files {
+			m.remote[f.Name] = f
+		}
+		for _, d := range dirs {
+			m.dirKeys[d.Name] = d.Key
+		}
+		m.fresh[""] = time.Now()
+		m.cached = false
+		m.saveKeys()
+	}
+	names := make([]string, 0, len(m.dirKeys))
+	for name := range m.dirKeys {
+		if name != "" && (only == "" || name == only) {
+			names = append(names, name)
 		}
 	}
-	m.remote, m.fresh = remote, time.Now()
+	sort.Strings(names)
+	for _, name := range names {
+		if !stale(name) {
+			continue
+		}
+		_, fs, _, err := m.C.list(ctx, m.dirKeys[name])
+		if err != nil {
+			return err
+		}
+		for p := range m.remote {
+			if firstSegment(p) == name {
+				delete(m.remote, p)
+			}
+		}
+		for _, f := range fs {
+			m.remote[joinRemote(name, f.Name)] = f
+		}
+		m.fresh[name] = time.Now()
+	}
 	return nil
 }
 
@@ -415,11 +563,13 @@ func (m *Mirror) refresh(ctx context.Context, force bool) error {
 func (m *Mirror) Pull(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.pullLocked(ctx, true)
+	return m.pullLocked(ctx, true, "")
 }
 
-func (m *Mirror) pullLocked(ctx context.Context, force bool) error {
-	if err := m.refresh(ctx, force); err != nil {
+// pullLocked downloads what the local copy lacks under the top-level
+// directory only ("" = everywhere).
+func (m *Mirror) pullLocked(ctx context.Context, force bool, only string) error {
+	if err := m.refresh(ctx, force, only); err != nil {
 		return err
 	}
 	have, err := m.Local.List(ctx, "")
@@ -432,7 +582,10 @@ func (m *Mirror) pullLocked(ctx context.Context, force bool) error {
 	}
 	paths := make([]string, 0, len(m.remote))
 	for p := range m.remote {
-		if !local[p] && !strings.Contains(p, PartialSuffix) {
+		if only != "" && firstSegment(p) != only {
+			continue
+		}
+		if !local[p] && !strings.Contains(p, PartialSuffix) && p != KeyPath {
 			paths = append(paths, p)
 		}
 	}
@@ -453,7 +606,7 @@ func (m *Mirror) pullLocked(ctx context.Context, force bool) error {
 func (m *Mirror) Push(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.refresh(ctx, true); err != nil {
+	if err := m.refresh(ctx, true, ""); err != nil {
 		return err
 	}
 	have, err := m.Local.List(ctx, "")
@@ -461,6 +614,9 @@ func (m *Mirror) Push(ctx context.Context) error {
 		return err
 	}
 	for _, e := range have {
+		if e.Path == KeyPath {
+			continue
+		}
 		if err := m.pushLocked(ctx, e.Path); err != nil {
 			return err
 		}
@@ -482,6 +638,11 @@ func (m *Mirror) pushLocked(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
+	return m.uploadLocked(ctx, path, data)
+}
+
+// uploadLocked creates the directory if needed and uploads data at path.
+func (m *Mirror) uploadLocked(ctx context.Context, path string, data []byte) error {
 	rk, err := m.root(ctx)
 	if err != nil {
 		return err
@@ -493,6 +654,7 @@ func (m *Mirror) pushLocked(ctx context.Context, path string) error {
 			return err
 		}
 		m.dirKeys[dir] = key
+		m.saveKeys()
 	}
 	if dir == "" {
 		key = rk
@@ -501,6 +663,57 @@ func (m *Mirror) pushLocked(ctx context.Context, path string) error {
 		return err
 	}
 	m.remote[path] = wyFile{Name: name, PDir: key, Size: int64(len(data))}
+	return nil
+}
+
+// KeyPath is where the vault key may be kept in the cloud folder. Normal
+// sync neither uploads nor downloads it and the local copy never holds it, so
+// deleting it from the cloud sticks: only PutKey, GetKey and DeleteKey touch it.
+const KeyPath = "public/vault-key.json"
+
+// PutKey stores the key file unless one is already there.
+func (m *Mirror) PutKey(ctx context.Context, data []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.refresh(ctx, true, firstSegment(KeyPath)); err != nil {
+		return err
+	}
+	if _, ok := m.remote[KeyPath]; ok {
+		return nil
+	}
+	return m.uploadLocked(ctx, KeyPath, data)
+}
+
+// GetKey returns the key file, or false when the cloud folder has none.
+func (m *Mirror) GetKey(ctx context.Context) ([]byte, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.refresh(ctx, true, firstSegment(KeyPath)); err != nil {
+		return nil, false, err
+	}
+	f, ok := m.remote[KeyPath]
+	if !ok {
+		return nil, false, nil
+	}
+	data, err := m.C.download(ctx, f)
+	return data, err == nil, err
+}
+
+// DeleteKey moves the key file to the Weiyun recycle bin (never a permanent delete).
+func (m *Mirror) DeleteKey(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.refresh(ctx, true, firstSegment(KeyPath)); err != nil {
+		return err
+	}
+	f, ok := m.remote[KeyPath]
+	if !ok {
+		return nil
+	}
+	if err := m.C.call(ctx, "weiyun.delete", map[string]any{"file_list": []map[string]string{{"file_id": f.ID, "pdir_key": f.PDir}}, "delete_completely": false}, nil); err != nil {
+		return err
+	}
+	delete(m.remote, KeyPath)
 	return nil
 }
 
@@ -515,7 +728,7 @@ func (m *Mirror) Put(ctx context.Context, path string, r io.Reader) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.refresh(ctx, false); err != nil {
+	if err := m.refresh(ctx, false, firstSegment(path)); err != nil {
 		return err
 	}
 	if r, ok := m.remote[path]; ok {
@@ -530,7 +743,7 @@ func (m *Mirror) Put(ctx context.Context, path string, r io.Reader) error {
 // List pulls what the local copy lacks, then lists the local copy.
 func (m *Mirror) List(ctx context.Context, prefix string) ([]Entry, error) {
 	m.mu.Lock()
-	err := m.pullLocked(ctx, false)
+	err := m.pullLocked(ctx, false, firstSegment(prefix))
 	m.mu.Unlock()
 	if err != nil {
 		return nil, err
@@ -545,7 +758,7 @@ func (m *Mirror) Get(ctx context.Context, path string) (io.ReadCloser, error) {
 		return rc, nil
 	}
 	m.mu.Lock()
-	perr := m.pullLocked(ctx, true)
+	perr := m.pullLocked(ctx, true, firstSegment(path))
 	m.mu.Unlock()
 	if perr != nil {
 		return nil, perr

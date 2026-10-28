@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -15,8 +16,12 @@ import (
 	"session-memory/internal/store"
 )
 
-// Exact PRAGMA table_info fingerprint from the isolated 5.8.3 experiment.
-const registrySchema = "884179348b27ff0de44059fc1483fb289a6edf29f5ae5a310428495a21eb928f"
+// Fingerprint of the sessions table: the sorted "name:type:notnull:default:pk"
+// lines of PRAGMA table_info. Sorted because the column order depends on a
+// database's migration history: the isolated fixture and the real 5.8.3
+// installs on two computers have the same 40 columns in different orders, and
+// the writer addresses columns by name only.
+const registrySchema = "f8b325800c48b7c558caff1330e2c4a15aaa6419777a5fc691b8074250b3a680"
 const registryBackupName = "workbuddy-registry.json"
 
 type row map[string]any
@@ -95,6 +100,7 @@ func registryDefaults(ctx context.Context, db sqlReader) (row, error) {
 	if err != nil {
 		return nil, err
 	}
+	sort.Strings(signature)
 	if hashBytes([]byte(strings.Join(signature, "\n"))) != registrySchema {
 		return nil, errcode.New(errcode.UnknownFormat, "WorkBuddy registry schema is outside the allowlist")
 	}

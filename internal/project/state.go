@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 type Dirty struct {
@@ -27,8 +28,16 @@ type State struct {
 	Dirty         Dirty  `json:"dirty"`
 }
 
+// gitTimeout bounds one git call: a git that never returns (a stuck
+// filesystem, a repository on a drive that is not mounted) must not hold the
+// store lock, and with it every sync, forever.
+var gitTimeout = 60 * time.Second
+
 func git(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd.WaitDelay = 5 * time.Second
 	// Local inspection must not trigger optional index writes or prompting.
 	for _, env := range os.Environ() {
 		key, _, _ := strings.Cut(env, "=")

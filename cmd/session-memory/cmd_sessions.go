@@ -289,7 +289,11 @@ func newSyncCmd(a *App) *cobra.Command {
 						out["received_manifests"], out["received_revisions"], out["pending_objects"], out["quarantined"], out["installed"], out["waiting_client_close"])
 				}
 				if !watch {
-					return captureFailure(out)
+					if err := captureFailure(out); err != nil {
+						return err
+					}
+					offerKeyRemoval(cmd.Context(), a)
+					return nil
 				}
 				select {
 				case <-cmd.Context().Done():
@@ -307,6 +311,9 @@ func newSyncCmd(a *App) *cobra.Command {
 // local changes, publish them, receive what other devices published.
 func syncOnce(ctx context.Context, a *App, r *rt) (map[string]int, error) {
 	out := map[string]int{}
+	if r.Multi != nil {
+		r.Multi.CatchUp(ctx) // an account that missed writes is brought level; failures are reported by the mirror
+	}
 	out["auto_tracked"] = autoTrackProjects(ctx, a, r)
 	bs, _ := r.Store.Bindings("")
 	for _, b := range bs {
