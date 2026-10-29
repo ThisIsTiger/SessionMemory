@@ -565,3 +565,58 @@ func TestSetupMissingFolderKeyDoesNotCreateForeignIdentity(t *testing.T) {
 		t.Fatalf("failed setup persisted a new unrelated vault identity: %s", info.VaultID)
 	}
 }
+
+// reset puts the state and the settings aside (nothing deleted), and setup
+// can then start again from nothing and rejoin the vault that is in the cloud.
+func TestResetPutsStateAsideAndSetupStartsAgain(t *testing.T) {
+	root := t.TempDir()
+	shared := filepath.Join(root, "cloud")
+	A := newComputer(t, root, "a", shared)
+	app := filepath.Join(A.home, "work", "app")
+	os.MkdirAll(app, 0700)
+	addCodexSession(A, 31, app)
+	selfVia(t, A, nil)
+	A.must("setup", "--no-autosync", "--days", "36500")
+	state := filepath.Join(A.home, "sm")
+	cfgFile := filepath.Join(A.home, ".config", "session-memory", "config.json")
+	for _, p := range []string{state, cfgFile} {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("expected %s after setup: %v", p, err)
+		}
+	}
+
+	out := A.must("reset")
+	if !strings.Contains(out, "run it again with --yes") && !strings.Contains(out, "Run it again with --yes") {
+		t.Fatalf("a plain reset must only say what it would do:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(state, "device")); err != nil {
+		t.Fatalf("a plain reset moved the state: %v", err)
+	}
+
+	out = A.must("reset", "--yes")
+	if lastLine(out)[:len("done: RESET")] != "done: RESET" {
+		t.Fatalf("last line:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(state, "device")); err == nil {
+		t.Fatal("the device identity is still in the state folder")
+	}
+	if _, err := os.Stat(cfgFile); err == nil {
+		t.Fatal("the settings are still in place")
+	}
+	baks, _ := filepath.Glob(state + ".bak-*")
+	cfgBaks, _ := filepath.Glob(cfgFile + ".bak-*")
+	if len(baks) != 1 || len(cfgBaks) != 1 {
+		t.Fatalf("state and settings must be put aside, not deleted: %v %v", baks, cfgBaks)
+	}
+	if files, _ := filepath.Glob(filepath.Join(A.home, "codex", "sessions", "*", "*", "*", "*.jsonl")); len(files) != 1 {
+		t.Fatalf("the agent's own sessions must not be touched: %v", files)
+	}
+
+	// the settings are gone: point at the cloud folder again, then start over
+	A.must("config", "set", "transport.folder", shared)
+	A.must("config", "set", "agents.codex.home", filepath.Join(A.home, "codex"))
+	out = A.must("setup", "--no-autosync", "--client-closed", "--days", "36500")
+	if !strings.Contains(out, "done: JOINED") {
+		t.Fatalf("after a reset, setup must rejoin the vault in the cloud:\n%s", out)
+	}
+}
