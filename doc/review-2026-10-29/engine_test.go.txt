@@ -1,0 +1,54 @@
+package engine
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"session-memory/internal/agent"
+	"session-memory/internal/session"
+)
+
+func TestAuditRejectedBindingLeavesNoFile(t *testing.T) {
+	r := newRig(t)
+	tid, _ := r.put(990, 1)
+	b, _, err := r.eng.Track(context.Background(), r.ad, agent.NativeRef{Home: r.home, NativeID: tid}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dup := b
+	dup.BindingID, dup.NativeSessionID = session.NewBindingID(), "duplicate"
+	if err := r.st.SaveBinding(nil, dup); err == nil {
+		t.Fatal("setup: duplicate must be rejected")
+	}
+	bs, err := r.st.Bindings(b.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bs) != 1 {
+		t.Fatalf("rejected SaveBinding persisted a second active binding: %d", len(bs))
+	}
+}
+
+func TestAuditRebuildReportsDamagedRevision(t *testing.T) {
+	r := newRig(t)
+	tid, _ := r.put(991, 1)
+	b, rev, err := r.eng.Track(context.Background(), r.ad, agent.NativeRef{Home: r.home, NativeID: tid}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(r.root, "store/revisions", rev.RevisionID+".json"), []byte("{broken"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.st.Rebuild(context.Background()); err != nil {
+		return
+	}
+	revs, err := r.st.Revisions(b.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(revs) == 0 {
+		t.Fatal("Rebuild returned success but silently omitted the damaged revision still referenced by its binding")
+	}
+}

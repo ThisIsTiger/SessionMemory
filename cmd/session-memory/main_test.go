@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"session-memory/internal/testutil/codexgen"
+	"session-memory/internal/vault"
 )
 
 func exec(t *testing.T, args ...string) (int, string, string) {
@@ -19,11 +20,22 @@ func exec(t *testing.T, args ...string) (int, string, string) {
 }
 
 func isolate(t *testing.T) string {
+	// Host credentials and agent homes must not change the meaning of a CLI
+	// test or let a test contact the user's cloud account.
+	oldKeys := newKeyStore
+	keys := vault.MemStore{}
+	newKeyStore = func() vault.KeyStore { return keys }
+	t.Cleanup(func() { newKeyStore = oldKeys })
 	h := t.TempDir()
 	t.Setenv("HOME", h)
 	t.Setenv("USERPROFILE", h)
 	t.Setenv("SM_HOME", "")
 	t.Setenv("CODEX_HOME", "")
+	t.Setenv("WORKBUDDY_CONFIG_DIR", "")
+	t.Setenv("CODEBUDDY_CONFIG_DIR", "")
+	t.Setenv(envWeiyunToken, "")
+	t.Setenv(envWeiyunToken2, "")
+	t.Setenv("WEIYUN_MCP_URL", "")
 	return h
 }
 

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -129,6 +130,7 @@ func (s *FS) Recover(ctx context.Context) ([]RecoveryReport, error) {
 	}
 	var items []item
 	var reports []RecoveryReport
+	refused := map[string]error{}
 	for _, p := range ents {
 		rec, err := s.loadJournal(p)
 		if err != nil {
@@ -154,16 +156,19 @@ func (s *FS) Recover(ctx context.Context) ([]RecoveryReport, error) {
 			err = t.Finish()
 		case Undo:
 			err = func() error {
+				var data InstallData
+				if err := t.Data(&data); err != nil {
+					return err
+				}
 				if s.InstallGuard != nil {
-					var data InstallData
-					if err := t.Data(&data); err != nil {
-						return err
-					}
 					release, err := s.InstallGuard(ctx, data)
 					if err != nil {
 						return err
 					}
 					defer release()
+				}
+				if err := checkInstallUntouched(data, it.path); err != nil {
+					return err
 				}
 				return s.undoInstall(t)
 			}()
@@ -176,12 +181,19 @@ func (s *FS) Recover(ctx context.Context) ([]RecoveryReport, error) {
 		}
 		if err != nil {
 			rep.Err = "recovery_needed"
+			if errcode.CodeOf(err) == errcode.RecoveryNeeded {
+				refused[rep.TxID] = err // says which files and where the journal is
+			}
 		}
 		reports = append(reports, rep)
 	}
 	for _, rep := range reports {
 		if rep.Err != "" {
-			return reports, errcode.New(errcode.RecoveryNeeded, "unfinished transaction requires recovery").With("tx_id", rep.TxID)
+			msg := "unfinished transaction requires recovery"
+			if err := refused[rep.TxID]; err != nil {
+				msg += ": " + err.Error()
+			}
+			return reports, errcode.New(errcode.RecoveryNeeded, msg).With("tx_id", rep.TxID)
 		}
 	}
 	return reports, nil
@@ -233,6 +245,29 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// checkInstallUntouched refuses an undo that would overwrite or delete what
+// someone wrote after the crash: every planned file must still be the bytes the
+// install wrote, or (not written yet, or already rolled back) the backup.
+// Journals written before Planned existed are undone as before.
+func checkInstallUntouched(d InstallData, journal string) error {
+	for _, pw := range d.Planned {
+		cur, err := os.ReadFile(filepath.Join(d.Home, filepath.FromSlash(pw.Path)))
+		backup, berr := os.ReadFile(filepath.Join(d.BackupDir, filepath.FromSlash(pw.Path)))
+		switch {
+		case os.IsNotExist(err):
+			if berr == nil { // a backed-up file was deleted
+				return errcode.New(errcode.RecoveryNeeded, "a file of the interrupted install was deleted afterwards; nothing was rolled back (journal "+journal+")")
+			}
+		case err != nil:
+			return err
+		case sha256hex(cur) == pw.SHA256, berr == nil && bytes.Equal(cur, backup):
+		default:
+			return errcode.New(errcode.RecoveryNeeded, "files changed after the interrupted install; nothing was rolled back (journal "+journal+")")
+		}
+	}
+	return nil
 }
 
 // undoInstall restores backups over the target and removes created files.

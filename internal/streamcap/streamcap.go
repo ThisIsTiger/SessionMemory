@@ -25,6 +25,10 @@ type File struct {
 	Mode os.FileMode
 }
 
+// ErrChangedDuringCapture means the source was rewritten while its bytes were
+// being stored, so no cursor may vouch for it; the next capture starts over.
+var ErrChangedDuringCapture = errors.New("streamcap: the source changed while it was being captured")
+
 // Options tunes capture.
 type Options struct{ MaxRecordBytes int64 }
 
@@ -68,6 +72,7 @@ func CaptureStream(ctx context.Context, home, logic string, fs []File, old sessi
 		}
 	}
 
+	nOld := len(segs) // segments before this capture
 	key := agent.ArtifactKey{Path: logic, Kind: session.KindStream, Form: form, Generation: gen, Mode: uint32(chosen.Mode)}
 	rc, _, err := src.OpenAt(offset)
 	if err != nil {
@@ -134,6 +139,17 @@ func CaptureStream(ctx context.Context, home, logic string, fs []File, old sessi
 	cursor := &session.StreamCursor{Generation: gen, Offset: end}
 	if !chosen.Zst {
 		if c, err := jsonl.NewCursor(path, gen, end); err == nil {
+			// The cursor certifies whatever is in the file now; it must be what was
+			// just stored. A rewrite in between is refused (the next run re-reads).
+			if fresh := segs[nOld:]; len(fresh) > 0 {
+				same, err := verifyRange(src, fresh[0].Start, fresh)
+				if err != nil {
+					return nil, agent.CaptureOK, false, nil, err
+				}
+				if !same {
+					return nil, agent.CaptureOK, false, nil, ErrChangedDuringCapture
+				}
+			}
 			cursor = &session.StreamCursor{Generation: c.Generation, Offset: c.Offset, FileID: c.FileID, HeadHash: c.HeadHash, TailHash: c.TailHash}
 		}
 	}
@@ -163,7 +179,13 @@ func PrefixMatches(src jsonl.Source, path string, old session.ArtifactState, seg
 // VerifySegments re-hashes every segment range of the stream and compares it
 // with raw_hash (deep verification, spec §2.2 rule 4).
 func VerifySegments(src jsonl.Source, segs []session.SegmentRef) (bool, error) {
-	rc, _, err := src.OpenAt(0)
+	return verifyRange(src, 0, segs)
+}
+
+// verifyRange re-hashes consecutive segments starting at decompressed offset
+// from.
+func verifyRange(src jsonl.Source, from int64, segs []session.SegmentRef) (bool, error) {
+	rc, _, err := src.OpenAt(from)
 	if err != nil {
 		if errors.Is(err, jsonl.ErrTruncated) {
 			return false, nil
@@ -228,6 +250,20 @@ func readAllLimited(path string) ([]byte, error) {
 	return io.ReadAll(rc)
 }
 
+// blobChunks are the raw hashes of a blob's segments, as CaptureBlob records them.
+func blobChunks(data []byte) []session.SegmentRef {
+	var out []session.SegmentRef
+	for off := 0; off < len(data); off += agent.MaxSegmentBytes {
+		end := off + agent.MaxSegmentBytes
+		if end > len(data) {
+			end = len(data)
+		}
+		h := sha256.Sum256(data[off:end])
+		out = append(out, session.SegmentRef{RawHash: hex.EncodeToString(h[:])})
+	}
+	return out
+}
+
 // CaptureBlob stores an immutable file. It is re-captured only when its
 // content changed: the chunk hashes are recomputed locally and compared with
 // the recorded segments digest.
@@ -236,15 +272,7 @@ func CaptureBlob(ctx context.Context, home string, f File, logic string, old ses
 	if err != nil {
 		return nil, false, err
 	}
-	var fresh []session.SegmentRef
-	for off := 0; off < len(data); off += agent.MaxSegmentBytes {
-		end := off + agent.MaxSegmentBytes
-		if end > len(data) {
-			end = len(data)
-		}
-		h := sha256.Sum256(data[off:end])
-		fresh = append(fresh, session.SegmentRef{RawHash: hex.EncodeToString(h[:])})
-	}
+	fresh := blobChunks(data)
 	if old.Kind == session.KindBlob && old.Digest != "" && old.Digest == session.SegmentsDigest(fresh) && old.Size == int64(len(data)) {
 		return &old, false, nil
 	}
@@ -269,7 +297,7 @@ func VerifyArtifacts(home string, files map[string][]File, arts map[string]sessi
 		}
 		if st.Kind == session.KindBlob {
 			data, err := os.ReadFile(filepath.Join(home, filepath.FromSlash(fs[0].Rel)))
-			if err != nil || int64(len(data)) != st.Size {
+			if err != nil || int64(len(data)) != st.Size || (deep && session.SegmentsDigest(blobChunks(data)) != st.Digest) {
 				bad = append(bad, logic)
 			}
 			continue

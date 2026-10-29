@@ -194,14 +194,18 @@ func (a *App) joinOrCreateVault(ctx context.Context, say func(string, ...any)) (
 	if err != nil {
 		return 0, err
 	}
+	// not knowing whether a vault is there must never end in a second one
+	vaultFile := ""
 	if m != nil {
-		// not knowing whether a vault is there must never end in a second one
 		if err := m.Pull(ctx); err != nil {
 			return 0, errcode.Wrap(errcode.Usage, "cannot reach Weiyun: "+err.Error(), err)
 		}
-		if exists(filepath.Join(a.weiyunCache(), "public", "vault.json")) {
-			return 0, errcode.New(errcode.AuthFailed, "your Weiyun already holds a vault, but its key was removed from the cloud. On the computer that already syncs run `"+selfPath()+" key publish`, then run `"+selfPath()+" setup` here again")
-		}
+		vaultFile = filepath.Join(a.weiyunCache(), "public", "vault.json")
+	} else if a.Cfg.Transport.Folder != "" {
+		vaultFile = filepath.Join(config.ExpandPath(a.Cfg.Transport.Folder), "public", "vault.json")
+	}
+	if vaultFile != "" && exists(vaultFile) {
+		return 0, errcode.New(errcode.AuthFailed, "your cloud folder already holds a vault, but its key was removed from the cloud. On the computer that already syncs run `"+selfPath()+" key publish`, then run `"+selfPath()+" setup` here again")
 	}
 	if _, err := runSelf(ctx, "init"); err != nil {
 		return 0, err

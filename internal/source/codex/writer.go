@@ -268,6 +268,24 @@ func existingState(home string, paths []string) map[string]agent.FileStat {
 	return out
 }
 
+// extraThreadFiles lists the thread's rollout files on the target that the
+// revision does not contain. Adopting the install would count their content as
+// captured although no revision holds it, so the install refuses instead.
+func extraThreadFiles(home, nativeID string, paths []string) []string {
+	known := map[string]bool{}
+	for _, p := range paths {
+		known[p] = true
+	}
+	threads, _ := threadFiles(home)
+	var out []string
+	for _, f := range threads[strings.ToLower(nativeID)] {
+		if !known[f.logic] {
+			out = append(out, f.rel)
+		}
+	}
+	return out
+}
+
 func baselineOf(m map[string]agent.FileStat) string {
 	h, _ := canonjson.Hash(m)
 	return h
@@ -294,6 +312,9 @@ func (w *Writer) Plan(ctx context.Context, in agent.WriteInput) (agent.Plan, err
 		paths = append(paths, a.Path)
 	}
 	sort.Strings(paths)
+	if extra := extraThreadFiles(home, nativeIDOf(in), paths); len(extra) > 0 {
+		return plan, errcode.New(errcode.NeedsAction, "the target thread has rollout files this revision does not contain; checkpoint them first")
+	}
 	ex := existingState(home, paths)
 	for _, a := range in.Source.Artifacts() {
 		if _, hasZst := ex[a.Path+".zst"]; hasZst {
@@ -446,7 +467,7 @@ func (w *Writer) Apply(ctx context.Context, in agent.WriteInput, p agent.Plan, t
 	if baselineOf(existingState(home, all)) != p.BaselineHash {
 		return agent.Receipt{}, errcode.New(errcode.BaselineChanged, "the target changed after the plan was made")
 	}
-	d := store.InstallData{NativeSessionID: nativeID, ClientClosed: w.ClientClosed, PlanDigest: p.Digest, Mode: p.Mode, Route: p.Route, Home: home, BackupDir: t.BackupDir()}
+	d := store.InstallData{NativeSessionID: nativeID, ClientClosed: w.ClientClosed, PlanDigest: p.Digest, Mode: p.Mode, Route: p.Route, Home: home, BackupDir: t.BackupDir(), Planned: p.Writes}
 	contents := map[string][]byte{}
 	for _, pw := range p.Writes {
 		c, _, err := buildTarget(ctx, in.Source, pw.Path, in.PathMap, providerFor(in.TargetState.Home, pw.Path))
@@ -477,6 +498,9 @@ func (w *Writer) Apply(ctx context.Context, in agent.WriteInput, p agent.Plan, t
 	}()
 	if baselineOf(existingState(home, all)) != p.BaselineHash {
 		return agent.Receipt{}, errcode.New(errcode.BaselineChanged, "the target changed before the writer acquired its locks")
+	}
+	if extra := extraThreadFiles(home, nativeID, all); len(extra) > 0 {
+		return agent.Receipt{}, errcode.New(errcode.BaselineChanged, "the target thread gained rollout files after the plan was made")
 	}
 	if in.ValidateEnvironment != nil {
 		if err := in.ValidateEnvironment(ctx); err != nil {

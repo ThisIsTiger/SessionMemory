@@ -1,0 +1,666 @@
+{
+  "date": "2026-10-29",
+  "baseline_commit": "65adeb18d3d9c49118751e3a84c7c6a93c72e7a7",
+  "host": {
+    "os": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "go": "go1.26.0"
+  },
+  "scope": "business implementation unchanged; test additions and isolation fix only",
+  "default": {
+    "test_and_subtest_events": {
+      "pass": 282,
+      "skip": 3
+    },
+    "top_level_events": {
+      "pass": 243,
+      "skip": 3
+    },
+    "packages": {
+      "session-memory/internal/canonical": {
+        "status": "pass",
+        "elapsed_seconds": 0.221
+      },
+      "session-memory/internal/agent": {
+        "status": "pass",
+        "elapsed_seconds": 0.222
+      },
+      "session-memory/internal/convert": {
+        "status": "pass",
+        "elapsed_seconds": 0.473
+      },
+      "session-memory/internal/checkpoint": {
+        "status": "pass",
+        "elapsed_seconds": 1.203
+      },
+      "session-memory/internal/device": {
+        "status": "pass",
+        "elapsed_seconds": 1.529
+      },
+      "session-memory/internal/bridge": {
+        "status": "pass",
+        "elapsed_seconds": 1.783
+      },
+      "session-memory/internal/canonjson": {
+        "status": "pass",
+        "elapsed_seconds": 2.215
+      },
+      "session-memory/internal/conversation": {
+        "status": "pass",
+        "elapsed_seconds": 2.652
+      },
+      "session-memory/internal/config": {
+        "status": "pass",
+        "elapsed_seconds": 3.886
+      },
+      "session-memory/internal/errcode": {
+        "status": "pass",
+        "elapsed_seconds": 4.356
+      },
+      "session-memory/internal/failpoint": {
+        "status": "pass",
+        "elapsed_seconds": 7.415
+      },
+      "session-memory/internal/jsonl": {
+        "status": "pass",
+        "elapsed_seconds": 9.208
+      },
+      "session-memory/internal/logx": {
+        "status": "pass",
+        "elapsed_seconds": 9.271
+      },
+      "session-memory/internal/engine": {
+        "status": "pass",
+        "elapsed_seconds": 10.817
+      },
+      "session-memory/internal/streamcap": {
+        "status": "pass",
+        "elapsed_seconds": 0.207
+      },
+      "session-memory/internal/p0": {
+        "status": "pass",
+        "elapsed_seconds": 9.479
+      },
+      "session-memory/internal/platform": {
+        "status": "pass",
+        "elapsed_seconds": 9.581
+      },
+      "session-memory/internal/testutil/gitrepo": {
+        "status": "pass",
+        "elapsed_seconds": 0.188
+      },
+      "session-memory/internal/session": {
+        "status": "pass",
+        "elapsed_seconds": 8.703
+      },
+      "session-memory/internal/project": {
+        "status": "pass",
+        "elapsed_seconds": 10.005
+      },
+      "session-memory/internal/source/claude": {
+        "status": "pass",
+        "elapsed_seconds": 8.529
+      },
+      "session-memory/internal/store": {
+        "status": "pass",
+        "elapsed_seconds": 7.299
+      },
+      "session-memory/internal/testutil/codexgen": {
+        "status": "pass",
+        "elapsed_seconds": 8.221
+      },
+      "session-memory/internal/vault": {
+        "status": "pass",
+        "elapsed_seconds": 7.858
+      },
+      "session-memory/internal/transport": {
+        "status": "pass",
+        "elapsed_seconds": 8.850999999999999
+      },
+      "session-memory/internal/source/workbuddy": {
+        "status": "pass",
+        "elapsed_seconds": 12.658
+      },
+      "session-memory/internal/source/codex": {
+        "status": "pass",
+        "elapsed_seconds": 16.179
+      },
+      "session-memory/internal/sync": {
+        "status": "pass",
+        "elapsed_seconds": 89.286
+      },
+      "session-memory/cmd/session-memory": {
+        "status": "pass",
+        "elapsed_seconds": 305.874
+      }
+    },
+    "failures": {},
+    "skipped": [
+      "TestLiveConvertToCodex",
+      "TestRegisterLive",
+      "TestLiveWeiyunTwoMachines"
+    ],
+    "data_races": []
+  },
+  "race_dev_failpoint": {
+    "test_and_subtest_events": {
+      "pass": 382,
+      "skip": 3
+    },
+    "top_level_events": {
+      "pass": 254,
+      "skip": 3
+    },
+    "packages": {
+      "session-memory/internal/bridge": {
+        "status": "pass",
+        "elapsed_seconds": 5.584
+      },
+      "session-memory/internal/config": {
+        "status": "pass",
+        "elapsed_seconds": 6.193
+      },
+      "session-memory/internal/convert": {
+        "status": "pass",
+        "elapsed_seconds": 6.477
+      },
+      "session-memory/internal/canonjson": {
+        "status": "pass",
+        "elapsed_seconds": 6.944
+      },
+      "session-memory/internal/checkpoint": {
+        "status": "pass",
+        "elapsed_seconds": 8.358
+      },
+      "session-memory/internal/device": {
+        "status": "pass",
+        "elapsed_seconds": 9.947
+      },
+      "session-memory/internal/errcode": {
+        "status": "pass",
+        "elapsed_seconds": 9.963
+      },
+      "session-memory/internal/conversation": {
+        "status": "pass",
+        "elapsed_seconds": 10.4
+      },
+      "session-memory/internal/failpoint": {
+        "status": "pass",
+        "elapsed_seconds": 8.465
+      },
+      "session-memory/internal/jsonl": {
+        "status": "pass",
+        "elapsed_seconds": 8.411
+      },
+      "session-memory/internal/logx": {
+        "status": "pass",
+        "elapsed_seconds": 8.664
+      },
+      "session-memory/internal/p0": {
+        "status": "pass",
+        "elapsed_seconds": 8.633
+      },
+      "session-memory/internal/platform": {
+        "status": "pass",
+        "elapsed_seconds": 8.296
+      },
+      "session-memory/internal/session": {
+        "status": "pass",
+        "elapsed_seconds": 8.147
+      },
+      "session-memory/internal/project": {
+        "status": "pass",
+        "elapsed_seconds": 8.386
+      },
+      "session-memory/internal/engine": {
+        "status": "pass",
+        "elapsed_seconds": 18.734
+      },
+      "session-memory/internal/source/claude": {
+        "status": "pass",
+        "elapsed_seconds": 8.752
+      },
+      "session-memory/internal/store": {
+        "status": "pass",
+        "elapsed_seconds": 8.337
+      },
+      "session-memory/internal/testutil/codexgen": {
+        "status": "pass",
+        "elapsed_seconds": 7.4030000000000005
+      },
+      "session-memory/internal/vault": {
+        "status": "pass",
+        "elapsed_seconds": 7.328
+      },
+      "session-memory/internal/transport": {
+        "status": "pass",
+        "elapsed_seconds": 8.988
+      },
+      "session-memory/internal/source/codex": {
+        "status": "pass",
+        "elapsed_seconds": 27.204
+      },
+      "session-memory/internal/source/workbuddy": {
+        "status": "pass",
+        "elapsed_seconds": 107.573
+      },
+      "session-memory/internal/sync": {
+        "status": "pass",
+        "elapsed_seconds": 124.814
+      },
+      "session-memory/cmd/session-memory": {
+        "status": "pass",
+        "elapsed_seconds": 329.989
+      }
+    },
+    "failures": {},
+    "skipped": [
+      "TestRegisterLive",
+      "TestLiveConvertToCodex",
+      "TestLiveWeiyunTwoMachines"
+    ],
+    "data_races": []
+  },
+  "integration_dev_failpoint_cross_package_coverage": {
+    "test_and_subtest_events": {
+      "pass": 388,
+      "skip": 3
+    },
+    "top_level_events": {
+      "pass": 255,
+      "skip": 3
+    },
+    "packages": {
+      "session-memory/internal/canonical": {
+        "status": "pass",
+        "elapsed_seconds": 0.199
+      },
+      "session-memory/internal/agent": {
+        "status": "pass",
+        "elapsed_seconds": 0.201
+      },
+      "session-memory/internal/config": {
+        "status": "pass",
+        "elapsed_seconds": 0.559
+      },
+      "session-memory/internal/checkpoint": {
+        "status": "pass",
+        "elapsed_seconds": 1.967
+      },
+      "session-memory/internal/bridge": {
+        "status": "pass",
+        "elapsed_seconds": 2.018
+      },
+      "session-memory/internal/convert": {
+        "status": "pass",
+        "elapsed_seconds": 2.313
+      },
+      "session-memory/internal/device": {
+        "status": "pass",
+        "elapsed_seconds": 2.9699999999999998
+      },
+      "session-memory/internal/conversation": {
+        "status": "pass",
+        "elapsed_seconds": 3.179
+      },
+      "session-memory/internal/canonjson": {
+        "status": "pass",
+        "elapsed_seconds": 3.61
+      },
+      "session-memory/internal/errcode": {
+        "status": "pass",
+        "elapsed_seconds": 3.841
+      },
+      "session-memory/internal/failpoint": {
+        "status": "pass",
+        "elapsed_seconds": 4.505
+      },
+      "session-memory/internal/jsonl": {
+        "status": "pass",
+        "elapsed_seconds": 3.649
+      },
+      "session-memory/internal/logx": {
+        "status": "pass",
+        "elapsed_seconds": 3.952
+      },
+      "session-memory/internal/p0": {
+        "status": "pass",
+        "elapsed_seconds": 4.183
+      },
+      "session-memory/internal/streamcap": {
+        "status": "pass",
+        "elapsed_seconds": 0.184
+      },
+      "session-memory/internal/platform": {
+        "status": "pass",
+        "elapsed_seconds": 3.955
+      },
+      "session-memory/internal/session": {
+        "status": "pass",
+        "elapsed_seconds": 4.039
+      },
+      "session-memory/internal/project": {
+        "status": "pass",
+        "elapsed_seconds": 4.588
+      },
+      "session-memory/internal/testutil/gitrepo": {
+        "status": "pass",
+        "elapsed_seconds": 0.178
+      },
+      "session-memory/internal/source/claude": {
+        "status": "pass",
+        "elapsed_seconds": 4.105
+      },
+      "session-memory/internal/store": {
+        "status": "pass",
+        "elapsed_seconds": 3.776
+      },
+      "session-memory/internal/testutil/codexgen": {
+        "status": "pass",
+        "elapsed_seconds": 3.96
+      },
+      "session-memory/internal/vault": {
+        "status": "pass",
+        "elapsed_seconds": 4.125
+      },
+      "session-memory/internal/source/codex": {
+        "status": "pass",
+        "elapsed_seconds": 7.329
+      },
+      "session-memory/internal/transport": {
+        "status": "pass",
+        "elapsed_seconds": 4.648
+      },
+      "session-memory/internal/engine": {
+        "status": "pass",
+        "elapsed_seconds": 14.77
+      },
+      "session-memory/internal/source/workbuddy": {
+        "status": "pass",
+        "elapsed_seconds": 65.504
+      },
+      "session-memory/internal/sync": {
+        "status": "pass",
+        "elapsed_seconds": 90.05
+      },
+      "session-memory/cmd/session-memory": {
+        "status": "pass",
+        "elapsed_seconds": 298.215
+      }
+    },
+    "failures": {},
+    "skipped": [
+      "TestRegisterLive",
+      "TestLiveConvertToCodex",
+      "TestLiveWeiyunTwoMachines"
+    ],
+    "data_races": []
+  },
+  "installer_race": {
+    "test_and_subtest_events": {
+      "pass": 6
+    },
+    "top_level_events": {
+      "pass": 1
+    },
+    "packages": {
+      "session-memory/cmd/session-memory": {
+        "status": "pass",
+        "elapsed_seconds": 2.466
+      }
+    },
+    "failures": {},
+    "skipped": [],
+    "data_races": []
+  },
+  "randomized_handoffs_race": {
+    "test_and_subtest_events": {
+      "pass": 4
+    },
+    "top_level_events": {
+      "pass": 1
+    },
+    "packages": {
+      "session-memory/internal/sync": {
+        "status": "pass",
+        "elapsed_seconds": 37.067
+      }
+    },
+    "failures": {},
+    "skipped": [],
+    "data_races": []
+  },
+  "coverage": {
+    "default": {
+      "statement_coverage_percent": 65.79,
+      "covered_statements": 6044,
+      "total_statements": 9187,
+      "method": "union of hit coverage blocks across test binaries; duplicates counted once",
+      "packages": {
+        "session-memory/cmd/session-memory": 76.2,
+        "session-memory/internal/agent": 0.0,
+        "session-memory/internal/bridge": 84.21,
+        "session-memory/internal/canonical": 0.0,
+        "session-memory/internal/canonjson": 82.09,
+        "session-memory/internal/checkpoint": 76.71,
+        "session-memory/internal/config": 92.92,
+        "session-memory/internal/conversation": 82.98,
+        "session-memory/internal/convert": 89.36,
+        "session-memory/internal/device": 69.11,
+        "session-memory/internal/engine": 54.56,
+        "session-memory/internal/errcode": 85.0,
+        "session-memory/internal/failpoint": 100.0,
+        "session-memory/internal/jsonl": 79.29,
+        "session-memory/internal/logx": 40.0,
+        "session-memory/internal/p0": 75.43,
+        "session-memory/internal/platform": 62.71,
+        "session-memory/internal/project": 63.86,
+        "session-memory/internal/session": 61.78,
+        "session-memory/internal/source/claude": 53.94,
+        "session-memory/internal/source/codex": 63.55,
+        "session-memory/internal/source/workbuddy": 77.59,
+        "session-memory/internal/store": 6.32,
+        "session-memory/internal/streamcap": 0.0,
+        "session-memory/internal/sync": 72.16,
+        "session-memory/internal/testutil/codexgen": 96.25,
+        "session-memory/internal/testutil/gitrepo": 0.0,
+        "session-memory/internal/transport": 73.65,
+        "session-memory/internal/vault": 67.65
+      }
+    },
+    "integration": {
+      "statement_coverage_percent": 78.02,
+      "covered_statements": 7283,
+      "total_statements": 9335,
+      "method": "union of hit coverage blocks across test binaries; duplicates counted once",
+      "packages": {
+        "session-memory/cmd/session-memory": 75.57,
+        "session-memory/internal/agent": 95.45,
+        "session-memory/internal/bridge": 92.11,
+        "session-memory/internal/canonical": 80.95,
+        "session-memory/internal/canonjson": 88.06,
+        "session-memory/internal/checkpoint": 76.71,
+        "session-memory/internal/config": 94.34,
+        "session-memory/internal/conversation": 82.98,
+        "session-memory/internal/convert": 89.36,
+        "session-memory/internal/device": 73.17,
+        "session-memory/internal/engine": 81.41,
+        "session-memory/internal/errcode": 95.0,
+        "session-memory/internal/failpoint": 90.91,
+        "session-memory/internal/jsonl": 80.47,
+        "session-memory/internal/logx": 46.67,
+        "session-memory/internal/p0": 83.04,
+        "session-memory/internal/platform": 71.19,
+        "session-memory/internal/project": 89.16,
+        "session-memory/internal/session": 78.67,
+        "session-memory/internal/source/claude": 53.94,
+        "session-memory/internal/source/codex": 80.04,
+        "session-memory/internal/source/workbuddy": 80.4,
+        "session-memory/internal/store": 74.53,
+        "session-memory/internal/streamcap": 86.21,
+        "session-memory/internal/sync": 78.65,
+        "session-memory/internal/testutil/codexgen": 98.75,
+        "session-memory/internal/testutil/gitrepo": 90.91,
+        "session-memory/internal/transport": 76.89,
+        "session-memory/internal/vault": 78.68
+      }
+    }
+  },
+  "fuzz": {
+    "jsonl": {
+      "execs": 1078081,
+      "duration_seconds": 25,
+      "passed": true
+    },
+    "vault": {
+      "execs": 1471888,
+      "duration_seconds": 25,
+      "passed": true
+    },
+    "kdf": {
+      "execs": 1052157,
+      "duration_seconds": 25,
+      "passed": true
+    }
+  },
+  "known_defects": {
+    "distinct_top_level_findings": 16,
+    "P1": 6,
+    "P2": 10,
+    "repeat_count": 3,
+    "audit": {
+      "test_and_subtest_events": {
+        "fail": 54,
+        "skip": 3
+      },
+      "top_level_events": {
+        "fail": 48,
+        "skip": 3
+      },
+      "packages": {
+        "session-memory/internal/streamcap": {
+          "status": "fail",
+          "elapsed_seconds": 1.141
+        },
+        "session-memory/internal/transport": {
+          "status": "fail",
+          "elapsed_seconds": 2.555
+        },
+        "session-memory/internal/engine": {
+          "status": "fail",
+          "elapsed_seconds": 2.843
+        },
+        "session-memory/internal/source/workbuddy": {
+          "status": "fail",
+          "elapsed_seconds": 9.276
+        },
+        "session-memory/internal/sync": {
+          "status": "fail",
+          "elapsed_seconds": 18.14
+        },
+        "session-memory/cmd/session-memory": {
+          "status": "fail",
+          "elapsed_seconds": 40.112
+        }
+      },
+      "failures": {
+        "TestAuditReplacementDuringCaptureIsNotLost": 3,
+        "TestAuditDeepVerifyDetectsEqualLengthBlobChange": 3,
+        "TestAuditRejectedBindingLeavesNoFile": 3,
+        "TestAuditRebuildReportsDamagedRevision": 3,
+        "TestAuditMirrorRejectsEqualLengthRemoteCollision": 3,
+        "TestAuditMultiMirrorCatchesUpNewBackup": 3,
+        "TestAuditMultiMirrorRetriesMissingKey": 3,
+        "TestAuditSoftDeleteInWAL": 3,
+        "TestAuditSetupMissingFolderKeyDoesNotCreateForeignIdentity": 3,
+        "TestAuditRestoreDoesNotAdoptUnpublishedExtraRollout": 3,
+        "TestAuditManagedMetaUpdate": 3,
+        "TestAuditRemovedArtifactChange": 3,
+        "TestAuditSubagentsExcludedFromConversion": 3,
+        "TestAuditSyncFailureJSONIsOneDocument": 3,
+        "TestAuditRecoveryPreservesPostCrashContinuation/create": 3,
+        "TestAuditRecoveryPreservesPostCrashContinuation/append": 3,
+        "TestAuditRecoveryPreservesPostCrashContinuation": 3,
+        "TestAuditTaskProjectPlanDoesNotCreateFolder": 3
+      },
+      "skipped": [
+        "TestAuditLiveRuntimeGuard",
+        "TestAuditLiveRuntimeGuard",
+        "TestAuditLiveRuntimeGuard"
+      ],
+      "data_races": []
+    },
+    "runner_verified": true
+  },
+  "live": {
+    "codex": {
+      "version": "0.162.1",
+      "isolated_app_server_registration": "passed"
+    },
+    "workbuddy": {
+      "version": "5.9.3",
+      "readonly_probe": {
+        "schema_version": 1,
+        "agent": "workbuddy",
+        "homes": [
+          {
+            "exists": true,
+            "stores": {
+              "legacy_kv": true,
+              "projects_dir": true,
+              "registry_db": true
+            },
+            "file_forms": {
+              "jsonl": 98,
+              "meta.json": 14,
+              "subagent": 48,
+              "tool-result": 48
+            },
+            "record_types": {
+              "ai-title": 19,
+              "file-history-snapshot": 179,
+              "function_call": 677,
+              "function_call_result": 668,
+              "message": 259,
+              "reasoning": 403,
+              "session-meta": 58
+            },
+            "capabilities": [
+              "db:sessions",
+              "has:parentId"
+            ]
+          }
+        ],
+        "compatibility": "ok",
+        "counts": {
+          "parsed": 20,
+          "sessions": 98
+        }
+      },
+      "running_client_install_guard_on_temporary_target": "passed"
+    }
+  },
+  "static_checks": {
+    "native_vet_dev_failpoint": "passed",
+    "linux_amd64_cross_vet": "passed",
+    "windows_amd64_cross_vet": "passed",
+    "gofmt": "passed",
+    "git_diff_check": "passed",
+    "sh_n_install": "passed"
+  },
+  "builds": {
+    "darwin_arm64_release": "passed",
+    "darwin_arm64_dev": "passed",
+    "darwin_amd64": "cross-build passed",
+    "linux_amd64": "cross-build passed",
+    "windows_amd64": "cross-build passed"
+  },
+  "not_verified": [
+    "real Weiyun accounts",
+    "WorkBuddy GUI import/real-model continuation/restart",
+    "launchd lifecycle or sleep/wake",
+    "physical second computer",
+    "native execution on Linux/Windows/Intel Mac"
+  ]
+}

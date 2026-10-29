@@ -173,6 +173,7 @@ type InstallData struct {
 	Backed          []string             `json:"backed,omitempty"`  // relative paths copied to BackupDir
 	Created         []string             `json:"created,omitempty"` // files that did not exist before
 	Written         []agent.PlannedWrite `json:"written,omitempty"`
+	Planned         []agent.PlannedWrite `json:"planned,omitempty"` // every file the install will write, with its final hash (recovery refuses files that are neither this nor the backup)
 	Landing         string               `json:"landing,omitempty"` // "choice" for a §9.2 landing
 	Receipt         *agent.Receipt       `json:"receipt,omitempty"` // set at StVerified
 	NewBinding      *session.Binding     `json:"new_binding,omitempty"`

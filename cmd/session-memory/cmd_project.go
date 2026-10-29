@@ -278,12 +278,12 @@ func newProjectRestoreCmd(a *App) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if autoTask { // a task folder the agent itself would make
+				if autoTask && !planOnly { // a task folder the agent itself would make; a preview makes nothing
 					if err := os.MkdirAll(abs, 0755); err != nil {
 						return err
 					}
 				}
-				if st, err := os.Stat(abs); err != nil || !st.IsDir() {
+				if st, err := os.Stat(abs); (err != nil || !st.IsDir()) && !(autoTask && planOnly) {
 					return errcode.New(errcode.Usage, "--cwd must be an existing directory")
 				}
 				if planOnly {

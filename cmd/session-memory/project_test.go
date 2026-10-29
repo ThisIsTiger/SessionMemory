@@ -493,3 +493,66 @@ func TestAdoptReplacesACopyThatDivergedFromItsInstalledVersion(t *testing.T) {
 		t.Fatal("B did not end up on the chosen version")
 	}
 }
+
+// taskProjectFixture tracks a WorkBuddy task project on machine a and syncs it
+// to machine b, which has no task folder yet. It returns b, the project ref and
+// the folder a restore would make on b.
+func taskProjectFixture(t *testing.T) (b *machine, ref, want string) {
+	t.Helper()
+	root := t.TempDir()
+	shared := filepath.Join(root, "cloud")
+	a := &machine{t: t, home: filepath.Join(root, "a"), keys: vault.MemStore{}}
+	b = &machine{t: t, home: filepath.Join(root, "b"), keys: vault.MemStore{}}
+	os.MkdirAll(a.home, 0700)
+	os.MkdirAll(b.home, 0700)
+	a.must("init")
+	a.must("transport", "attach-folder", shared)
+	name := "2026-10-29-01-02-03"
+	task := filepath.Join(a.home, "WorkBuddy", name)
+	os.MkdirAll(task, 0700)
+	wb := filepath.Join(a.home, "wb")
+	a.must("config", "set", "agents.workbuddy.home", wb)
+	id := "0192f3a4-0000-7000-8000-000000000042"
+	dir := filepath.Join(wb, "projects", strings.Trim(strings.ReplaceAll(task, "/", "-"), "-"))
+	os.MkdirAll(dir, 0700)
+	line, _ := json.Marshal(map[string]any{"type": "message", "id": "u1", "sessionId": id, "timestamp": int64(1793000000000), "role": "user", "cwd": task, "content": "synthetic task"})
+	if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), append(line, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var track struct {
+		Ref string `json:"project_ref"`
+	}
+	if err := json.Unmarshal([]byte(a.must("project", "track", "--agent", "workbuddy", "--cwd", task, "--json")), &track); err != nil || track.Ref == "" {
+		t.Fatalf("track %v", err)
+	}
+	a.must("sync")
+	b.must("config", "set", "transport.folder", shared)
+	b.must("device", "join", "--from-cloud")
+	b.must("sync")
+	want = filepath.Join(b.home, "WorkBuddy", name)
+	if _, err := os.Stat(want); !os.IsNotExist(err) {
+		t.Fatalf("setup: target task folder already exists: %v", err)
+	}
+	return b, track.Ref, want
+}
+
+// A preview makes nothing on disk; a real restore of a task project makes the
+// task folder the agent itself would have made, whether or not the install that
+// follows succeeds.
+func TestProjectRestoreTaskFolderOnlyOnRealRun(t *testing.T) {
+	b, ref, want := taskProjectFixture(t)
+	os.MkdirAll(filepath.Join(b.home, "wb"), 0700)
+	b.must("config", "set", "agents.workbuddy.home", filepath.Join(b.home, "wb"))
+	b.must("config", "set", "agents.workbuddy.allow_registry_write", "true")
+	// The fixture has no WorkBuddy registry on b, so the install itself stops at
+	// "create a local session" (in the plan and in the real run alike); what is
+	// checked here is the folder the command makes before that point.
+	b.run("project", "restore", ref, "--agent", "workbuddy", "--plan")
+	if _, err := os.Stat(want); !os.IsNotExist(err) {
+		t.Fatalf("project restore --plan created task folder before install checks: %v", err)
+	}
+	b.run("project", "restore", ref, "--agent", "workbuddy")
+	if st, err := os.Stat(want); err != nil || !st.IsDir() {
+		t.Fatalf("a real restore should create the task folder: %v", err)
+	}
+}

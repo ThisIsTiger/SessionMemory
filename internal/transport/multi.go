@@ -35,7 +35,9 @@ type MultiMirror struct {
 	// Note is told about every account that failed an operation, even when
 	// another account made up for it.
 	Note func(label string, err error)
-	// StateFile remembers, across runs, which accounts missed a write.
+	// StateFile remembers, across runs, which accounts missed a write (true) and
+	// which were brought level (false). An account it has never heard of, such
+	// as a backup added later, is treated as behind until CatchUp has filled it.
 	StateFile string
 
 	mu sync.Mutex
@@ -98,14 +100,10 @@ func (m *MultiMirror) setBehind(label string, v bool) {
 		return
 	}
 	cur := m.behind()
-	if cur[label] == v {
+	if old, known := cur[label]; known && old == v {
 		return
 	}
-	if v {
-		cur[label] = true
-	} else {
-		delete(cur, label)
-	}
+	cur[label] = v
 	os.MkdirAll(filepath.Dir(m.StateFile), 0700)
 	if b, err := json.Marshal(cur); err == nil {
 		os.WriteFile(m.StateFile, b, 0600)
@@ -117,10 +115,23 @@ func (m *MultiMirror) setBehind(label string, v bool) {
 func (m *MultiMirror) CatchUp(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.StateFile == "" {
+		return nil
+	}
 	behind := m.behind()
+	// An account never seen before gets the whole local copy, so the copy must
+	// first hold everything the other accounts have.
+	complete := true
+	for _, a := range m.Accounts {
+		if _, known := behind[a.Label]; !known {
+			_, failed, _ := m.each(func(a Account) error { return a.M.Pull(ctx) })
+			complete = len(failed) == 0
+			break
+		}
+	}
 	var first error
 	for _, a := range m.Accounts {
-		if !behind[a.Label] || (m.Skip != nil && m.Skip(a.Label)) {
+		if level, known := behind[a.Label]; (known && !level) || (!known && !complete) || (m.Skip != nil && m.Skip(a.Label)) {
 			continue
 		}
 		if err := a.M.Push(ctx); err != nil {
@@ -240,8 +251,8 @@ func (m *MultiMirror) Push(ctx context.Context) error {
 	defer m.mu.Unlock()
 	ok, failed, first := m.each(func(a Account) error {
 		err := a.M.Push(ctx)
-		if err == nil {
-			m.setBehind(a.Label, false)
+		if _, known := m.behind()[a.Label]; err == nil && known {
+			m.setBehind(a.Label, false) // an account CatchUp has not seen yet may be missing history
 		}
 		return err
 	})

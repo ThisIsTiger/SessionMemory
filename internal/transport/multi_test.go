@@ -163,3 +163,99 @@ func TestMultiMirrorKeyFileRemovedEverywhere(t *testing.T) {
 		t.Fatalf("key left in %d and %d accounts", countFiles(f1), countFiles(f2))
 	}
 }
+
+// A backup account added later has never been written to; it must receive the
+// whole existing history, even though no write ever "missed" it.
+func TestMultiMirrorCatchesUpNewBackup(t *testing.T) {
+	mm, f1, f2, _ := twoAccounts(t)
+	ctx := context.Background()
+	only := NewMirror(mm.Local, f1.client(), "SessionMemory")
+	if err := only.Put(ctx, "objects/ab/test.obj", strings.NewReader("history")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mm.Pull(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := mm.CatchUp(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if countFiles(f2) != 1 {
+		t.Fatalf("the new backup holds %d files", countFiles(f2))
+	}
+	local := NewFolder(t.TempDir())
+	local.Settle = 0
+	backupOnly := NewMirror(local, f2.client(), "SessionMemory")
+	rc, err := backupOnly.Get(ctx, "objects/ab/test.obj")
+	if err != nil {
+		t.Fatalf("new backup never receives existing primary history: %v", err)
+	}
+	defer rc.Close()
+	if got, err := io.ReadAll(rc); err != nil || string(got) != "history" {
+		t.Fatalf("backup history %q %v", got, err)
+	}
+	// both accounts are known now: nothing more to do, and the state is level
+	if err := mm.CatchUp(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := mm.behind(); len(got) != 2 || got["primary"] || got["backup"] {
+		t.Fatalf("state after catch-up: %v", got)
+	}
+}
+
+// With an empty local copy, the history only lives at the other account, so it
+// has to be pulled before it can be pushed. While the pull cannot be done, the
+// new account is not marked level.
+func TestMultiMirrorNewBackupWithEmptyCacheNeedsPullFirst(t *testing.T) {
+	mm, f1, f2, skipped := twoAccounts(t)
+	ctx := context.Background()
+	elsewhere := NewFolder(t.TempDir())
+	elsewhere.Settle = 0
+	if err := NewMirror(elsewhere, f1.client(), "SessionMemory").Put(ctx, "objects/ab/test.obj", strings.NewReader("history")); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(mustList(t, mm.Local)); n != 0 {
+		t.Fatalf("setup: local copy has %d entries", n)
+	}
+	(*skipped)["primary"] = true // the primary cannot be read now
+	if err := mm.CatchUp(ctx); err != nil {
+		t.Fatalf("catch-up with nothing to copy from: %v", err)
+	}
+	if countFiles(f2) != 0 {
+		t.Fatal("an empty local copy was pushed to the new backup")
+	}
+	if _, known := mm.behind()["backup"]; known {
+		t.Fatalf("the backup was marked from a failed pull: %v", mm.behind())
+	}
+	delete(*skipped, "primary")
+	if err := mm.CatchUp(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if countFiles(f2) != 1 {
+		t.Fatalf("after the pull the backup holds %d files", countFiles(f2))
+	}
+}
+
+// Without a state file there is nothing to remember, and CatchUp is a no-op.
+func TestMultiMirrorCatchUpWithoutStateFile(t *testing.T) {
+	mm, f1, f2, _ := twoAccounts(t)
+	mm.StateFile = ""
+	ctx := context.Background()
+	if err := NewMirror(mm.Local, f1.client(), "SessionMemory").Put(ctx, "objects/ab/test.obj", strings.NewReader("history")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mm.CatchUp(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if countFiles(f2) != 0 {
+		t.Fatal("CatchUp without a state file wrote to an account")
+	}
+}
+
+func mustList(t *testing.T, tr Transport) []Entry {
+	t.Helper()
+	es, err := tr.List(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return es
+}

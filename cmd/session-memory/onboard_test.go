@@ -529,3 +529,31 @@ func TestWeiyunTokenFromTheSkillConfig(t *testing.T) {
 		t.Fatalf("environment first: %v", got)
 	}
 }
+
+// A cloud folder that holds a vault whose key was removed must stop setup
+// before `init` makes a second, unrelated vault identity on this computer.
+func TestSetupMissingFolderKeyDoesNotCreateForeignIdentity(t *testing.T) {
+	root := t.TempDir()
+	shared := filepath.Join(root, "cloud")
+	a := newComputer(t, root, "a", shared)
+	a.must("init")
+	a.must("transport", "attach-folder", shared)
+	a.must("key", "remove", "--yes")
+	b := newComputer(t, root, "b", shared)
+	ran := selfVia(t, b, nil)
+	code, _, errs := b.run("setup", "--no-autosync")
+	if code == 0 {
+		t.Fatal("setup must refuse joining a vault with no key")
+	}
+	if !strings.Contains(errs, "key publish") {
+		t.Fatalf("the refusal should say how to republish the key: %s", errs)
+	}
+	for _, c := range *ran {
+		if strings.HasPrefix(c, "init") {
+			t.Fatalf("setup ran %q before refusing", c)
+		}
+	}
+	if info, err := device.At(filepath.Join(b.home, "sm")).Load(); err == nil {
+		t.Fatalf("failed setup persisted a new unrelated vault identity: %s", info.VaultID)
+	}
+}

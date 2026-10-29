@@ -1,0 +1,164 @@
+package workbuddy
+
+import (
+	"context"
+	"database/sql"
+	"os"
+	"path/filepath"
+	"session-memory/internal/agent"
+	"session-memory/internal/canonical"
+	"session-memory/internal/config"
+	"session-memory/internal/convert"
+	"session-memory/internal/engine"
+	"session-memory/internal/errcode"
+	"session-memory/internal/session"
+	"session-memory/internal/store"
+	"strings"
+	"testing"
+)
+
+func TestAuditSoftDeleteInWAL(t *testing.T) {
+	ad, home := newAd(t)
+	writeSession(t, home, "d", "s1", false)
+	db, err := sql.Open("sqlite", filepath.Join(home, "workbuddy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	for _, q := range []string{`PRAGMA journal_mode=WAL`, `PRAGMA wal_autocheckpoint=0`, `CREATE TABLE sessions(id TEXT PRIMARY KEY, deleted_at TEXT)`, `INSERT INTO sessions VALUES('s1',NULL)`, `PRAGMA wal_checkpoint(TRUNCATE)`, `UPDATE sessions SET deleted_at='2026-10-28' WHERE id='s1'`} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE deleted_at IS NOT NULL`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("setup %d %v", n, err)
+	}
+	got, err := ad.Discover(context.Background(), agent.DiscoverOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("deleted session still discovered with committed deletion in WAL: %d", len(got))
+	}
+}
+func TestAuditManagedMetaUpdate(t *testing.T) {
+	ctx := context.Background()
+	source, target, pa, pb := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	testRegistry(t, source, "account-A")
+	testRegistry(t, target, "account-B")
+	dir := filepath.Join(source, "projects", strings.Trim(strings.ReplaceAll(pa, "/", "-"), "-"))
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, testNativeID+".jsonl"), nativeFixture(pa), 0600); err != nil {
+		t.Fatal(err)
+	}
+	meta := filepath.Join(dir, testNativeID+".meta.json")
+	if err := os.WriteFile(meta, []byte(`{"value":"old"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.Agents.WorkBuddy.Home = source
+	ad := writerTestAdapter{New(cfg), testWriter()}
+	st := writerStore(t)
+	a := &engine.Engine{Store: st, DeviceID: session.NewDeviceID()}
+	bnd, _, err := a.Track(ctx, ad, agent.NativeRef{Home: source, NativeID: testNativeID}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := peerStore(t, st)
+	mirrorRevisions(t, st, peer, bnd.SessionID)
+	b := &engine.Engine{Store: peer, DeviceID: session.NewDeviceID()}
+	opt := engine.RestoreOptions{Home: target, Cwd: pb, ClientClosed: true}
+	if _, _, err := b.Restore(ctx, ad, bnd.SessionID, opt); err != nil {
+		t.Fatalf("initial restore: %v", err)
+	}
+	if err := os.WriteFile(meta, []byte(`{"value":"new"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, changed, err := a.Checkpoint(ctx, ad, bnd.BindingID, "", session.CaptureCheckpoint); err != nil || !changed {
+		t.Fatalf("source metadata checkpoint: changed=%v err=%v", changed, err)
+	}
+	mirrorRevisions(t, st, peer, bnd.SessionID)
+	if _, _, err := b.Restore(ctx, ad, bnd.SessionID, opt); err != nil {
+		t.Fatalf("metadata-only fast-forward rejected on unchanged managed target: %v", err)
+	}
+}
+func TestAuditRemovedArtifactChange(t *testing.T) {
+	ad, home := newAd(t)
+	writeSession(t, home, "d", "s1", true)
+	ref := agent.NativeRef{Home: home, NativeID: "s1"}
+	first, err := ad.Capture(context.Background(), ref, agent.Cursor{}, &memSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(home, "projects/d/s1.meta.json")); err != nil {
+		t.Fatal(err)
+	}
+	next, err := ad.Capture(context.Background(), ref, first.Cursor, &memSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Cursor.Artifacts) == len(next.Cursor.Artifacts) {
+		t.Fatal("setup did not remove artifact")
+	}
+	if !next.Changed {
+		t.Fatal("artifact set shrank but capture reports unchanged; Checkpoint will retain old snapshot")
+	}
+}
+func TestAuditSubagentsExcludedFromConversion(t *testing.T) {
+	snap := writerSnapshot{data: map[string][]byte{
+		"projects/d/" + testNativeID + ".jsonl":             nativeFixture("/source"),
+		"projects/d/" + testNativeID + "/subagents/a.jsonl": []byte(line(map[string]any{"type": "message", "id": "sub-u", "role": "user", "content": "SUBAGENT_PRIVATE_TASK"}) + line(map[string]any{"type": "message", "id": "sub-a", "parentId": "sub-u", "role": "assistant", "content": "SUBAGENT_PRIVATE_ANSWER"}))}}
+	var items []canonical.Item
+	if err := (&Adapter{}).Extract(context.Background(), snap, func(it canonical.Item) error { items = append(items, it); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	out, err := convert.Convert(items, convert.Options{IncludeSubagents: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range out.Records {
+		if strings.Contains(r.Text, "SUBAGENT_PRIVATE") {
+			t.Fatalf("subagent becomes main conversation turn despite IncludeSubagents=false: %s", r.Text)
+		}
+	}
+}
+func TestAuditLiveRuntimeGuard(t *testing.T) {
+	if os.Getenv("SM_REVIEW_LIVE") != "1" {
+		t.Skip("set SM_REVIEW_LIVE=1 to check installed WorkBuddy and its running-process guard")
+	}
+	ctx := context.Background()
+	if err := checkVersion(ctx); err != nil {
+		t.Fatal(err)
+	}
+	state, _, err := (runtimeDetector{}).Running(ctx, t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != agent.Running {
+		t.Skip("WorkBuddy not running")
+	}
+	home := t.TempDir()
+	testRegistry(t, home, "local-account")
+	in := writerInput(home)
+	w := &Writer{AllowRegistryWrite: true, ClientClosed: true}
+	p, err := w.Plan(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := writerStore(t)
+	tx, err := st.Begin(ctx, store.KindInstall, in.SessionID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = w.Apply(ctx, in, p, tx)
+	if errcode.CodeOf(err) != errcode.ClientRunning {
+		t.Fatalf("real running app must block write: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "projects")); !os.IsNotExist(err) {
+		t.Fatalf("guard wrote session files: %v", err)
+	}
+}
