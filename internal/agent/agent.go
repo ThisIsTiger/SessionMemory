@@ -220,6 +220,10 @@ type WriteInput struct {
 	TargetState   TargetState
 	// BindingID is the active binding being updated, "" for a first install.
 	BindingID string
+	// BindingState is the active binding's captured state per logical path.
+	// A Writer replaces a changed immutable file only while the native file
+	// still matches it, i.e. has not been edited locally since.
+	BindingState map[string]session.ArtifactState
 	// Cwd is the local project directory the session is bound to.
 	Cwd string
 	// ValidateEnvironment rechecks the code-state baseline under vendor locks.

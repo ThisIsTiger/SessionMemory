@@ -18,6 +18,10 @@ jobs:
             echo "Replace OWNER/ with the real repository path before releasing." >&2
             exit 1
           fi
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
       - name: Build
         run: |
           mkdir dist

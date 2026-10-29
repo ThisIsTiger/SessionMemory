@@ -74,8 +74,8 @@ func TestCaptureStreamRefusesRewriteDuringCapture(t *testing.T) {
 	}
 }
 
-// Appending after a state exists only verifies the newly stored range, and an
-// unchanged source is accepted.
+// An append retains the committed segments and accepts a consistent full
+// prefix, including the newly stored range.
 func TestCaptureStreamAppendUnchangedSource(t *testing.T) {
 	home := t.TempDir()
 	p := filepath.Join(home, "a.jsonl")

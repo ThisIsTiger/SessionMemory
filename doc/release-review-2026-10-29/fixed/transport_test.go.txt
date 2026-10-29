@@ -1,0 +1,80 @@
+package transport
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+// All credentials and URLs in these tests are synthetic. No external requests.
+func TestReleaseMCPRedirectDoesNotForwardCredential(t *testing.T) {
+	const secret = "SYNTHETIC_MCP_CREDENTIAL"
+	seen := make(chan string, 1)
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Get("WyHeader")
+		io.WriteString(w, `{"result":{"content":[{"type":"text","text":"{}"}]}}`)
+	}))
+	defer destination.Close()
+	// Different hostname as well as port: not merely a same-host redirect.
+	target := strings.Replace(destination.URL, "127.0.0.1", "localhost", 1)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+	}))
+	defer origin.Close()
+	c := NewWeiyunClient(secret)
+	c.URL = origin.URL
+	_ = c.call(context.Background(), "weiyun.list", nil, nil)
+	select {
+	case value := <-seen:
+		if strings.Contains(value, secret) {
+			t.Fatal("MCP credential was forwarded to another hostname")
+		}
+	default: // Refusing the redirect is also safe.
+	}
+}
+
+type releaseRoundTrip func(*http.Request) (*http.Response, error)
+
+func (f releaseRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestReleaseNetworkErrorRedactsSignedDownloadURL(t *testing.T) {
+	const secret = "SYNTHETIC_DOWNLOAD_SIGNATURE"
+	c := NewWeiyunClient("synthetic-mcp")
+	c.HTTP.Transport = releaseRoundTrip(func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodPost {
+			inner, _ := json.Marshal(map[string]any{"items": []map[string]string{{"https_download_url": "https://download.invalid/key?sig=" + secret}}})
+			outer, _ := json.Marshal(map[string]any{"result": map[string]any{"content": []map[string]string{{"type": "text", "text": string(inner)}}}})
+			return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(outer)))}, nil
+		}
+		return nil, errors.New("synthetic network unavailable")
+	})
+	_, err := c.download(context.Background(), wyFile{Name: "vault-key.json"})
+	if err == nil {
+		t.Fatal("expected a network error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatal("network error contains the full signed download credential")
+	}
+}
+
+func TestReleaseServerErrorRedactsMCPToken(t *testing.T) {
+	const secret = "SYNTHETIC_MCP_CREDENTIAL"
+	c := NewWeiyunClient(secret)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"message": "rejected " + r.Header.Get("WyHeader")}})
+	}))
+	defer server.Close()
+	c.URL = server.URL
+	err := c.call(context.Background(), "weiyun.list", nil, nil)
+	if err == nil {
+		t.Fatal("expected server error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatal("server error reflects the MCP credential without redaction")
+	}
+}

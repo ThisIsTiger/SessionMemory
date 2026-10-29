@@ -118,6 +118,7 @@ func (e *Engine) Restore(ctx context.Context, ad agent.Adapter, sessionID string
 		PathMap: pmap, Target: session.AgentProfile{Agent: ad.Name(), Format: rev.AgentProfile.Format}, TargetState: agent.TargetState{Home: opt.Home}, Cwd: cwd, ValidateEnvironment: checkEnvironment}
 	if bnd != nil {
 		in.BindingID = bnd.BindingID
+		in.BindingState = bnd.Artifacts
 	}
 	plan, err := w.Plan(ctx, in)
 	if err != nil {

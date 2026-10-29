@@ -30,10 +30,14 @@ type App struct {
 	// quietRun is set by a background run (relay --quiet): it leaves a Weiyun
 	// account alone while that account's quota is known to be used up.
 	quietRun bool
+	// jsonPrinted is set once a JSON document went to stdout: a later failure
+	// is then reported on stderr, so stdout never holds two documents.
+	jsonPrinted bool
 }
 
 // printJSON writes exactly one JSON document.
 func (a *App) printJSON(v any) error {
+	a.jsonPrinted = true
 	enc := json.NewEncoder(a.Out)
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
@@ -63,7 +67,7 @@ func (a *App) fail(err error) int {
 			e = errcode.Wrap(errcode.Internal, err.Error(), err)
 		}
 	}
-	if a.JSON {
+	if a.JSON && !a.jsonPrinted {
 		doc := map[string]any{"error": map[string]any{"code": e.Code, "message": e.Message}}
 		if len(e.Details) > 0 {
 			doc["error"].(map[string]any)["details"] = e.Details

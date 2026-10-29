@@ -246,7 +246,7 @@ source "$HOME/.session-memory/dev/sandboxes/e1/env.sh"      # 然后从这个终
 目标：普通用户只把一个链接发给 AI 助手，之后什么都不用想；每个对用户可见的步骤都必须是必要的。
 
 - `session-memory setup`：无提问、可重复运行（可能要几分钟；被打断后重跑即可）。依次：检查微云（环境变量 → 已保存 → 微云 skill 的 `~/.mcporter/mcporter.json`，三处都没有则输出 `NEEDS_WEIYUN` 并给出 skill 安装指引）→ 检测 Codex / WorkBuddy（一个都没有就报错，此时云端什么都没创建）→ 微云里已有同步库就用云端密钥加入（`device join --from-cloud`），没有就 `init` + `attach-weiyun`；云端有库但密钥被移除、或读云端失败时明确报错，绝不新建第二个库 → WorkBuddy 自动打开 `allow_registry_write` → 把最近 `--days`（默认 60）天、工作目录存在且不是 home 的会话按目录建项目（只在本地，不上传；输出“N covered, M skipped (no project folder)”）→ 写下标记 `track-new-folders` → 开后台同步（沙盒里 launchd 加载失败时在桌面留 `开启同步.command`，输出 `NEEDS_USER`）→ `relay`（由它把所有未上传的内容一次发布）。
-- 最后一行说明结果：`done: FIRST_COMPUTER`（微云里第一台；若用户其实配过别的电脑，多半是登录了另一个微云账号）/ `done: JOINED` / `done: ALREADY_CONNECTED`。relay 因微云额度、网络或 `recovery_needed` 失败时，输出 `PENDING: connected; the first upload will finish by itself` 并以 0 退出，由后台同步接着完成；其他错误照常报错。`NEEDS_*` 里的命令都用程序的完整路径。
+- 最后一行说明结果：`done: FIRST_COMPUTER`（微云里第一台；若用户其实配过别的电脑，多半是登录了另一个微云账号）/ `done: JOINED` / `done: ALREADY_CONNECTED`。relay 因微云额度或网络失败时，输出 `PENDING: connected; the first upload will finish by itself` 并以 0 退出，由后台同步接着完成；因 `recovery_needed` / 会话需要处理（冲突、分叉、被中断的安装）失败时，输出单独的 `NEEDS_ACTION: N sessions did not sync and will NOT fix themselves …`（含受阻会话数和下一步），同样以 0 退出（已连接、其他会话照常同步），但不承诺自动恢复；其他错误照常报错。`NEEDS_*` 里的命令都用程序的完整路径。
 - 标记 `track-new-folders`（状态目录）存在时，每次 sync 还会在本地把新文件夹里的新会话纳入（`trackFolders(..., onlyNew)`：已在某个项目目录内的子文件夹不新建项目，home、`/`、已不存在的目录跳过），随同一轮上传，不增加微云调用。没跑过 setup 的用户行为不变。
 - 云端密钥放不进去时（`attach-*` 的警告分支）写 `key-publish-pending`；setup 和手动 relay 看到它就补放一次，成功或已存在则清掉。用户主动移除过密钥（`key-removed-from-cloud`）时不会放回。
 - 令牌优先级不变：环境变量 > 已保存 > skill 配置（只在前两者都没有时用，并会保存下来供后台使用），避免已切换的账号被旧 skill 配置覆盖。
@@ -255,3 +255,23 @@ source "$HOME/.session-memory/dev/sandboxes/e1/env.sh"      # 然后从这个终
 - 分发：`install.sh`（下载 → sha256 校验 → `~/.local/bin` → `setup`），`.github/workflows/release.yml` 在打 `v*` 标签时构建 darwin/linux × arm64/amd64 并附 `checksums.txt`，并在仍有 `OWNER/` 占位时让发布失败（占位已替换为 `ThisIsTiger/SessionMemory`，该检查保留作保险）；`INSTALL.md` 是给 AI 助手的执行说明（列出程序输出的每个标记及处理办法），README 顶部是给用户复制的一句话。只支持 macOS（Linux 没有后台同步）。
 - 对话保存在用户自己的微云里，保护程度等同于其微云账号；云端密钥与数据同处一个文件夹，不是对账号持有人的强加密。
 - 待办：仓库已公开（https://github.com/ThisIsTiger/SessionMemory），但尚未打 `v*` 标签发布，install.sh 要等第一个 release 才能下载到程序；许可证为 MIT；没有同名文件夹的空间项目（如 GEO）仍需指定目录；未在真实第二台电脑上端到端验证（单元测试用文件夹传输和假微云模拟）。
+
+## 复审修复缺口补齐（2026-10-29）
+
+- **A01 / F01**：旧 journal 缺少 `Planned` 时，用 `Written`、`Backed`、`Created` 的完整集合核对恢复安全性；无法确认的现存文件保持原样并返回 recovery_needed。已修改的旧会话不再被自动覆盖/删除，未改动的旧 journal 仍可安全回滚。
+- **A02 / F02**：plain 流有新数据时校验完整已消费前缀，用同一条已校验流生成游标；没有新字节时沿用旧游标。CursorBuilder 只缓存头尾窗口；有变化的捕获增加一次完整前缀读取，不增加整会话内存缓冲。
+- **A04 / F03**：Pull/List/Get 下载普通文件前持久化待补传状态；下轮 CatchUp 补齐副本，支持重启、额度暂停恢复及空闲无额外远端请求。首次升级以 `<StateFile>.received-v1` 标记完整远端并集已核对，重新核对旧 level 状态并补齐修复前已缓存的历史；并集未读全时不记录升级完成。密钥仍走独立的发布/删除流程。
+- 补充正式回归覆盖旧 journal、增量旧段改写、游标分块边界、跨设备接收、重启补传、状态落盘失败与升级补齐。验证记录见 [复审修复说明](review-followup-2026-10-29/FIXES.md)。其余明确延期的 A05–A10、A13、A15、A16 不在这次修复范围（其中 A05–A07、A13 已在下一节关闭）。
+
+## 发布前审查修复（2026-10-29）
+
+- **A05**：`WriteInput.BindingState`（引擎在快进时传入活动 binding 的采集状态）。WorkBuddy Writer 对已存在的 blob（`.meta.json` 等）只在本机文件仍等于 binding 记录的内容（`streamcap.BlobDigest`）或已等于目标内容时才替换，计划里标为 `replace`；本机改过则仍返回 NeedsAction，保持并发修改保护。
+- **A06**：`canonical.Item.Subagent` 记录来源子代理流；`convert.Convert` 在 `IncludeSubagents=false` 时丢弃并计入报告（`dropped_types.subagent`），工具 callId 只在同一来源流内配对。
+- **S02**：带 `WyHeader` 的 MCP 请求只允许同 scheme、同 host:port 的重定向，其余拒绝；下载链接（不带令牌）仍可跟随 CDN 重定向。
+- **S03**：传输层错误边界去掉 URL 的路径、查询和用户信息（只留 scheme://host，保留错误类别），服务端错误文本里的已知令牌替换为 `[redacted]` 并限长；额度（`ErrQuota`）和重试判断不受影响。
+- **U01**：保存的（Keychain）主令牌被微云拒绝（`ErrAuth`，HTTP 401/403 或明确的令牌失效消息）时，客户端只尝试一次 `Reauth`：skill 的 mcporter 令牌与之不同、且用它能读到本机同一个 vault（`public/vault.json` 的 vault_id 相同，只读、不创建目录）才改用并存入 Keychain；环境变量令牌和备用账号不被替换，不同账号不会被静默切换。没有新增命令。
+- **U02**：见上面的 `NEEDS_ACTION`；`INSTALL.md` 与标记检查测试同步。
+- **S01**：`go.mod` 升到 `go 1.26.10`（1.26 分支当前最新安全补丁，setup-go 可下载）；govulncheck v1.9.0 对 `./...` 报告 0 个符号可达漏洞。release 工作流在构建前运行 `go vet ./...` 和 `go test ./...`。
+- **F03 复核**：MultiMirror.CatchUp 记录每个账号是否已完整读取（`<StateFile>.read`），升级期间无法联系的账号不再导致每轮都清除状态并对健康账号强制全量拉取；`.received-v1` 仍表示完整并集已核对、旧标记已清除。
+- **A07**：`SaveBinding` 在写文件前检查唯一的 active binding，冲突时不留下文件。**A13**：`--json` 下命令已输出结果文档后再失败，错误只写 stderr，stdout 保持一个文档。
+- 仍延期：A08、A09、A10、A15、A16。

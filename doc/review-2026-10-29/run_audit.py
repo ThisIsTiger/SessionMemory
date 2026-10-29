@@ -25,11 +25,11 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     out = out.resolve()
     packages = {
-        # A01-A04, A11, A12 and A14 are fixed; their tests are in the normal suite.
+        # A01-A07, A11-A14 are fixed; their tests are in the normal suite.
+        # Still open: A08 (engine), A09/A10 (transport), A15/A16 (workbuddy).
         "engine": "internal/engine",
         "transport": "internal/transport",
         "workbuddy": "internal/source/workbuddy",
-        "cli": "cmd/session-memory",
     }
     overlay = out / "overlay.json"
     overlay.write_text(json.dumps({"Replace": {

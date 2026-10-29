@@ -133,3 +133,46 @@ func TestTruncationFenceAndDeterminism(t *testing.T) {
 		}
 	}
 }
+
+func TestSubagentItemsAreDroppedUnlessIncluded(t *testing.T) {
+	sub := func(it canonical.Item) canonical.Item { it.Subagent = "projects/d/s/subagents/a.jsonl"; return it }
+	items := []canonical.Item{
+		msg("u1", canonical.RoleUser, "main question", true),
+		call("c1", "k1", "web_search", `{}`),
+		sub(msg("su", canonical.RoleUser, "SUBAGENT_TASK", true)),
+		sub(call("sc", "k1", "web_search", `{}`)), // same call id, other stream
+		sub(result("sr", "k1", "SUBAGENT_RESULT")),
+		result("r1", "k1", "main result"),
+		sub(msg("sa", canonical.RoleAssistant, "SUBAGENT_ANSWER", false)),
+	}
+	out, err := Convert(items, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Records) != 2 {
+		t.Fatalf("want the main question and its tool note only: %+v", out.Records)
+	}
+	for _, r := range out.Records {
+		if strings.Contains(r.Text, "SUBAGENT") {
+			t.Fatalf("sub-agent text leaked into the main conversation: %q", r.Text)
+		}
+	}
+	if !strings.Contains(out.Records[1].Text, "main result") {
+		t.Fatalf("main call paired with the wrong result: %q", out.Records[1].Text)
+	}
+	if n := out.Report.Dropped["subagent"]; n != 4 {
+		t.Fatalf("dropped sub-agent items = %d, want 4 (%v)", n, out.Report.Dropped)
+	}
+	in, err := Convert(items, Options{IncludeSubagents: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawSub, sawMain bool
+	for _, r := range in.Records {
+		sawSub = sawSub || strings.Contains(r.Text, "SUBAGENT_RESULT")
+		sawMain = sawMain || strings.Contains(r.Text, "main result")
+	}
+	if len(in.Records) != 5 || !sawSub || !sawMain {
+		t.Fatalf("included sub-agent calls must pair within their own stream: %+v", in.Records)
+	}
+}

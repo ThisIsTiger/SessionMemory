@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,8 +11,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"session-memory/internal/device"
 	"session-memory/internal/errcode"
 	"session-memory/internal/transport"
+	"session-memory/internal/vault"
 )
 
 // envWeiyunToken names the environment variable holding the user's Weiyun
@@ -31,7 +34,10 @@ const (
 
 // id names the account itself, not the slot: the slot's token can be swapped,
 // and pauses, remembered keys and "behind" marks belong to the account.
-type wyAccount struct{ label, token, envName, storeKey, id string }
+type wyAccount struct {
+	label, token, envName, storeKey, id string
+	saved                               bool // the token is the one kept in the credential store
+}
 
 var wyAccountSlots = []wyAccount{
 	{label: "primary", envName: envWeiyunToken, storeKey: weiyunTokenKey},
@@ -47,6 +53,7 @@ func (a *App) weiyunAccounts() []wyAccount {
 		if t == "" {
 			if b, err := a.Keys.Load(slot.storeKey); err == nil {
 				t = string(b)
+				slot.saved = t != ""
 			}
 		}
 		if t == "" && slot.label == "primary" {
@@ -115,6 +122,34 @@ func (a *App) saveWeiyunToken() error {
 	return nil
 }
 
+// reauthorizedToken is called when the saved token is rejected. After the
+// user authorises again in the Weiyun skill, the skill holds a new token; it
+// is used only when it opens this computer's own vault (never a different
+// account's), and is then saved in place of the rejected one.
+func (a *App) reauthorizedToken(ctx context.Context, ac wyAccount, dir string) string {
+	fresh := mcporterWeiyunToken()
+	if fresh == "" || fresh == ac.token {
+		return ""
+	}
+	info, err := device.At(a.Cfg.StateDir()).Load()
+	if err != nil {
+		return ""
+	}
+	c := transport.NewWeiyunClient(fresh)
+	if u := os.Getenv("WEIYUN_MCP_URL"); u != "" {
+		c.URL = u
+	}
+	data, ok, err := c.ReadFile(ctx, dir, "public", "vault.json")
+	var v vault.Info
+	if err != nil || !ok || json.Unmarshal(data, &v) != nil || v.VaultID != info.VaultID {
+		return ""
+	}
+	if a.Keys.Store(ac.storeKey, []byte(fresh)) != nil {
+		return ""
+	}
+	return fresh
+}
+
 // weiyunCache is the local working copy of the Weiyun vault folder.
 func (a *App) weiyunCache() string { return filepath.Join(a.Cfg.StateDir(), "weiyun-cache") }
 
@@ -139,6 +174,9 @@ func (a *App) weiyunMirror(name string) (*transport.MultiMirror, error) {
 		c := transport.NewWeiyunClient(ac.token)
 		if u := os.Getenv("WEIYUN_MCP_URL"); u != "" {
 			c.URL = u
+		}
+		if ac.saved && ac.label == "primary" {
+			c.Reauth = func(ctx context.Context) string { return a.reauthorizedToken(ctx, ac, name) }
 		}
 		recorded := false
 		c.OnQuota = func(error) {

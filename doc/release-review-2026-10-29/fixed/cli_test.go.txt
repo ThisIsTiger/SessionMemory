@@ -1,0 +1,52 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"session-memory/internal/vault"
+)
+
+func TestReleaseSkillReauthorizationRefreshesSavedToken(t *testing.T) {
+	home := isolate(t)
+	keys := vault.MemStore{weiyunTokenKey: []byte("SYNTHETIC_EXPIRED_TOKEN")}
+	const fresh = "SYNTHETIC_REAUTHORIZED_TOKEN"
+	config := map[string]any{"mcpServers": map[string]any{"weiyun": map[string]any{"headers": map[string]string{"WyHeader": "mcp_token=" + fresh}}}}
+	data, _ := json.Marshal(config)
+	if err := os.MkdirAll(filepath.Join(home, ".mcporter"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".mcporter", "mcporter.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if mcporterWeiyunToken() != fresh {
+		t.Fatal("fixture has no fresh skill credential")
+	}
+	a := &App{Keys: keys}
+	if err := a.saveWeiyunToken(); err != nil {
+		t.Fatal(err)
+	}
+	accounts := a.weiyunAccounts()
+	if len(accounts) != 1 || accounts[0].token != fresh {
+		t.Fatal("setup credential refresh keeps the expired saved token despite skill reauthorization")
+	}
+}
+
+func TestReleaseSetupDoesNotPromiseAutomaticRecovery(t *testing.T) {
+	root := t.TempDir()
+	m := newComputer(t, root, "a", filepath.Join(root, "cloud"))
+	selfVia(t, m, func(args []string) (string, error, bool) {
+		if args[0] == "relay" {
+			return "error: recovery_needed: files changed after interrupted install; manual recovery required", errors.New("exit"), true
+		}
+		return "", nil, false
+	})
+	code, out, _ := m.run("setup", "--no-autosync", "--days", "36500")
+	if code == 0 && strings.Contains(out, "PENDING: connected; the first upload will finish by itself") {
+		t.Fatal("manual recovery is reported as success with a promise that it will finish by itself")
+	}
+}

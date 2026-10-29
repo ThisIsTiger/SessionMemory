@@ -429,3 +429,25 @@ func TestNativeRestoreAcrossConvertedIdentities(t *testing.T) {
 		t.Fatal("remote continuation lost")
 	}
 }
+
+func TestSubagentsExcludedFromConversion(t *testing.T) {
+	snap := writerSnapshot{data: map[string][]byte{
+		"projects/d/" + testNativeID + ".jsonl":             nativeFixture("/source"),
+		"projects/d/" + testNativeID + "/subagents/a.jsonl": []byte(line(map[string]any{"type": "message", "id": "sub-u", "role": "user", "content": "SUBAGENT_PRIVATE_TASK"}) + line(map[string]any{"type": "message", "id": "sub-a", "parentId": "sub-u", "role": "assistant", "content": "SUBAGENT_PRIVATE_ANSWER"}))}}
+	var items []canonical.Item
+	if err := (&Adapter{}).Extract(context.Background(), snap, func(it canonical.Item) error { items = append(items, it); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	out, err := convert.Convert(items, convert.Options{IncludeSubagents: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range out.Records {
+		if strings.Contains(r.Text, "SUBAGENT_PRIVATE") {
+			t.Fatalf("subagent becomes main conversation turn despite IncludeSubagents=false: %s", r.Text)
+		}
+	}
+	if len(out.Records) == 0 || out.Report.Dropped["subagent"] != 2 {
+		t.Fatalf("main conversation kept and sub-agent items counted as dropped: %d records, %v", len(out.Records), out.Report.Dropped)
+	}
+}

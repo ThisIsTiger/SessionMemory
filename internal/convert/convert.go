@@ -57,7 +57,8 @@ type Options struct {
 	// ToolMap maps an origin tool name to the target's native tool name. A call
 	// whose name is absent is rendered as text.
 	ToolMap map[string]string
-	// IncludeSubagents is decided by E1c; false until then.
+	// IncludeSubagents keeps sub-agent conversations; they are dropped (and
+	// counted) otherwise. Decided by E1c; false until then.
 	IncludeSubagents bool
 }
 
@@ -104,20 +105,22 @@ func Convert(items []canonical.Item, opt Options) (Output, error) {
 			out.Report.Dropped[name]++
 		}
 	}
+	// a call id only pairs with a result of the same stream
+	callKey := func(it canonical.Item) string { return it.Subagent + "\x00" + it.CallID }
 	results := map[string]int{}
 	calls := map[string]int{}
 	for i, it := range items {
 		switch it.Kind {
 		case canonical.KindToolResult:
 			if it.CallID != "" {
-				if _, dup := results[it.CallID]; !dup {
-					results[it.CallID] = i
+				if _, dup := results[callKey(it)]; !dup {
+					results[callKey(it)] = i
 				}
 			}
 		case canonical.KindToolCall:
 			if it.CallID != "" {
-				if _, dup := calls[it.CallID]; !dup {
-					calls[it.CallID] = i
+				if _, dup := calls[callKey(it)]; !dup {
+					calls[callKey(it)] = i
 				}
 			}
 		}
@@ -130,6 +133,10 @@ func Convert(items []canonical.Item, opt Options) (Output, error) {
 	}
 	for i, it := range items {
 		if used[i] {
+			continue
+		}
+		if it.Subagent != "" && !opt.IncludeSubagents {
+			dropped(it.Kind, "subagent")
 			continue
 		}
 		switch it.Kind {
@@ -174,12 +181,12 @@ func Convert(items []canonical.Item, opt Options) (Output, error) {
 			var ri int = -1
 			if it.Kind == canonical.KindToolCall {
 				call = &items[i]
-				if j, ok := results[it.CallID]; ok && it.CallID != "" && !used[j] && j > i && items[j].Branch == "" {
+				if j, ok := results[callKey(it)]; ok && it.CallID != "" && !used[j] && j > i && items[j].Branch == "" {
 					res, ri = &items[j], j
 				}
 			} else {
 				res = &items[i]
-				if j, ok := calls[it.CallID]; ok && it.CallID != "" && j < i && used[j] {
+				if j, ok := calls[callKey(it)]; ok && it.CallID != "" && j < i && used[j] {
 					continue
 				}
 			}
@@ -260,6 +267,9 @@ func Convert(items []canonical.Item, opt Options) (Output, error) {
 	}
 	if n := out.Report.Dropped["branch"]; n > 0 {
 		out.Report.ContextNotes = append(out.Report.ContextNotes, fmt.Sprintf("%d items on non-active branches were not written", n))
+	}
+	if n := out.Report.Dropped["subagent"]; n > 0 {
+		out.Report.ContextNotes = append(out.Report.ContextNotes, fmt.Sprintf("%d items from sub-agent conversations were not written", n))
 	}
 	return out, nil
 }

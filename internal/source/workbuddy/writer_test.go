@@ -583,3 +583,96 @@ func TestTaskWorkspaceFollowsTheUsersHome(t *testing.T) {
 		}
 	}
 }
+
+// metaRig is two devices that already share a WorkBuddy session: A tracks it,
+// B restored it, and A's metadata file can be changed afterwards.
+type metaRig struct {
+	ctx        context.Context
+	ad         writerTestAdapter
+	a, b       *engine.Engine
+	sid, bid   string
+	srcMeta    string
+	targetMeta string
+	opt        engine.RestoreOptions
+}
+
+func newMetaRig(t *testing.T) *metaRig {
+	t.Helper()
+	ctx := context.Background()
+	source, target, pa, pb := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	testRegistry(t, source, "account-A")
+	testRegistry(t, target, "account-B")
+	dir := filepath.Join(source, "projects", strings.Trim(strings.ReplaceAll(pa, "/", "-"), "-"))
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, testNativeID+".jsonl"), nativeFixture(pa), 0600); err != nil {
+		t.Fatal(err)
+	}
+	meta := filepath.Join(dir, testNativeID+".meta.json")
+	if err := os.WriteFile(meta, []byte(`{"value":"old"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.Agents.WorkBuddy.Home = source
+	r := &metaRig{ctx: ctx, ad: writerTestAdapter{New(cfg), testWriter()}, srcMeta: meta,
+		opt: engine.RestoreOptions{Home: target, Cwd: pb, ClientClosed: true}}
+	st := writerStore(t)
+	r.a = &engine.Engine{Store: st, DeviceID: session.NewDeviceID()}
+	bnd, _, err := r.a.Track(ctx, r.ad, agent.NativeRef{Home: source, NativeID: testNativeID}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.sid, r.bid = bnd.SessionID, bnd.BindingID
+	peer := peerStore(t, st)
+	r.b = &engine.Engine{Store: peer, DeviceID: session.NewDeviceID()}
+	r.sync(t, st, peer)
+	if _, _, err := r.b.Restore(ctx, r.ad, r.sid, r.opt); err != nil {
+		t.Fatalf("initial restore: %v", err)
+	}
+	r.targetMeta = filepath.Join(target, "projects", strings.Trim(strings.ReplaceAll(pb, "/", "-"), "-"), testNativeID+".meta.json")
+	return r
+}
+
+func (r *metaRig) sync(t *testing.T, from, to *store.FS) { mirrorRevisions(t, from, to, r.sid) }
+
+// A change to the native metadata file is a legitimate fast-forward for a
+// device that has not edited that file; a local edit is still protected.
+func TestManagedMetaUpdateFastForwards(t *testing.T) {
+	r := newMetaRig(t)
+	if err := os.WriteFile(r.srcMeta, []byte(`{"value":"new"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, changed, err := r.a.Checkpoint(r.ctx, r.ad, r.bid, "", session.CaptureCheckpoint); err != nil || !changed {
+		t.Fatalf("source metadata checkpoint: changed=%v err=%v", changed, err)
+	}
+	r.sync(t, r.a.Store, r.b.Store)
+	if _, _, err := r.b.Restore(r.ctx, r.ad, r.sid, r.opt); err != nil {
+		t.Fatalf("metadata-only fast-forward rejected on unchanged managed target: %v", err)
+	}
+	if got, err := os.ReadFile(r.targetMeta); err != nil || !bytes.Contains(got, []byte("new")) {
+		t.Fatalf("target metadata not updated: %s %v", got, err)
+	}
+}
+
+func TestManagedMetaUpdateKeepsLocalEditProtected(t *testing.T) {
+	r := newMetaRig(t)
+	if err := os.WriteFile(r.srcMeta, []byte(`{"value":"new"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.a.Checkpoint(r.ctx, r.ad, r.bid, "", session.CaptureCheckpoint); err != nil {
+		t.Fatal(err)
+	}
+	r.sync(t, r.a.Store, r.b.Store)
+	local := []byte(`{"value":"edited on B"}`)
+	if err := os.WriteFile(r.targetMeta, local, 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := r.b.Restore(r.ctx, r.ad, r.sid, r.opt)
+	if errcode.CodeOf(err) != errcode.NeedsAction {
+		t.Fatalf("a locally edited metadata file must block the update: %v", err)
+	}
+	if got, _ := os.ReadFile(r.targetMeta); !bytes.Equal(got, local) {
+		t.Fatalf("local edit was overwritten: %s", got)
+	}
+}

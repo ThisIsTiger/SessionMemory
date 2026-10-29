@@ -176,3 +176,34 @@ func TestTamperedObjectIsRejected(t *testing.T) {
 		t.Error("PutSealed accepted bytes whose hash differs from the reference")
 	}
 }
+
+// A binding the store refuses (a second active one for the same session and
+// agent) leaves no file behind: the files are the truth, not the view.
+func TestRejectedBindingLeavesNoFile(t *testing.T) {
+	r := newRig(t)
+	tid, _ := r.put(990, 1)
+	b, _, err := r.eng.Track(context.Background(), r.ad, agent.NativeRef{Home: r.home, NativeID: tid}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dup := b
+	dup.BindingID, dup.NativeSessionID = session.NewBindingID(), "duplicate"
+	if err := r.st.SaveBinding(nil, dup); err == nil {
+		t.Fatal("setup: duplicate must be rejected")
+	}
+	bs, err := r.st.Bindings(b.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bs) != 1 {
+		t.Fatalf("rejected SaveBinding persisted a second active binding: %d", len(bs))
+	}
+	// saving the existing binding again, or a retired one, still works
+	if err := r.st.SaveBinding(nil, b); err != nil {
+		t.Fatal(err)
+	}
+	dup.State = session.StateSuperseded
+	if err := r.st.SaveBinding(nil, dup); err != nil {
+		t.Fatalf("a non-active binding is not limited: %v", err)
+	}
+}

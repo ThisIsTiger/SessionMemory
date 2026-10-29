@@ -24,6 +24,7 @@ import (
 	"session-memory/internal/platform"
 	"session-memory/internal/session"
 	"session-memory/internal/store"
+	"session-memory/internal/streamcap"
 )
 
 const WriterVersion = "workbuddy-writer/0.1-registry"
@@ -159,6 +160,7 @@ type nativeBuild struct {
 	id            string
 	files         map[string][]byte
 	beforeFiles   map[string]fileBaseline
+	blobs         map[string]bool // existing target files replaced as a whole
 	before, after row
 	baseline      string
 }
@@ -263,7 +265,7 @@ func (a *Adapter) SnapshotIdentity(_ context.Context, src agent.SnapshotReader) 
 }
 
 func (w *Writer) build(ctx context.Context, in agent.WriteInput) (nativeBuild, error) {
-	b := nativeBuild{files: map[string][]byte{}, beforeFiles: map[string]fileBaseline{}}
+	b := nativeBuild{files: map[string][]byte{}, beforeFiles: map[string]fileBaseline{}, blobs: map[string]bool{}}
 	if !w.AllowRegistryWrite {
 		return b, errcode.New(errcode.Unsupported, "enable agents.workbuddy.allow_registry_write to use the version-limited native writer")
 	}
@@ -323,7 +325,16 @@ func (w *Writer) build(ctx context.Context, in agent.WriteInput) (nativeBuild, e
 				return b, err
 			}
 			b.beforeFiles[rel] = fileBaseline{hashBytes(current), uint32(st.Mode().Perm())}
-			if in.BindingID == "" || !bytes.HasPrefix(content, current) || (art.Kind == session.KindBlob && !bytes.Equal(content, current)) {
+			// a stream may only grow; a blob (metadata) may be replaced while
+			// the file is still what the binding captured, i.e. not edited here
+			managed := in.BindingID != "" && bytes.HasPrefix(content, current)
+			if art.Kind == session.KindBlob {
+				st := in.BindingState[rel]
+				managed = in.BindingID != "" && (bytes.Equal(content, current) ||
+					(st.Kind == session.KindBlob && st.Digest != "" && st.Size == int64(len(current)) && st.Digest == streamcap.BlobDigest(current)))
+				b.blobs[rel] = true
+			}
+			if !managed {
 				return b, errcode.New(errcode.NeedsAction, "WorkBuddy target has local or unmanaged content")
 			}
 		} else if !os.IsNotExist(err) {
@@ -446,6 +457,9 @@ func (w *Writer) Plan(ctx context.Context, in agent.WriteInput) (agent.Plan, err
 				continue
 			}
 			op = "append"
+			if b.blobs[rel] {
+				op = "replace"
+			}
 		}
 		p.Writes = append(p.Writes, agent.PlannedWrite{Path: rel, Op: op, Size: int64(len(content)), SHA256: hashBytes(content)})
 	}

@@ -1,0 +1,514 @@
+{
+  "date": "2026-10-29",
+  "recorded_at": "2026-10-29T13:07:18+08:00",
+  "baseline_head": "b219d94cd23660b14af8758b933eb112ae0628c7",
+  "fix_state": "uncommitted worktree changes; historical results.json preserved",
+  "go_version": "go version go1.26.0 darwin/arm64",
+  "native_test_platform": "darwin/arm64",
+  "source_sha256": {
+    "internal/jsonl/cursor.go": "6d17c0ad97d2d73947894515ec148c6e03455fe9adf517deada7804d3682afed",
+    "internal/store/tx.go": "cf7237392bc2a323581635998e6b7e26cd886e1dff89dee17530b532af8677ec",
+    "internal/streamcap/streamcap.go": "85e15cdefffb927a57a2bac94ad8df06e37ffec5de0ef23af241d657b32abfc5",
+    "internal/transport/multi.go": "67a386009bf74f15669981a202f3dec0a2c3d5b53841f093230078798522faa5",
+    "internal/transport/weiyun.go": "3b696af6502e52eec33ef41d566ec5a1987f805d2e3de0b3ead80be5e7deec01",
+    "internal/jsonl/cursor_builder_test.go": "43c58eb5174425eeb31ad8445f4b64c855a56b94a92048414ae7e889c64de18b",
+    "internal/store/legacy_guard_test.go": "c3d500af814a0fa11b6659976ee8ff3369a5866101c0ae9a0459774d6271cfbe",
+    "internal/streamcap/regression_test.go": "c9ce7e091d452cf3420401fb79b2e22c706db2e0fa2ccd6603ad3a8de9db8612",
+    "internal/sync/legacy_recovery_test.go": "fedf15ca8cb7fc06cf6109589dd6f42f1cc9e362a0d9049f64b23b65d21fd1d6",
+    "internal/transport/receive_test.go": "ed8c0867de9ac56780cc0e0cc8727c58b0191fbdc9493b53f5ca30544e7d374e",
+    "internal/streamcap/streamcap_test.go": "6e368b6e428fa854240673ae5817d7d6dac0cee7fc4f02a110d2d7550db80973"
+  },
+  "fixed_findings": {
+    "F01 / A01": "legacy journal recovery checks Written hashes and every Backed/Created path; unverifiable changes retain recovery evidence",
+    "F02 / A02": "changed plain captures revalidate the complete consumed prefix and build cursor hashes from the same verified stream",
+    "F03 / A04": "remote receipt durably marks replication work before caching, including restart and one-time repair of previously cached history"
+  },
+  "original_findings_status": {
+    "verified_fixed": [
+      "A01",
+      "A02",
+      "A03",
+      "A04",
+      "A11",
+      "A12",
+      "A14"
+    ],
+    "explicitly_deferred_and_still_reproduced": [
+      "A05",
+      "A06",
+      "A07",
+      "A08",
+      "A09",
+      "A10",
+      "A13",
+      "A15",
+      "A16"
+    ]
+  },
+  "normal_full_suite": {
+    "command": [
+      "go",
+      "test",
+      "-count=1",
+      "-timeout=12m",
+      "-json",
+      "./..."
+    ],
+    "returncode": 0,
+    "test_and_subtest_events": {
+      "pass": 326,
+      "skip": 3
+    },
+    "top_level_events": {
+      "pass": 264,
+      "skip": 3
+    },
+    "package_totals": {
+      "skip": 3,
+      "pass": 26
+    },
+    "package_results": {
+      "session-memory/internal/agent": {
+        "status": "skip",
+        "elapsed_seconds": 0
+      },
+      "session-memory/internal/canonical": {
+        "status": "skip",
+        "elapsed_seconds": 0
+      },
+      "session-memory/internal/bridge": {
+        "status": "pass",
+        "elapsed_seconds": 2.106
+      },
+      "session-memory/internal/device": {
+        "status": "pass",
+        "elapsed_seconds": 2.844
+      },
+      "session-memory/internal/convert": {
+        "status": "pass",
+        "elapsed_seconds": 3.017
+      },
+      "session-memory/internal/config": {
+        "status": "pass",
+        "elapsed_seconds": 3.797
+      },
+      "session-memory/internal/checkpoint": {
+        "status": "pass",
+        "elapsed_seconds": 4.393
+      },
+      "session-memory/internal/canonjson": {
+        "status": "pass",
+        "elapsed_seconds": 4.9350000000000005
+      },
+      "session-memory/internal/conversation": {
+        "status": "pass",
+        "elapsed_seconds": 5.308
+      },
+      "session-memory/internal/errcode": {
+        "status": "pass",
+        "elapsed_seconds": 5.784
+      },
+      "session-memory/internal/failpoint": {
+        "status": "pass",
+        "elapsed_seconds": 9.002
+      },
+      "session-memory/internal/jsonl": {
+        "status": "pass",
+        "elapsed_seconds": 8.867
+      },
+      "session-memory/internal/logx": {
+        "status": "pass",
+        "elapsed_seconds": 9.032
+      },
+      "session-memory/internal/p0": {
+        "status": "pass",
+        "elapsed_seconds": 8.855
+      },
+      "session-memory/internal/platform": {
+        "status": "pass",
+        "elapsed_seconds": 8.693
+      },
+      "session-memory/internal/session": {
+        "status": "pass",
+        "elapsed_seconds": 8.568999999999999
+      },
+      "session-memory/internal/project": {
+        "status": "pass",
+        "elapsed_seconds": 9.347
+      },
+      "session-memory/internal/testutil/gitrepo": {
+        "status": "skip",
+        "elapsed_seconds": 0
+      },
+      "session-memory/internal/source/claude": {
+        "status": "pass",
+        "elapsed_seconds": 8.86
+      },
+      "session-memory/internal/engine": {
+        "status": "pass",
+        "elapsed_seconds": 14.859
+      },
+      "session-memory/internal/store": {
+        "status": "pass",
+        "elapsed_seconds": 8.41
+      },
+      "session-memory/internal/testutil/codexgen": {
+        "status": "pass",
+        "elapsed_seconds": 7.141
+      },
+      "session-memory/internal/streamcap": {
+        "status": "pass",
+        "elapsed_seconds": 8.937
+      },
+      "session-memory/internal/vault": {
+        "status": "pass",
+        "elapsed_seconds": 7.444
+      },
+      "session-memory/internal/source/codex": {
+        "status": "pass",
+        "elapsed_seconds": 15.773
+      },
+      "session-memory/internal/transport": {
+        "status": "pass",
+        "elapsed_seconds": 13.903
+      },
+      "session-memory/internal/source/workbuddy": {
+        "status": "pass",
+        "elapsed_seconds": 28.74
+      },
+      "session-memory/internal/sync": {
+        "status": "pass",
+        "elapsed_seconds": 106.196
+      },
+      "session-memory/cmd/session-memory": {
+        "status": "pass",
+        "elapsed_seconds": 325.183
+      }
+    },
+    "failing_tests": {},
+    "skipped_tests": [
+      {
+        "package": "session-memory/internal/source/workbuddy",
+        "test": "TestLiveConvertToCodex"
+      },
+      {
+        "package": "session-memory/internal/source/codex",
+        "test": "TestRegisterLive"
+      },
+      {
+        "package": "session-memory/cmd/session-memory",
+        "test": "TestLiveWeiyunTwoMachines"
+      }
+    ],
+    "build_errors": [],
+    "data_races": [],
+    "log": "/private/tmp/session-memory-fix-20261029/verified-default.jsonl"
+  },
+  "race_dev_failpoint_full_suite": {
+    "command": [
+      "go",
+      "test",
+      "-race",
+      "-tags",
+      "dev,failpoint",
+      "-count=1",
+      "-timeout=12m",
+      "-json",
+      "./..."
+    ],
+    "returncode": 0,
+    "test_and_subtest_events": {
+      "pass": 437,
+      "skip": 3
+    },
+    "top_level_events": {
+      "pass": 280,
+      "skip": 3
+    },
+    "package_totals": {
+      "skip": 3,
+      "pass": 26
+    },
+    "package_results": {
+      "session-memory/internal/agent": {
+        "status": "skip",
+        "elapsed_seconds": 0.009
+      },
+      "session-memory/internal/canonical": {
+        "status": "skip",
+        "elapsed_seconds": 0
+      },
+      "session-memory/internal/bridge": {
+        "status": "pass",
+        "elapsed_seconds": 7.05
+      },
+      "session-memory/internal/canonjson": {
+        "status": "pass",
+        "elapsed_seconds": 7.508
+      },
+      "session-memory/internal/checkpoint": {
+        "status": "pass",
+        "elapsed_seconds": 8.584
+      },
+      "session-memory/internal/conversation": {
+        "status": "pass",
+        "elapsed_seconds": 8.902
+      },
+      "session-memory/internal/config": {
+        "status": "pass",
+        "elapsed_seconds": 8.933
+      },
+      "session-memory/internal/convert": {
+        "status": "pass",
+        "elapsed_seconds": 9.375
+      },
+      "session-memory/internal/device": {
+        "status": "pass",
+        "elapsed_seconds": 10.143
+      },
+      "session-memory/internal/errcode": {
+        "status": "pass",
+        "elapsed_seconds": 10.28
+      },
+      "session-memory/internal/failpoint": {
+        "status": "pass",
+        "elapsed_seconds": 7.907
+      },
+      "session-memory/internal/logx": {
+        "status": "pass",
+        "elapsed_seconds": 7.3870000000000005
+      },
+      "session-memory/internal/jsonl": {
+        "status": "pass",
+        "elapsed_seconds": 8.608
+      },
+      "session-memory/internal/p0": {
+        "status": "pass",
+        "elapsed_seconds": 7.667
+      },
+      "session-memory/internal/platform": {
+        "status": "pass",
+        "elapsed_seconds": 8.151
+      },
+      "session-memory/internal/session": {
+        "status": "pass",
+        "elapsed_seconds": 7.651
+      },
+      "session-memory/internal/project": {
+        "status": "pass",
+        "elapsed_seconds": 8.728
+      },
+      "session-memory/internal/testutil/gitrepo": {
+        "status": "skip",
+        "elapsed_seconds": 0
+      },
+      "session-memory/internal/source/claude": {
+        "status": "pass",
+        "elapsed_seconds": 7.999
+      },
+      "session-memory/internal/testutil/codexgen": {
+        "status": "pass",
+        "elapsed_seconds": 7.703
+      },
+      "session-memory/internal/store": {
+        "status": "pass",
+        "elapsed_seconds": 10.272
+      },
+      "session-memory/internal/vault": {
+        "status": "pass",
+        "elapsed_seconds": 8.295
+      },
+      "session-memory/internal/streamcap": {
+        "status": "pass",
+        "elapsed_seconds": 12.043
+      },
+      "session-memory/internal/transport": {
+        "status": "pass",
+        "elapsed_seconds": 15.902
+      },
+      "session-memory/internal/engine": {
+        "status": "pass",
+        "elapsed_seconds": 40.608
+      },
+      "session-memory/internal/source/codex": {
+        "status": "pass",
+        "elapsed_seconds": 29.782
+      },
+      "session-memory/internal/source/workbuddy": {
+        "status": "pass",
+        "elapsed_seconds": 121.313
+      },
+      "session-memory/internal/sync": {
+        "status": "pass",
+        "elapsed_seconds": 154.363
+      },
+      "session-memory/cmd/session-memory": {
+        "status": "pass",
+        "elapsed_seconds": 347.412
+      }
+    },
+    "failing_tests": {},
+    "skipped_tests": [
+      {
+        "package": "session-memory/internal/source/codex",
+        "test": "TestRegisterLive"
+      },
+      {
+        "package": "session-memory/internal/source/workbuddy",
+        "test": "TestLiveConvertToCodex"
+      },
+      {
+        "package": "session-memory/cmd/session-memory",
+        "test": "TestLiveWeiyunTwoMachines"
+      }
+    ],
+    "build_errors": [],
+    "data_races": [],
+    "log": "/private/tmp/session-memory-fix-20261029/verified-race-dev-failpoint.jsonl"
+  },
+  "followup_overlay_three_repeats": {
+    "command": [
+      "go",
+      "test",
+      "-tags",
+      "dev,failpoint",
+      "-overlay",
+      "/private/tmp/session-memory-fix-20261029/verified-repro/overlay.json",
+      "-run",
+      "^TestFollowup",
+      "-count",
+      "3",
+      "-timeout",
+      "3m",
+      "-json",
+      "-race",
+      "./internal/streamcap",
+      "./internal/sync",
+      "./internal/transport"
+    ],
+    "returncode": 0,
+    "test_and_subtest_events": {
+      "pass": 42
+    },
+    "failing_tests": {},
+    "distinct_failing_top_level_tests": 0,
+    "build_errors": [],
+    "data_races": [],
+    "log": "/private/tmp/session-memory-fix-20261029/verified-repro/followup.jsonl"
+  },
+  "deferred_original_audit": {
+    "command": [
+      "go",
+      "test",
+      "-tags",
+      "dev,failpoint",
+      "-overlay",
+      "/private/tmp/session-memory-fix-20261029/remaining/overlay.json",
+      "-run",
+      "^TestAudit",
+      "-count",
+      "1",
+      "-timeout",
+      "5m",
+      "-json",
+      "-race",
+      "./internal/engine",
+      "./internal/transport",
+      "./internal/source/workbuddy",
+      "./cmd/session-memory"
+    ],
+    "returncode": 1,
+    "test_and_subtest_events": {
+      "fail": 9,
+      "skip": 1
+    },
+    "failing_tests": {
+      "TestAuditManagedMetaUpdate": 1,
+      "TestAuditMirrorRejectsEqualLengthRemoteCollision": 1,
+      "TestAuditMultiMirrorRetriesMissingKey": 1,
+      "TestAuditRebuildReportsDamagedRevision": 1,
+      "TestAuditRejectedBindingLeavesNoFile": 1,
+      "TestAuditRemovedArtifactChange": 1,
+      "TestAuditSoftDeleteInWAL": 1,
+      "TestAuditSubagentsExcludedFromConversion": 1,
+      "TestAuditSyncFailureJSONIsOneDocument": 1
+    },
+    "distinct_failing_top_level_tests": 9,
+    "build_errors": [],
+    "data_races": [],
+    "log": "/private/tmp/session-memory-fix-20261029/remaining/audit.jsonl"
+  },
+  "static_checks": {
+    "native_vet_dev_failpoint": {
+      "command": [
+        "go",
+        "vet",
+        "-tags",
+        "dev,failpoint",
+        "./..."
+      ],
+      "returncode": 0
+    },
+    "linux_amd64_cross_vet": {
+      "environment": {
+        "GOOS": "linux",
+        "GOARCH": "amd64",
+        "CGO_ENABLED": "0"
+      },
+      "command": [
+        "go",
+        "vet",
+        "-tags",
+        "dev,failpoint",
+        "./..."
+      ],
+      "returncode": 0
+    },
+    "windows_amd64_cross_vet": {
+      "environment": {
+        "GOOS": "windows",
+        "GOARCH": "amd64",
+        "CGO_ENABLED": "0"
+      },
+      "command": [
+        "go",
+        "vet",
+        "-tags",
+        "dev,failpoint",
+        "./..."
+      ],
+      "returncode": 0
+    },
+    "gofmt": {
+      "command": [
+        "gofmt",
+        "-l",
+        "cmd",
+        "internal"
+      ],
+      "files_needing_format": []
+    },
+    "git_diff_check": {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "returncode": 0
+    }
+  },
+  "test_environment": {
+    "live_cloud_and_client_tests_disabled": true,
+    "real_cloud_credentials_not_used": true,
+    "fixtures": "temporary directories, in-memory credentials and local HTTP Weiyun fake"
+  },
+  "limitations": [
+    "counts include test/subtest events; the two suite totals overlap and are not independent functionality counts",
+    "changed plain stream captures now reread the entire consumed prefix with bounded streaming memory",
+    "idle plain stream checking retains the existing head/tail hash heuristic",
+    "legacy-format journal is modeled by removing only Planned; the older binary is not executed",
+    "no real cloud, WorkBuddy GUI/model continuation, physical second-machine or power-loss tests",
+    "no native execution on Linux or Windows",
+    "the nine deferred issues remain unresolved; their separate audit intentionally exits nonzero"
+  ]
+}

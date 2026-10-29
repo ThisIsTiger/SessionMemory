@@ -6,8 +6,10 @@ import (
 	"os"
 	osexec "os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,17 +60,52 @@ func (h vaultHow) doneLine() string {
 	return "done: ALREADY_CONNECTED this computer was already set up; nothing else to do."
 }
 
-// relayCanFinishLater is true when a relay failed for a reason that passes by
-// itself: sessions needing attention, the Weiyun quota, or no network.
-func relayCanFinishLater(out string, err error) bool {
+// relayOutcome says what a failed relay means for setup. Network trouble and
+// the Weiyun quota pass by themselves (pending). Sessions that need a decision
+// or a check (a conflict, a divergence, an interrupted install) do not: waiting
+// never fixes them, so they are reported apart, with how many there are
+// (blocked; 0 when the output does not say).
+func relayOutcome(out string, err error) (pending bool, blocked int, needsAction bool) {
 	s := strings.ToLower(out + " " + err.Error())
-	for _, k := range []string{string(errcode.RecoveryNeeded), "need attention", "117401", strings.ToLower(transport.ErrQuota.Error()), "quota",
+	if strings.Contains(s, string(errcode.RecoveryNeeded)) || strings.Contains(s, "need attention") {
+		// "project x: updated 1, up to date 0, 2 need attention" lines add up;
+		// otherwise the summary error "2 session(s) need attention"
+		lower := strings.ToLower(out) // err repeats out
+		for _, m := range blockedCount.FindAllStringSubmatch(lower, -1) {
+			n, _ := strconv.Atoi(m[1])
+			blocked += n
+		}
+		if blocked == 0 {
+			if m := blockedSummary.FindStringSubmatch(lower); m != nil {
+				blocked, _ = strconv.Atoi(m[1])
+			}
+		}
+		return false, blocked, true
+	}
+	for _, k := range []string{"117401", strings.ToLower(transport.ErrQuota.Error()), "quota",
 		"dial tcp", "no such host", "connection refused", "connection reset", "network is unreachable", "i/o timeout", "client.timeout", "deadline exceeded", "unexpected eof", "http 5"} {
 		if strings.Contains(s, k) {
-			return true
+			return true, 0, false
 		}
 	}
-	return false
+	return false, 0, false
+}
+
+var (
+	blockedCount   = regexp.MustCompile(`, (\d+) need attention`)
+	blockedSummary = regexp.MustCompile(`(\d+) session\(s\) need attention`)
+)
+
+// needsActionLine is what setup prints when sessions are blocked: plain words
+// for the user, no promise that waiting helps.
+func needsActionLine(blocked int) string {
+	what := "some sessions"
+	if blocked == 1 {
+		what = "1 session"
+	} else if blocked > 1 {
+		what = fmt.Sprintf("%d sessions", blocked)
+	}
+	return "NEEDS_ACTION: " + what + " did not sync and will NOT fix themselves (the same session was changed on two computers, or an earlier install was interrupted). Nothing was deleted, and everything else is connected and keeps syncing. Tell the user in plain words; to see which ones run `" + selfPath() + " relay`. Do not run adopt or choose unless the user asks."
 }
 
 // selfCommand runs one of this program's own commands; tests replace it.
@@ -145,10 +182,15 @@ func newSetupCmd(a *App) *cobra.Command {
 				say("%s", out)
 			}
 			if err != nil {
-				if !relayCanFinishLater(out, err) {
+				pending, blocked, needsAction := relayOutcome(out, err)
+				switch {
+				case needsAction:
+					say("%s", needsActionLine(blocked))
+				case pending:
+					say("PENDING: connected; the first upload will finish by itself")
+				default:
 					return err
 				}
-				say("PENDING: connected; the first upload will finish by itself")
 			}
 			if has(agents, "workbuddy") {
 				say("WorkBuddy: sessions from your other computers are added after WorkBuddy is fully quit (Cmd+Q), within about ten minutes; reopen it afterwards.")

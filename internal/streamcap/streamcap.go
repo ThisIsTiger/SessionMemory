@@ -72,7 +72,6 @@ func CaptureStream(ctx context.Context, home, logic string, fs []File, old sessi
 		}
 	}
 
-	nOld := len(segs) // segments before this capture
 	key := agent.ArtifactKey{Path: logic, Kind: session.KindStream, Form: form, Generation: gen, Mode: uint32(chosen.Mode)}
 	rc, _, err := src.OpenAt(offset)
 	if err != nil {
@@ -138,19 +137,24 @@ func CaptureStream(ctx context.Context, home, logic string, fs []File, old sessi
 		Size: end, Digest: session.SegmentsDigest(segs)}
 	cursor := &session.StreamCursor{Generation: gen, Offset: end}
 	if !chosen.Zst {
-		if c, err := jsonl.NewCursor(path, gen, end); err == nil {
-			// The cursor certifies whatever is in the file now; it must be what was
-			// just stored. A rewrite in between is refused (the next run re-reads).
-			if fresh := segs[nOld:]; len(fresh) > 0 {
-				same, err := verifyRange(src, fresh[0].Start, fresh)
-				if err != nil {
-					return nil, agent.CaptureOK, false, nil, err
-				}
-				if !same {
-					return nil, agent.CaptureOK, false, nil, ErrChangedDuringCapture
-				}
+		if !changed && state == agent.CaptureOK && old.Cursor != nil {
+			// Do not certify new hashes for bytes we did not capture this round.
+			previous := *old.Cursor
+			cursor = &previous
+		} else {
+			// Revalidate the entire consumed prefix, including committed segments.
+			// Build the cursor from that same verified byte stream, so a later
+			// rewrite cannot make it authenticate bytes absent from the snapshot.
+			var edges jsonl.CursorBuilder
+			same, err := verifyRange(src, 0, segs, &edges)
+			if err != nil {
+				return nil, agent.CaptureOK, false, nil, err
 			}
-			cursor = &session.StreamCursor{Generation: c.Generation, Offset: c.Offset, FileID: c.FileID, HeadHash: c.HeadHash, TailHash: c.TailHash}
+			if !same {
+				return nil, agent.CaptureOK, false, nil, ErrChangedDuringCapture
+			}
+			c := edges.Cursor(gen)
+			cursor = &session.StreamCursor{Generation: c.Generation, Offset: c.Offset, HeadHash: c.HeadHash, TailHash: c.TailHash}
 		}
 	}
 	st.Cursor = cursor
@@ -179,12 +183,12 @@ func PrefixMatches(src jsonl.Source, path string, old session.ArtifactState, seg
 // VerifySegments re-hashes every segment range of the stream and compares it
 // with raw_hash (deep verification, spec §2.2 rule 4).
 func VerifySegments(src jsonl.Source, segs []session.SegmentRef) (bool, error) {
-	return verifyRange(src, 0, segs)
+	return verifyRange(src, 0, segs, nil)
 }
 
 // verifyRange re-hashes consecutive segments starting at decompressed offset
 // from.
-func verifyRange(src jsonl.Source, from int64, segs []session.SegmentRef) (bool, error) {
+func verifyRange(src jsonl.Source, from int64, segs []session.SegmentRef, verified io.Writer) (bool, error) {
 	rc, _, err := src.OpenAt(from)
 	if err != nil {
 		if errors.Is(err, jsonl.ErrTruncated) {
@@ -195,7 +199,11 @@ func verifyRange(src jsonl.Source, from int64, segs []session.SegmentRef) (bool,
 	defer rc.Close()
 	for _, s := range segs {
 		h := sha256.New()
-		n, err := io.Copy(h, io.LimitReader(rc, s.End-s.Start))
+		var dst io.Writer = h
+		if verified != nil {
+			dst = io.MultiWriter(h, verified)
+		}
+		n, err := io.Copy(dst, io.LimitReader(rc, s.End-s.Start))
 		if err != nil {
 			return false, nil
 		}
@@ -263,6 +271,9 @@ func blobChunks(data []byte) []session.SegmentRef {
 	}
 	return out
 }
+
+// BlobDigest is the segments digest CaptureBlob records for data.
+func BlobDigest(data []byte) string { return session.SegmentsDigest(blobChunks(data)) }
 
 // CaptureBlob stores an immutable file. It is re-captured only when its
 // content changed: the chunk hashes are recomputed locally and compared with

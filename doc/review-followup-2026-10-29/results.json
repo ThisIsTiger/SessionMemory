@@ -1,0 +1,407 @@
+{
+  "date": "2026-10-29",
+  "tested_initial_head": "a692ed6",
+  "tested_initial_fix_commit": "8874909",
+  "final_head": "b219d94cd23660b14af8758b933eb112ae0628c7",
+  "final_fix_commit": "7b00e0d",
+  "history_rewritten_during_review": true,
+  "business_fix_blob_ids_match_initial_diff": {
+    "internal/store/tx.go": "5c0040a74c12b1a48c0aa68c0da91b43c534e668",
+    "internal/store/journal.go": "f7d25b46575df43ce2465f74881c3fc9860a7298",
+    "internal/streamcap/streamcap.go": "9a0e1263606578dedb83cbb54d1dbd7aa15e4a0c",
+    "internal/source/codex/writer.go": "b8a29c0cec0c8e17e0a998275e5110ddf1844cab",
+    "internal/transport/multi.go": "aba4d49a6e4a8b8705dd653fd372d7438c622d92",
+    "cmd/session-memory/cmd_onboard.go": "0b2bf05df284dc30e985c2d13cf71ef98a90a3c3",
+    "cmd/session-memory/cmd_project.go": "ae6ad8c406f2b99d460e8e6380673f76d9644361"
+  },
+  "changes_made_by_review": "only the new doc/review-followup-2026-10-29 directory; no business code or existing tests modified",
+  "original_findings": {
+    "verified_fixed": [
+      "A03",
+      "A11",
+      "A12",
+      "A14"
+    ],
+    "partially_fixed": {
+      "A01": "legacy journals without Planned still overwrite/delete post-crash progress",
+      "A02": "rewrites in the previously committed prefix are certified during incremental capture",
+      "A04": "received history is not replicated to a known backup"
+    },
+    "explicitly_unaddressed_and_reproduced": [
+      "A05",
+      "A06",
+      "A07",
+      "A08",
+      "A09",
+      "A10",
+      "A13",
+      "A15",
+      "A16"
+    ]
+  },
+  "normal_full_suite": {
+    "test_and_subtest_events": {
+      "pass": 297,
+      "skip": 3
+    },
+    "top_level_events": {
+      "pass": 253,
+      "skip": 3
+    },
+    "package_results": {
+      "session-memory/internal/agent": {
+        "status": "skip",
+        "elapsed_seconds": 0
+      },
+      "session-memory/internal/canonical": {
+        "status": "skip",
+        "elapsed_seconds": 0
+      },
+      "session-memory/internal/canonjson": {
+        "status": "pass",
+        "elapsed_seconds": 1.946
+      },
+      "session-memory/internal/checkpoint": {
+        "status": "pass",
+        "elapsed_seconds": 2.62
+      },
+      "session-memory/internal/bridge": {
+        "status": "pass",
+        "elapsed_seconds": 2.834
+      },
+      "session-memory/internal/conversation": {
+        "status": "pass",
+        "elapsed_seconds": 3.277
+      },
+      "session-memory/internal/convert": {
+        "status": "pass",
+        "elapsed_seconds": 3.73
+      },
+      "session-memory/internal/config": {
+        "status": "pass",
+        "elapsed_seconds": 4.277
+      },
+      "session-memory/internal/device": {
+        "status": "pass",
+        "elapsed_seconds": 4.795
+      },
+      "session-memory/internal/errcode": {
+        "status": "pass",
+        "elapsed_seconds": 5.395
+      },
+      "session-memory/internal/engine": {
+        "status": "pass",
+        "elapsed_seconds": 11.701
+      },
+      "session-memory/internal/failpoint": {
+        "status": "pass",
+        "elapsed_seconds": 11.429
+      },
+      "session-memory/internal/jsonl": {
+        "status": "pass",
+        "elapsed_seconds": 11.655
+      },
+      "session-memory/internal/logx": {
+        "status": "pass",
+        "elapsed_seconds": 11.495
+      },
+      "session-memory/internal/p0": {
+        "status": "pass",
+        "elapsed_seconds": 11.589
+      },
+      "session-memory/internal/platform": {
+        "status": "pass",
+        "elapsed_seconds": 11.583
+      },
+      "session-memory/internal/session": {
+        "status": "pass",
+        "elapsed_seconds": 11.328
+      },
+      "session-memory/internal/testutil/gitrepo": {
+        "status": "skip",
+        "elapsed_seconds": 0
+      },
+      "session-memory/internal/project": {
+        "status": "pass",
+        "elapsed_seconds": 11.985
+      },
+      "session-memory/internal/source/claude": {
+        "status": "pass",
+        "elapsed_seconds": 11.022
+      },
+      "session-memory/internal/store": {
+        "status": "pass",
+        "elapsed_seconds": 8.326
+      },
+      "session-memory/internal/streamcap": {
+        "status": "pass",
+        "elapsed_seconds": 8.653
+      },
+      "session-memory/internal/testutil/codexgen": {
+        "status": "pass",
+        "elapsed_seconds": 8.639
+      },
+      "session-memory/internal/vault": {
+        "status": "pass",
+        "elapsed_seconds": 8.829
+      },
+      "session-memory/internal/transport": {
+        "status": "pass",
+        "elapsed_seconds": 9.428
+      },
+      "session-memory/internal/source/workbuddy": {
+        "status": "pass",
+        "elapsed_seconds": 16.234
+      },
+      "session-memory/internal/source/codex": {
+        "status": "pass",
+        "elapsed_seconds": 18.708
+      },
+      "session-memory/internal/sync": {
+        "status": "pass",
+        "elapsed_seconds": 90.452
+      },
+      "session-memory/cmd/session-memory": {
+        "status": "pass",
+        "elapsed_seconds": 316.549
+      }
+    },
+    "failing_tests": {},
+    "skipped_tests": [
+      "TestLiveConvertToCodex",
+      "TestRegisterLive",
+      "TestLiveWeiyunTwoMachines"
+    ],
+    "build_errors": [],
+    "data_races": []
+  },
+  "race_dev_failpoint_full_suite": {
+    "test_and_subtest_events": {
+      "pass": 403,
+      "skip": 3
+    },
+    "top_level_events": {
+      "pass": 266,
+      "skip": 3
+    },
+    "package_results": {
+      "session-memory/internal/agent": {
+        "status": "skip",
+        "elapsed_seconds": 0
+      },
+      "session-memory/internal/canonical": {
+        "status": "skip",
+        "elapsed_seconds": 0
+      },
+      "session-memory/internal/canonjson": {
+        "status": "pass",
+        "elapsed_seconds": 6.756
+      },
+      "session-memory/internal/checkpoint": {
+        "status": "pass",
+        "elapsed_seconds": 8.491
+      },
+      "session-memory/internal/config": {
+        "status": "pass",
+        "elapsed_seconds": 8.614
+      },
+      "session-memory/internal/bridge": {
+        "status": "pass",
+        "elapsed_seconds": 8.791
+      },
+      "session-memory/internal/conversation": {
+        "status": "pass",
+        "elapsed_seconds": 9.264
+      },
+      "session-memory/internal/convert": {
+        "status": "pass",
+        "elapsed_seconds": 9.714
+      },
+      "session-memory/internal/device": {
+        "status": "pass",
+        "elapsed_seconds": 10.394
+      },
+      "session-memory/internal/errcode": {
+        "status": "pass",
+        "elapsed_seconds": 12.263
+      },
+      "session-memory/internal/failpoint": {
+        "status": "pass",
+        "elapsed_seconds": 10.935
+      },
+      "session-memory/internal/jsonl": {
+        "status": "pass",
+        "elapsed_seconds": 9.776
+      },
+      "session-memory/internal/logx": {
+        "status": "pass",
+        "elapsed_seconds": 10.173
+      },
+      "session-memory/internal/p0": {
+        "status": "pass",
+        "elapsed_seconds": 10.438
+      },
+      "session-memory/internal/platform": {
+        "status": "pass",
+        "elapsed_seconds": 10.531
+      },
+      "session-memory/internal/session": {
+        "status": "pass",
+        "elapsed_seconds": 10.332
+      },
+      "session-memory/internal/project": {
+        "status": "pass",
+        "elapsed_seconds": 11.087
+      },
+      "session-memory/internal/testutil/gitrepo": {
+        "status": "skip",
+        "elapsed_seconds": 0
+      },
+      "session-memory/internal/source/claude": {
+        "status": "pass",
+        "elapsed_seconds": 9.673
+      },
+      "session-memory/internal/engine": {
+        "status": "pass",
+        "elapsed_seconds": 23.203
+      },
+      "session-memory/internal/streamcap": {
+        "status": "pass",
+        "elapsed_seconds": 9.035
+      },
+      "session-memory/internal/store": {
+        "status": "pass",
+        "elapsed_seconds": 9.641
+      },
+      "session-memory/internal/testutil/codexgen": {
+        "status": "pass",
+        "elapsed_seconds": 8.822
+      },
+      "session-memory/internal/vault": {
+        "status": "pass",
+        "elapsed_seconds": 8.776
+      },
+      "session-memory/internal/transport": {
+        "status": "pass",
+        "elapsed_seconds": 11.33
+      },
+      "session-memory/internal/source/codex": {
+        "status": "pass",
+        "elapsed_seconds": 28.817
+      },
+      "session-memory/internal/source/workbuddy": {
+        "status": "pass",
+        "elapsed_seconds": 106.214
+      },
+      "session-memory/internal/sync": {
+        "status": "pass",
+        "elapsed_seconds": 132.441
+      },
+      "session-memory/cmd/session-memory": {
+        "status": "pass",
+        "elapsed_seconds": 335.789
+      }
+    },
+    "failing_tests": {},
+    "skipped_tests": [
+      "TestRegisterLive",
+      "TestLiveConvertToCodex",
+      "TestLiveWeiyunTwoMachines"
+    ],
+    "build_errors": [],
+    "data_races": []
+  },
+  "new_followup_overlay_3_repeats": {
+    "test_and_subtest_events": {
+      "fail": 21,
+      "pass": 21
+    },
+    "top_level_events": {
+      "fail": 9,
+      "pass": 9
+    },
+    "package_results": {
+      "session-memory/internal/transport": {
+        "status": "fail",
+        "elapsed_seconds": 2.918
+      },
+      "session-memory/internal/streamcap": {
+        "status": "fail",
+        "elapsed_seconds": 3.17
+      },
+      "session-memory/internal/sync": {
+        "status": "fail",
+        "elapsed_seconds": 17.696
+      }
+    },
+    "failing_tests": {
+      "TestFollowupCaptureRejectsRewriteInCommittedPrefix": 3,
+      "TestFollowupKnownBackupCopiesHistoryReceivedFromOtherDevice/single_account_publisher": 3,
+      "TestFollowupKnownBackupCopiesHistoryReceivedFromOtherDevice/dual_account_publisher_backup_unavailable": 3,
+      "TestFollowupKnownBackupCopiesHistoryReceivedFromOtherDevice": 3,
+      "TestFollowupLegacyRecoveryPreservesPostCrashProgress/create": 3,
+      "TestFollowupLegacyRecoveryPreservesPostCrashProgress/append": 3,
+      "TestFollowupLegacyRecoveryPreservesPostCrashProgress": 3
+    },
+    "skipped_tests": [],
+    "build_errors": [],
+    "data_races": []
+  },
+  "remaining_original_audit": {
+    "command": [
+      "go",
+      "test",
+      "-tags",
+      "dev,failpoint",
+      "-overlay",
+      "/private/tmp/session-memory-followup-a692ed6/remaining-audit/overlay.json",
+      "-run",
+      "^TestAudit",
+      "-count",
+      "1",
+      "-timeout",
+      "5m",
+      "-json",
+      "-race",
+      "./internal/engine",
+      "./internal/transport",
+      "./internal/source/workbuddy",
+      "./cmd/session-memory"
+    ],
+    "returncode": 1,
+    "test_and_subtest_events": {
+      "fail": 9,
+      "skip": 1
+    },
+    "failing_tests": {
+      "TestAuditManagedMetaUpdate": 1,
+      "TestAuditMirrorRejectsEqualLengthRemoteCollision": 1,
+      "TestAuditMultiMirrorRetriesMissingKey": 1,
+      "TestAuditRebuildReportsDamagedRevision": 1,
+      "TestAuditRejectedBindingLeavesNoFile": 1,
+      "TestAuditRemovedArtifactChange": 1,
+      "TestAuditSoftDeleteInWAL": 1,
+      "TestAuditSubagentsExcludedFromConversion": 1,
+      "TestAuditSyncFailureJSONIsOneDocument": 1
+    },
+    "distinct_failing_top_level_tests": 9,
+    "build_errors": [],
+    "data_races": [],
+    "log": "/private/tmp/session-memory-followup-a692ed6/remaining-audit/audit.jsonl"
+  },
+  "checks": {
+    "native_vet_dev_failpoint": "passed",
+    "linux_amd64_cross_vet": "passed",
+    "windows_amd64_cross_vet": "passed",
+    "gofmt": "passed",
+    "git_diff_check": "passed"
+  },
+  "limitations": [
+    "legacy-format journal is modeled by removing only the new Planned field, not by executing the older binary",
+    "no real cloud accounts contacted",
+    "no native GUI/model continuation or physical second-computer tests",
+    "no non-macOS native execution",
+    "no physical power-loss tests"
+  ],
+  "post_test_non_business_changes": "Git history rewrite, MIT license, CI platform matrix adjustment; all seven reviewed business blobs unchanged"
+}

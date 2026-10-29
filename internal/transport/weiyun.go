@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -39,23 +40,81 @@ type WeiyunClient struct {
 	OnQuota func(error)
 	OnOK    func()
 	okSeen  bool
+	// Reauth is asked once, when Weiyun rejects the token, for a replacement
+	// the caller has verified; the rejected call is then repeated with it.
+	Reauth   func(ctx context.Context) string
+	reauthed bool
 }
 
 // ErrQuota means Weiyun refused the call because the day's quota is used up;
 // nothing helps until it resets.
 var ErrQuota = errors.New("weiyun daily quota used up")
 
+// ErrAuth means Weiyun rejected the token (expired or revoked).
+var ErrAuth = errors.New("weiyun token rejected")
+
+func isAuthMessage(msg string) bool {
+	m := strings.ToLower(msg)
+	return strings.Contains(m, "unauthorized") || (strings.Contains(m, "token") && (strings.Contains(m, "invalid") || strings.Contains(m, "expired")))
+}
+
 func isQuotaMessage(msg string) bool {
 	return strings.Contains(msg, "117401") || strings.Contains(msg, "daily quota")
 }
 
+// redact keeps credentials out of anything that becomes an error message: a
+// server may echo the request header back, and a network error carries the
+// full request URL, which for a download includes its signature.
+func (c *WeiyunClient) redact(msg string) string {
+	if c.Token != "" {
+		msg = strings.ReplaceAll(msg, c.Token, "[redacted]")
+	}
+	const max = 300
+	if len(msg) > max {
+		msg = msg[:max] + "..."
+	}
+	return msg
+}
+
+// netError strips the query, user info and path from the URL in a transport
+// error; the class of the error (timeout, context, DNS ...) stays intact.
+func netError(err error) error {
+	var ue *url.Error
+	if !errors.As(err, &ue) {
+		return err
+	}
+	shown := "(url)"
+	if u, perr := url.Parse(ue.URL); perr == nil && u.Host != "" {
+		shown = u.Scheme + "://" + u.Host
+	}
+	return &url.Error{Op: ue.Op, URL: shown, Err: ue.Err}
+}
+
+// sameOrigin is the redirect policy for requests that carry the token: they
+// may only be redirected within their own scheme, host and port.
+func sameOrigin(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	first := via[0].URL
+	if req.URL.Scheme != first.Scheme || req.URL.Host != first.Host {
+		return errors.New("refused a redirect to another origin")
+	}
+	return nil
+}
+
 func (c *WeiyunClient) failure(tool, msg string) error {
-	if isQuotaMessage(msg) {
+	quota, auth := isQuotaMessage(msg), isAuthMessage(msg)
+	msg = c.redact(msg)
+	if quota {
 		err := fmt.Errorf("weiyun: %s: %w (%s)", tool, ErrQuota, msg)
 		if c.OnQuota != nil {
 			c.OnQuota(err)
 		}
 		return err
+	}
+	if auth {
+		return fmt.Errorf("weiyun: %s: %w (%s)", tool, ErrAuth, msg)
 	}
 	return fmt.Errorf("weiyun: %s: %s", tool, msg)
 }
@@ -73,6 +132,18 @@ type wyFile struct {
 }
 
 func (c *WeiyunClient) call(ctx context.Context, tool string, args map[string]any, out any) error {
+	err := c.callOnce(ctx, tool, args, out)
+	if errors.Is(err, ErrAuth) && c.Reauth != nil && !c.reauthed {
+		c.reauthed = true // one attempt per client, whatever it finds
+		if t := c.Reauth(ctx); t != "" && t != c.Token {
+			c.Token = t
+			return c.callOnce(ctx, tool, args, out)
+		}
+	}
+	return err
+}
+
+func (c *WeiyunClient) callOnce(ctx context.Context, tool string, args map[string]any, out any) error {
 	c.id++
 	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": c.id, "method": "tools/call", "params": map[string]any{"name": tool, "arguments": args}})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL, bytes.NewReader(body))
@@ -81,13 +152,19 @@ func (c *WeiyunClient) call(ctx context.Context, tool string, args map[string]an
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("WyHeader", "mcp_token="+c.Token)
-	resp, err := c.HTTP.Do(req)
+	// the token goes to the endpoint only, never along a redirect elsewhere
+	authed := *c.HTTP
+	authed.CheckRedirect = sameOrigin
+	resp, err := authed.Do(req)
 	if err != nil {
-		return err
+		return netError(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, resp.Body)
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return fmt.Errorf("weiyun: %s: HTTP %d: %w", tool, resp.StatusCode, ErrAuth)
+		}
 		return fmt.Errorf("weiyun: %s: HTTP %d", tool, resp.StatusCode)
 	}
 	var env struct {
@@ -205,6 +282,38 @@ func (c *WeiyunClient) ensureDir(ctx context.Context, parent, name string) (stri
 	return r.Key, nil
 }
 
+// ReadFile reads the file name inside directory dir of the folder root,
+// creating nothing; ok is false when the folder or the file is not there.
+func (c *WeiyunClient) ReadFile(ctx context.Context, root, dir, name string) (data []byte, ok bool, err error) {
+	key := ""
+	for _, want := range []string{root, dir} {
+		dirs, _, _, err := c.list(ctx, key)
+		if err != nil {
+			return nil, false, err
+		}
+		key = ""
+		for _, d := range dirs {
+			if d.Name == want {
+				key = d.Key
+			}
+		}
+		if key == "" {
+			return nil, false, nil
+		}
+	}
+	_, files, _, err := c.list(ctx, key)
+	if err != nil {
+		return nil, false, err
+	}
+	for _, f := range files {
+		if f.Name == name {
+			data, err := c.download(ctx, f)
+			return data, err == nil, err
+		}
+	}
+	return nil, false, nil
+}
+
 func (c *WeiyunClient) download(ctx context.Context, f wyFile) ([]byte, error) {
 	var r struct {
 		Items []struct {
@@ -225,9 +334,9 @@ func (c *WeiyunClient) download(ctx context.Context, f wyFile) ([]byte, error) {
 	if r.Items[0].Cookie != "" {
 		req.Header.Set("Cookie", r.Items[0].Cookie)
 	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.HTTP.Do(req) // a CDN may redirect; this request carries no token
 	if err != nil {
-		return nil, err
+		return nil, netError(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -569,6 +678,13 @@ func (m *Mirror) Pull(ctx context.Context) error {
 // pullLocked downloads what the local copy lacks under the top-level
 // directory only ("" = everywhere).
 func (m *Mirror) pullLocked(ctx context.Context, force bool, only string) error {
+	return m.pullWithReceiveLocked(ctx, force, only, nil)
+}
+
+// beforeReceive lets a multi-account mirror record pending replication before
+// any downloaded file becomes visible in its shared cache. KeyPath is excluded
+// from this path: key publication and deletion have their own lifecycle.
+func (m *Mirror) pullWithReceiveLocked(ctx context.Context, force bool, only string, beforeReceive func() error) error {
 	if err := m.refresh(ctx, force, only); err != nil {
 		return err
 	}
@@ -590,6 +706,11 @@ func (m *Mirror) pullLocked(ctx context.Context, force bool, only string) error 
 		}
 	}
 	sort.Strings(paths)
+	if len(paths) > 0 && beforeReceive != nil {
+		if err := beforeReceive(); err != nil {
+			return err
+		}
+	}
 	for _, p := range paths {
 		data, err := m.C.download(ctx, m.remote[p])
 		if err != nil {

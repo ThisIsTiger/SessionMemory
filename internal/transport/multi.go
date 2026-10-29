@@ -8,9 +8,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"sync"
+
+	"session-memory/internal/platform"
 )
 
 // Account is one Weiyun account that holds a full copy of the vault.
@@ -104,30 +105,142 @@ func (m *MultiMirror) setBehind(label string, v bool) {
 		return
 	}
 	cur[label] = v
-	os.MkdirAll(filepath.Dir(m.StateFile), 0700)
-	if b, err := json.Marshal(cur); err == nil {
-		os.WriteFile(m.StateFile, b, 0600)
+	_ = m.saveBehind(cur)
+}
+
+func (m *MultiMirror) saveBehind(state map[string]bool) error {
+	b, err := json.Marshal(state)
+	if err != nil {
+		return err
 	}
+	return platform.AtomicWrite(m.StateFile, b, 0600)
+}
+
+// markReceived runs before downloads enter the shared local cache. Persist the
+// repair work first: if this process stops after the download, a future Pull
+// will find the cached file and must still know it needs replication. Unknown
+// accounts remain unknown until CatchUp has read the complete remote union.
+// The caller holds m.mu.
+func (m *MultiMirror) markReceived() error {
+	if m.StateFile == "" {
+		return nil
+	}
+	state := m.behind()
+	changed := false
+	for _, a := range m.Accounts {
+		if level, known := state[a.Label]; known && !level {
+			state[a.Label] = true
+			changed = true
+		}
+	}
+	if changed {
+		return m.saveBehind(state)
+	}
+	return nil
+}
+
+// pullAccount is called with m.mu held; Mirror holds its own lock while it
+// inventories and downloads, including the durable pre-download repair mark.
+func (m *MultiMirror) pullAccount(ctx context.Context, a Account, force bool, only string) error {
+	a.M.mu.Lock()
+	defer a.M.mu.Unlock()
+	return a.M.pullWithReceiveLocked(ctx, force, only, m.markReceived)
+}
+
+// ---- which accounts have been read in full ----
+
+// An account's content is "read" once it has been pulled into the local copy
+// in full. The local copy only grows, so this stays true; later files reach it
+// through ordinary pulls, and markReceived dirties the accounts that are level
+// when they do. The record keeps an account that cannot be reached from making
+// CatchUp pull the others in full again on every round.
+func (m *MultiMirror) readFile() string { return m.StateFile + ".read" }
+
+func (m *MultiMirror) read() map[string]bool {
+	out := map[string]bool{}
+	if b, err := os.ReadFile(m.readFile()); err == nil {
+		json.Unmarshal(b, &out)
+	}
+	return out
+}
+
+func (m *MultiMirror) saveRead(read map[string]bool) error {
+	b, err := json.Marshal(read)
+	if err != nil {
+		return err
+	}
+	return platform.AtomicWrite(m.readFile(), b, 0600)
 }
 
 // CatchUp uploads to every account that missed a write what it lacks, for the
 // accounts that can be asked now.
+//
+// An account never seen before gets the whole local copy, so the local copy
+// must first hold everything every account has. The same goes once, after an
+// upgrade: older versions marked accounts level without accounting for files
+// received from elsewhere, so their marks (and any mark made since) say nothing
+// until the whole vault has been read; then they are dropped and every account
+// is brought level from the complete local copy.
 func (m *MultiMirror) CatchUp(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.StateFile == "" {
 		return nil
 	}
+	marker := m.StateFile + ".received-v1"
+	settled := true
+	if _, err := os.Stat(marker); os.IsNotExist(err) {
+		settled = false
+	} else if err != nil {
+		return err
+	}
 	behind := m.behind()
-	// An account never seen before gets the whole local copy, so the copy must
-	// first hold everything the other accounts have.
-	complete := true
+	need := !settled
 	for _, a := range m.Accounts {
 		if _, known := behind[a.Label]; !known {
-			_, failed, _ := m.each(func(a Account) error { return a.M.Pull(ctx) })
-			complete = len(failed) == 0
-			break
+			need = true
 		}
+	}
+	read := m.read()
+	if need {
+		var saveErr error
+		m.each(func(a Account) error {
+			if read[a.Label] {
+				return nil
+			}
+			if err := m.pullAccount(ctx, a, true, ""); err != nil {
+				return err
+			}
+			read[a.Label] = true
+			if err := m.saveRead(read); err != nil && saveErr == nil {
+				saveErr = err
+			}
+			return nil
+		})
+		if saveErr != nil {
+			return saveErr
+		}
+	}
+	complete := true
+	for _, a := range m.Accounts {
+		complete = complete && read[a.Label]
+	}
+	if !settled {
+		if complete {
+			state := m.behind()
+			for _, a := range m.Accounts {
+				delete(state, a.Label)
+			}
+			if err := m.saveBehind(state); err != nil {
+				return err
+			}
+			if err := platform.AtomicWrite(marker, []byte("1\n"), 0600); err != nil {
+				return err
+			}
+		}
+		behind = map[string]bool{} // nothing is known to be level yet
+	} else {
+		behind = m.behind() // receives may have dirtied previously known accounts
 	}
 	var first error
 	for _, a := range m.Accounts {
@@ -184,9 +297,7 @@ func (m *MultiMirror) Put(ctx context.Context, path string, r io.Reader) error {
 func (m *MultiMirror) List(ctx context.Context, prefix string) ([]Entry, error) {
 	m.mu.Lock()
 	ok, _, first := m.each(func(a Account) error {
-		a.M.mu.Lock()
-		defer a.M.mu.Unlock()
-		return a.M.pullLocked(ctx, false, firstSegment(prefix))
+		return m.pullAccount(ctx, a, false, firstSegment(prefix))
 	})
 	m.mu.Unlock()
 	if ok == 0 && len(m.Accounts) > 0 {
@@ -207,9 +318,7 @@ func (m *MultiMirror) Get(ctx context.Context, path string) (io.ReadCloser, erro
 		if found != nil {
 			return nil
 		}
-		a.M.mu.Lock()
-		err := a.M.pullLocked(ctx, true, firstSegment(path))
-		a.M.mu.Unlock()
+		err := m.pullAccount(ctx, a, true, firstSegment(path))
 		if err != nil {
 			return err
 		}
@@ -237,7 +346,7 @@ func (m *MultiMirror) Stable(ctx context.Context, e Entry) (bool, error) {
 func (m *MultiMirror) Pull(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	ok, _, first := m.each(func(a Account) error { return a.M.Pull(ctx) })
+	ok, _, first := m.each(func(a Account) error { return m.pullAccount(ctx, a, true, "") })
 	if ok == 0 && len(m.Accounts) > 0 {
 		return first
 	}

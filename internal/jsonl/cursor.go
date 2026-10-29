@@ -32,6 +32,42 @@ type Cursor struct {
 	TailHash string `json:"tail_hash,omitempty"`
 }
 
+// CursorBuilder fingerprints bytes as they are consumed, without reopening a
+// mutable path. Its zero value is ready to use and retains at most two windows.
+// Unlike NewCursor, it has no file identity: FileID is optional metadata.
+type CursorBuilder struct {
+	size       int64
+	head, tail []byte
+}
+
+func (b *CursorBuilder) Write(p []byte) (int, error) {
+	n := len(p)
+	b.size += int64(n)
+	if len(b.head) < hashWindow {
+		b.head = append(b.head, p[:min(n, hashWindow-len(b.head))]...)
+	}
+	if n >= hashWindow {
+		b.tail = append(b.tail[:0], p[n-hashWindow:]...)
+	} else {
+		if excess := len(b.tail) + n - hashWindow; excess > 0 {
+			b.tail = b.tail[:copy(b.tail, b.tail[excess:])]
+		}
+		b.tail = append(b.tail, p...)
+	}
+	return n, nil
+}
+
+// Cursor returns the fingerprint of exactly the bytes written so far.
+func (b *CursorBuilder) Cursor(generation int) Cursor {
+	c := Cursor{Generation: generation, Offset: b.size}
+	if b.size > 0 {
+		head, tail := sha256.Sum256(b.head), sha256.Sum256(b.tail)
+		c.HeadHash = hex.EncodeToString(head[:])
+		c.TailHash = hex.EncodeToString(tail[:])
+	}
+	return c
+}
+
 // Status is the outcome of checking a cursor against its file.
 type Status int
 

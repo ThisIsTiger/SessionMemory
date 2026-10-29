@@ -243,18 +243,20 @@ func TestSetupLastLineSaysWhatHappened(t *testing.T) {
 	}
 }
 
-// A relay that cannot finish now (quota, no network, sessions needing
-// attention) is not a failed setup: the background sync finishes it. Anything
-// else is.
+// A relay that cannot finish now (quota, no network) is not a failed setup:
+// the background sync finishes it. Sessions that need a decision are reported
+// apart, because waiting never fixes them. Anything else is a failure.
 func TestSetupWhenTheFirstUploadCannotFinish(t *testing.T) {
 	for name, c := range map[string]struct {
 		relayOut string
 		pending  bool
+		action   string // the NEEDS_ACTION line must start with this
 	}{
-		"quota":    {"error: internal: weiyun: weiyun.list: weiyun daily quota used up (type:business, code:117401, msg:rate limit exceeded)", true},
-		"recovery": {"error: recovery_needed: 1 session(s) need attention (conflict or divergence); see the messages above", true},
-		"network":  {"error: internal: Post \"https://x/mcp\": dial tcp: lookup x: no such host", true},
-		"other":    {"error: internal: the disk exploded", false},
+		"quota":       {"error: internal: weiyun: weiyun.list: weiyun daily quota used up (type:business, code:117401, msg:rate limit exceeded)", true, ""},
+		"recovery":    {"project app: updated 0, up to date 1, 2 need attention\nerror: recovery_needed: 2 session(s) need attention (conflict or divergence); see the messages above", false, "NEEDS_ACTION: 2 sessions did not sync"},
+		"interrupted": {"error: recovery_needed: files changed after interrupted install; manual recovery required", false, "NEEDS_ACTION: some sessions did not sync"},
+		"network":     {"error: internal: Post \"https://x/mcp\": dial tcp: lookup x: no such host", true, ""},
+		"other":       {"error: internal: the disk exploded", false, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
@@ -268,7 +270,13 @@ func TestSetupWhenTheFirstUploadCannotFinish(t *testing.T) {
 				return "", nil, false
 			})
 			code, out, errs := A.run("setup", "--days", "36500")
-			if c.pending {
+			if c.action != "" {
+				// connected, but the blocked sessions are not promised to fix themselves
+				if code != 0 || !strings.Contains(out, c.action) || strings.Contains(out, "PENDING") || strings.Contains(out, "finish by itself") ||
+					!strings.HasPrefix(lastLine(out), "done: FIRST_COMPUTER") {
+					t.Fatalf("exit %d\n%s\n%s", code, out, errs)
+				}
+			} else if c.pending {
 				if code != 0 || !strings.Contains(out, "PENDING: connected; the first upload will finish by itself") || !strings.HasPrefix(lastLine(out), "done: FIRST_COMPUTER") {
 					t.Fatalf("exit %d\n%s\n%s", code, out, errs)
 				}
@@ -422,7 +430,7 @@ func TestInstallGuideCoversEveryMarker(t *testing.T) {
 	for _, m := range regexp.MustCompile(`\b(NEEDS_[A-Z_]+|PENDING|FIRST_COMPUTER|JOINED|ALREADY_CONNECTED)\b`).FindAllString(string(src), -1) {
 		markers[m] = true
 	}
-	for _, want := range []string{"NEEDS_WEIYUN", "NEEDS_USER", "PENDING", "FIRST_COMPUTER", "JOINED", "ALREADY_CONNECTED"} {
+	for _, want := range []string{"NEEDS_WEIYUN", "NEEDS_USER", "NEEDS_ACTION", "PENDING", "FIRST_COMPUTER", "JOINED", "ALREADY_CONNECTED"} {
 		if !markers[want] {
 			t.Errorf("the program no longer prints %s?", want)
 		}

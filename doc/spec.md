@@ -984,6 +984,7 @@ type InstallData struct {
 	Backed     []string             `json:"backed,omitempty"`  // relative paths copied to BackupDir
 	Created    []string             `json:"created,omitempty"` // files that did not exist before
 	Written    []agent.PlannedWrite `json:"written,omitempty"`
+	Planned    []agent.PlannedWrite `json:"planned,omitempty"` // expected file hashes, durable before writing
 	Landing    string               `json:"landing,omitempty"` // "choice" for a §9.2 landing
 	Receipt    *agent.Receipt       `json:"receipt,omitempty"` // set at StVerified
 	NewBinding *session.Binding     `json:"new_binding,omitempty"`
@@ -1110,6 +1111,8 @@ type RecoveryReport struct {
 | `rolled_back` | 已回滚 | Archive |
 
 Undo 的做法：对 `Data.Backed` 中每个文件，用备份覆盖回去；对 `Data.Created` 中每个文件，删除；恢复完成后写 `rolled_back`。**回滚后目标目录必须与安装前逐字节一致**（测试要求，§14.4）。
+
+启动 Undo 前先核对文件仍等于预期写入字节或备份。旧 journal 缺少 `Planned` 时使用 `Written` 的哈希，并对 `Backed` / `Created` 的完整集合检查；既没有预期哈希、又不等于备份的现存文件不得删除或覆盖。发现新增内容、删除或无法证明安全的旧状态时，保留文件、备份与 journal，返回 `recovery_needed`。WorkBuddy 的文件/登记行一致性由其 RegistryUndo 处理器验证。
 
 ### 4.4 安装事务的写入规则
 
@@ -1815,8 +1818,11 @@ type Adapter interface {
 6. 读到 io.EOF：尾部不完整的行不消费（Pending 字节只记入 Diag）；把剩余累积字节切成最后一个 Segment
    InvalidRecordError / RecordTooLargeError：State=CaptureUnsafe，游标停在该记录之前，
    已切出的 Segment 仍然有效（调用方提交这部分进度并设置 Binding.Unsafe）
-7. 新 Cursor = jsonl.NewCursor(文件, generation, 最后一个 Segment 的 end)（zstd 的 FileID/HeadHash/TailHash
-   留空，校验靠全前缀）
+7. plain 有新 Segment 时，重新读取完整已消费前缀，逐段验证 raw_hash（包括旧 Segment），并用
+   jsonl.CursorBuilder 从同一条已校验字节流计算新 Cursor；不从另一次打开的可变路径认证游标。
+   不一致返回 ErrChangedDuringCapture，不提交游标；无新字节且状态正常时保留旧 Cursor。
+   CursorBuilder 的 FileID 留空（仅诊断信息），HeadHash / TailHash 与磁盘 Cursor 的格式相同。
+   zstd 的 FileID/HeadHash/TailHash 留空，校验靠全前缀。
 ```
 
 **`.jsonl` 与 `.jsonl.zst` 互转不是 Replaced**：Artifact 的 `path` 是逻辑名，offset/哈希基于解压流；同一条流压缩或解压，前缀字节不变，校验通过，不新增 generation。

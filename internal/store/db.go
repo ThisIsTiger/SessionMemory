@@ -436,6 +436,18 @@ func (s *FS) SaveBinding(t Tx, b session.Binding) error {
 	if b.Artifacts == nil {
 		b.Artifacts = map[string]session.ArtifactState{}
 	}
+	if b.State == session.StateActive {
+		// the file is the truth: refuse before writing it, not after the view rejects it
+		var other string
+		err := s.db.QueryRow(`SELECT binding_id FROM bindings_view WHERE session_id=? AND agent=? AND state=? AND binding_id<>?`,
+			b.SessionID, b.AgentProfile.Agent, session.StateActive, b.BindingID).Scan(&other)
+		if err == nil {
+			return errcode.New(errcode.Conflict, "another active binding exists for this session and agent")
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
 	raw, err := json.MarshalIndent(b, "", "  ")
 	if err != nil {
 		return err

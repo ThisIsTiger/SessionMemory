@@ -12,7 +12,9 @@
 > | A12 | `--plan` 对任务项目不再创建目录；真实运行仍会创建 | `cmd/session-memory/project_test.go`（固定装置没有 WorkBuddy 注册库，安装本身停在“需先创建本地会话”，故只断言目录行为，未覆盖完整成功安装） |
 > | A14 | `verify --deep` 对 blob 重算内容摘要 | `internal/streamcap/streamcap_test.go` |
 >
-> 仍待修复：A05–A10、A13、A15、A16（9 个失败断言，另有 1 个实机守卫用例默认跳过）。下文统计数字（16 个缺陷、54 个失败事件等）是修复前的审查结果。
+> **后续已修复 (A05, A06, A07, A13)**：A05 由 `WriteInput.BindingState` + WorkBuddy Writer 的 blob 基线判断修复（正式测试 `internal/source/workbuddy/writer_test.go` 的 `TestManagedMeta*`）；A06 由 `canonical.Item.Subagent` + `convert` 的过滤与同流配对修复（`internal/convert/convert_test.go`、`internal/source/workbuddy/convert_test.go`）；A07 由 `SaveBinding` 写文件前检查唯一 active binding 修复（`internal/engine/engine_test.go`）；A13 由 `App.fail` 在已输出 JSON 文档后改写 stderr 修复（`cmd/session-memory/json_output_test.go`）。对应 overlay 已移出 `run_audit.py`。
+>
+> 仍待修复：A08、A09、A10、A15、A16（5 个失败断言，另有 1 个实机守卫用例默认跳过）。下文统计数字（16 个缺陷、54 个失败事件等）是修复前的审查结果。
 
 ## 结论与范围
 
@@ -240,6 +242,6 @@ go test ./internal/vault -run '^$' -fuzz '^FuzzObjectAuthentication$' -fuzztime=
 go test ./internal/vault -run '^$' -fuzz '^FuzzBundleRejectsInvalidKDF$' -fuzztime=25s -parallel=2
 ```
 
-run_audit.py 自动生成 overlay 与日志，打印结构化汇总和日志位置。修复 A01–A04、A11、A12、A14 之后，当前预期 9 个不同顶层失败测试（A05–A10、A13、A15、A16），每轮 9 个失败事件、1 个跳过（实机守卫）；修复前为 16 个失败测试、18 个失败事件、三轮 54 个。真实 WorkBuddy 守卫默认跳过，可用已记录的单独实机结果判断，不要把跳过当通过。若 summary 的 build_errors 非空，先处理构建错误，不能把它算成缺陷复现。
+run_audit.py 自动生成 overlay 与日志，打印结构化汇总和日志位置。修复 A01–A04、A11、A12、A14 之后，当前预期 5 个不同顶层失败测试（A08、A09、A10、A15、A16），每轮 5 个失败事件、1 个跳过（实机守卫）；修复前为 16 个失败测试、18 个失败事件、三轮 54 个。真实 WorkBuddy 守卫默认跳过，可用已记录的单独实机结果判断，不要把跳过当通过。若 summary 的 build_errors 非空，先处理构建错误，不能把它算成缺陷复现。
 
 建议先修 A01–A03，避免覆盖和漏采；随后修 A04–A06，保证备份和跨 Agent 接续语义；再处理失败操作的一致性、JSON 协议、只读预览与完整校验。将相应 overlay 断言移入正式测试集后，再执行同一套矩阵。已有失败反例不能因其他正常测试通过而视为解决。

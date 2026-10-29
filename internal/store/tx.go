@@ -250,11 +250,34 @@ func firstNonEmpty(a, b string) string {
 // checkInstallUntouched refuses an undo that would overwrite or delete what
 // someone wrote after the crash: every planned file must still be the bytes the
 // install wrote, or (not written yet, or already rolled back) the backup.
-// Journals written before Planned existed are undone as before.
+// Older journals use Written hashes when available. Paths whose expected
+// written bytes are unknown may only be absent (created) or equal the backup.
 func checkInstallUntouched(d InstallData, journal string) error {
-	for _, pw := range d.Planned {
-		cur, err := os.ReadFile(filepath.Join(d.Home, filepath.FromSlash(pw.Path)))
-		backup, berr := os.ReadFile(filepath.Join(d.BackupDir, filepath.FromSlash(pw.Path)))
+	if d.RegistryUndo != "" {
+		// The vendor handler validates its complete file/row postconditions.
+		return nil
+	}
+	expected := map[string]string{}
+	for _, writes := range [][]agent.PlannedWrite{d.Written, d.Planned} {
+		for _, pw := range writes {
+			expected[pw.Path] = pw.SHA256
+		}
+	}
+	for _, paths := range [][]string{d.Backed, d.Created} {
+		for _, path := range paths {
+			if _, ok := expected[path]; !ok {
+				expected[path] = "" // legacy journal interrupted before Written persisted
+			}
+		}
+	}
+	var paths []string
+	for path := range expected {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		cur, err := os.ReadFile(filepath.Join(d.Home, filepath.FromSlash(path)))
+		backup, berr := os.ReadFile(filepath.Join(d.BackupDir, filepath.FromSlash(path)))
 		switch {
 		case os.IsNotExist(err):
 			if berr == nil { // a backed-up file was deleted
@@ -262,9 +285,9 @@ func checkInstallUntouched(d InstallData, journal string) error {
 			}
 		case err != nil:
 			return err
-		case sha256hex(cur) == pw.SHA256, berr == nil && bytes.Equal(cur, backup):
+		case expected[path] != "" && sha256hex(cur) == expected[path], berr == nil && bytes.Equal(cur, backup):
 		default:
-			return errcode.New(errcode.RecoveryNeeded, "files changed after the interrupted install; nothing was rolled back (journal "+journal+")")
+			return errcode.New(errcode.RecoveryNeeded, "file changed or cannot be verified after the interrupted install: "+path+"; nothing was rolled back (journal "+journal+")")
 		}
 	}
 	return nil

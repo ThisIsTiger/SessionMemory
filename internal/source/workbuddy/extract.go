@@ -110,7 +110,11 @@ func (a *Adapter) Extract(ctx context.Context, snap agent.SnapshotReader, emit f
 		if err != nil {
 			return err
 		}
+		sub := strings.Contains(art.Path, "/subagents/")
 		for _, it := range items {
+			if sub {
+				it.Subagent = art.Path
+			}
 			if err := emit(it); err != nil {
 				return err
 			}

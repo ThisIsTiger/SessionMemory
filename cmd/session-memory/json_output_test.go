@@ -4,12 +4,15 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"session-memory/internal/testutil/codexgen"
 )
 
-func TestAuditSyncFailureJSONIsOneDocument(t *testing.T) {
+// With --json, stdout holds exactly one document even when the command fails
+// after it has printed its result; the failure goes to stderr and the exit code.
+func TestSyncFailureJSONIsOneDocument(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("file permissions do not stop root")
 	}
@@ -32,8 +35,18 @@ func TestAuditSyncFailureJSONIsOneDocument(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("setup: unreadable source must fail: %s", errout)
 	}
-	if !json.Valid([]byte(out)) {
-		t.Fatalf("failed sync emitted multiple JSON documents: %s", out)
+	dec := json.NewDecoder(strings.NewReader(out))
+	var doc map[string]any
+	if err := dec.Decode(&doc); err != nil || dec.More() {
+		t.Fatalf("failed sync must emit one JSON document: %q (%v)", out, err)
+	}
+	if !strings.Contains(errout, "error:") {
+		t.Fatalf("the failure must still be reported on stderr: %q", errout)
+	}
+	// a failure before any result is still the usual error document
+	code, out, _ = a.run("--json", "config", "get", "no.such")
+	var env struct{ Error struct{ Code string } }
+	if code == 0 || json.Unmarshal([]byte(out), &env) != nil || env.Error.Code == "" {
+		t.Fatalf("error envelope: %d %q", code, out)
 	}
 }
-

@@ -1,0 +1,3703 @@
+{
+  "date": "2026-10-29",
+  "baseline_head": "b219d94cd23660b14af8758b933eb112ae0628c7",
+  "scope": "open-source readiness review of fixed worktree, reachable Git history, published darwin/arm64 asset, isolated behavior tests and read-only local WorkBuddy probe",
+  "business_code_changed_by_this_review": false,
+  "source_sha256": {
+    "go.mod": "10ea77b37720feae6ac2bfa8aa3854327fe56b5fdb6b2983aa2dcb0f3f6a94cb",
+    ".github/workflows/release.yml": "41c3db6a0352aa25095befe3fb26f8c70f3b23e5a4b36b727e9abaa01108568a",
+    ".github/workflows/test.yml": "760c48b8d955bd9e9f3a591e349c0d41a89599ba6881b47d4147b2b98641bc6a",
+    "INSTALL.md": "c8279a7467ead7ff505cb51f8cb47259194775f84727f942950fab7b43733391",
+    "README.md": "c5b374c4c4caf91b5f637187f575cf079d26d27fce01d0584ba5609c68371fc7",
+    "install.sh": "de27d76910af28c64475a9a06b9833f92841f3eda5b4a02b749b155fac4b3f81",
+    "internal/transport/weiyun.go": "3b696af6502e52eec33ef41d566ec5a1987f805d2e3de0b3ead80be5e7deec01",
+    "cmd/session-memory/weiyun.go": "c43c5f344a869746012592b4c25fd6a562a1b14ee3d1ed64447620776c68096c",
+    "cmd/session-memory/cmd_onboard.go": "7dc8a486696264d79c4025a7516a7fd008d8cec4a0d2b44ddd94670df0d30d18",
+    "cmd/session-memory/app.go": "ead53486501170a2cb2afddd45b133bc632d1724d28725e63c13f2d3e42a3bf7",
+    "cmd/session-memory/cmd_autosync.go": "404a3bdc258a2fbe84a6b4608dbfffa989ebf0e247e3028188ffa106d11ad787"
+  },
+  "remote": {
+    "visibility": "public",
+    "default_branch": "main",
+    "main_commit": "b219d94cd23660b14af8758b933eb112ae0628c7",
+    "release": "v0.1.0",
+    "release_commit": "2649c402ba4c808d7d2637b431c0b9601c74d462",
+    "release_published_at_shanghai": "2026-10-29 11:29:29 +08:00",
+    "release_url": "https://github.com/ThisIsTiger/SessionMemory/releases/tag/v0.1.0",
+    "asset_sha256": "22dfc50ab29d574ae5588724fb01e16848cee3b4aca867a9439f9994ec7f6cbd",
+    "asset_go_version": "go1.26.0",
+    "previous_three_worktree_fixes_in_release": false
+  },
+  "credential_scan": {
+    "exact_match_scan": {
+      "local_skill_credential_found": true,
+      "credential_values_emitted": false,
+      "reachable_commits": 22,
+      "unique_history_blobs": 444,
+      "worktree_files": 256,
+      "exact_credential_matches": []
+    },
+    "gitleaks_version": "v8.24.3",
+    "gitleaks_current_findings": 0,
+    "gitleaks_history_findings": [
+      {
+        "rule": "github-pat",
+        "path": "internal/source/codex/codex_test.go",
+        "line": 452,
+        "commit": "be965164a48c4dcf2899eae2702f3ac58196acae",
+        "classification": "synthetic canary in TestParserCanaryInExcludedRecordsNeverLeaks; not a confirmed real credential"
+      }
+    ],
+    "real_local_skill_token_found_in_release_binary": false,
+    "credential_values_written_to_report": false,
+    "external_skill_config_permissions": "0644; parent .mcporter 0755; home 0750, so readable by principals with directory traversal; outside repository"
+  },
+  "full_race_dev_failpoint_suite": {
+    "command": "go test -race -tags dev,failpoint -count=1 -timeout=12m -json ./...",
+    "returncode": 0,
+    "test_and_subtest_events": {
+      "pass": 437,
+      "skip": 3
+    },
+    "top_level_events": {
+      "pass": 280,
+      "skip": 3
+    },
+    "package_results": {
+      "session-memory/internal/agent": "skip",
+      "session-memory/internal/canonical": "skip",
+      "session-memory/internal/bridge": "pass",
+      "session-memory/internal/canonjson": "pass",
+      "session-memory/internal/checkpoint": "pass",
+      "session-memory/internal/config": "pass",
+      "session-memory/internal/conversation": "pass",
+      "session-memory/internal/convert": "pass",
+      "session-memory/internal/device": "pass",
+      "session-memory/internal/errcode": "pass",
+      "session-memory/internal/failpoint": "pass",
+      "session-memory/internal/jsonl": "pass",
+      "session-memory/internal/logx": "pass",
+      "session-memory/internal/p0": "pass",
+      "session-memory/internal/platform": "pass",
+      "session-memory/internal/session": "pass",
+      "session-memory/internal/project": "pass",
+      "session-memory/internal/testutil/gitrepo": "skip",
+      "session-memory/internal/source/claude": "pass",
+      "session-memory/internal/store": "pass",
+      "session-memory/internal/streamcap": "pass",
+      "session-memory/internal/testutil/codexgen": "pass",
+      "session-memory/internal/vault": "pass",
+      "session-memory/internal/transport": "pass",
+      "session-memory/internal/engine": "pass",
+      "session-memory/internal/source/codex": "pass",
+      "session-memory/internal/source/workbuddy": "pass",
+      "session-memory/internal/sync": "pass",
+      "session-memory/cmd/session-memory": "pass"
+    },
+    "skipped_tests": [
+      "TestRegisterLive",
+      "TestLiveConvertToCodex",
+      "TestLiveWeiyunTwoMachines"
+    ],
+    "build_or_race_errors": [],
+    "log": "/tmp/session-memory-release-review-20261029/full-race.jsonl"
+  },
+  "deferred_issues_retested": {
+    "command": [
+      "go",
+      "test",
+      "-tags",
+      "dev,failpoint",
+      "-overlay",
+      "/private/tmp/session-memory-release-review-20261029/deferred/overlay.json",
+      "-run",
+      "^TestAudit",
+      "-count",
+      "1",
+      "-timeout",
+      "5m",
+      "-json",
+      "-race",
+      "./internal/engine",
+      "./internal/transport",
+      "./internal/source/workbuddy",
+      "./cmd/session-memory"
+    ],
+    "returncode": 1,
+    "test_and_subtest_events": {
+      "fail": 9,
+      "skip": 1
+    },
+    "failing_tests": {
+      "TestAuditManagedMetaUpdate": 1,
+      "TestAuditMirrorRejectsEqualLengthRemoteCollision": 1,
+      "TestAuditMultiMirrorRetriesMissingKey": 1,
+      "TestAuditRebuildReportsDamagedRevision": 1,
+      "TestAuditRejectedBindingLeavesNoFile": 1,
+      "TestAuditRemovedArtifactChange": 1,
+      "TestAuditSoftDeleteInWAL": 1,
+      "TestAuditSubagentsExcludedFromConversion": 1,
+      "TestAuditSyncFailureJSONIsOneDocument": 1
+    },
+    "distinct_failing_top_level_tests": 9,
+    "build_errors": [],
+    "data_races": [],
+    "log": "/private/tmp/session-memory-release-review-20261029/deferred/audit.jsonl"
+  },
+  "new_findings": [
+    {
+      "id": "S01",
+      "priority": 1,
+      "title": "Go 1.26.0 release toolchain has known vulnerable standard-library call paths",
+      "evidence": "govulncheck 1.9.0 CLI source scan and go version -m released artifact",
+      "scope_note": "27 static symbol-reachable advisory IDs do not establish 27 exploitable vulnerabilities; no exploits attempted"
+    },
+    {
+      "id": "S02",
+      "priority": 2,
+      "title": "MCP credentials are forwarded on cross-host redirects",
+      "tests": [
+        "TestReleaseMCPRedirectDoesNotForwardCredential"
+      ],
+      "scope_note": "requires MCP endpoint or configured proxy to redirect; no evidence of a real-world leak"
+    },
+    {
+      "id": "S03",
+      "priority": 2,
+      "title": "Errors expose signed download URLs and reflected MCP credentials",
+      "tests": [
+        "TestReleaseNetworkErrorRedactsSignedDownloadURL",
+        "TestReleaseServerErrorRedactsMCPToken"
+      ],
+      "scope_note": "signed URL case needs only a network failure; raw MCP token case requires server reflection; synthetic fixtures only"
+    },
+    {
+      "id": "U01",
+      "priority": 2,
+      "title": "Skill reauthorization does not refresh saved credentials",
+      "tests": [
+        "TestReleaseSkillReauthorizationRefreshesSavedToken"
+      ],
+      "scope_note": "tested credential selection/refresh helpers used by setup; did not expire or use a real credential"
+    },
+    {
+      "id": "U02",
+      "priority": 2,
+      "title": "Manual recovery is classified as an automatically recoverable setup delay",
+      "tests": [
+        "TestReleaseSetupDoesNotPromiseAutomaticRecovery"
+      ],
+      "scope_note": "isolated setup with fake relay recovery_needed; current fixture proves misleading output, not actual cloud recovery"
+    }
+  ],
+  "govulncheck": {
+    "symbol_reachable_advisory_count": 27,
+    "findings": [
+      {
+        "id": "GO-2026-4599",
+        "summary": "Incorrect enforcement of email constraints in crypto/x509",
+        "fixed": "v1.26.1",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/x509",
+            "function": "Verify",
+            "receiver": "*Certificate",
+            "position": {
+              "filename": "src/crypto/x509/verify.go",
+              "offset": 18256,
+              "line": 538,
+              "column": 23
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "anyValidVerifiedChain",
+            "position": {
+              "filename": "src/crypto/tls/common.go",
+              "offset": 70425,
+              "line": 1890,
+              "column": 28
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "loadSession",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/handshake_client.go",
+              "offset": 13524,
+              "line": 420,
+              "column": 28
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "clientHandshake",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/handshake_client.go",
+              "offset": 7806,
+              "line": 236,
+              "column": 55
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "handshakeContext",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 49331,
+              "line": 1562,
+              "column": 32
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "HandshakeContext",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 48150,
+              "line": 1516,
+              "column": 27
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "Handshake",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 47439,
+              "line": 1500,
+              "column": 27
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "Write",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 39074,
+              "line": 1215,
+              "column": 23
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "fmt",
+            "function": "Fprintf",
+            "position": {
+              "filename": "src/fmt/print.go",
+              "offset": 6683,
+              "line": 225,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "fail",
+            "receiver": "*App",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1770,
+              "line": 73,
+              "column": 14
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1172,
+              "line": 51,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-4600",
+        "summary": "Panic in name constraint checking for malformed certificates in crypto/x509",
+        "fixed": "v1.26.1",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/x509",
+            "function": "Verify",
+            "receiver": "*Certificate",
+            "position": {
+              "filename": "src/crypto/x509/verify.go",
+              "offset": 18256,
+              "line": 538,
+              "column": 23
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "anyValidVerifiedChain",
+            "position": {
+              "filename": "src/crypto/tls/common.go",
+              "offset": 70425,
+              "line": 1890,
+              "column": 28
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "loadSession",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/handshake_client.go",
+              "offset": 13524,
+              "line": 420,
+              "column": 28
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "clientHandshake",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/handshake_client.go",
+              "offset": 7806,
+              "line": 236,
+              "column": 55
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "handshakeContext",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 49331,
+              "line": 1562,
+              "column": 32
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "HandshakeContext",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 48150,
+              "line": 1516,
+              "column": 27
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "Handshake",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 47439,
+              "line": 1500,
+              "column": 27
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "Write",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 39074,
+              "line": 1215,
+              "column": 23
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "fmt",
+            "function": "Fprintf",
+            "position": {
+              "filename": "src/fmt/print.go",
+              "offset": 6683,
+              "line": 225,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "fail",
+            "receiver": "*App",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1770,
+              "line": 73,
+              "column": 14
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1172,
+              "line": 51,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-4601",
+        "summary": "Incorrect parsing of IPv6 host literals in net/url",
+        "fixed": "v1.26.1",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/url",
+            "function": "Parse",
+            "position": {
+              "filename": "src/net/url/url.go",
+              "offset": 11353,
+              "line": 399,
+              "column": 6
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/project",
+            "function": "NormalizeRemote",
+            "position": {
+              "filename": "internal/project/state.go",
+              "offset": 1772,
+              "line": 56,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/project",
+            "function": "Inspect",
+            "position": {
+              "filename": "internal/project/state.go",
+              "offset": 3372,
+              "line": 101,
+              "column": 44
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/engine",
+            "function": "Checkpoint",
+            "receiver": "*Engine",
+            "position": {
+              "filename": "internal/engine/capture.go",
+              "offset": 3510,
+              "line": 105,
+              "column": 30
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "newAdoptCmd$1",
+            "position": {
+              "filename": "cmd/session-memory/cmd_adopt.go",
+              "offset": 3847,
+              "line": 103,
+              "column": 42
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "execute",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 29829,
+              "line": 1015,
+              "column": 19
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "ExecuteC",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 32968,
+              "line": 1148,
+              "column": 19
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "Execute",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 31057,
+              "line": 1071,
+              "column": 22
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1138,
+              "line": 50,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-4602",
+        "summary": "FileInfo can escape from a Root in os",
+        "fixed": "v1.26.1",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "os",
+            "function": "ReadDir",
+            "position": {
+              "filename": "src/os/dir.go",
+              "offset": 4131,
+              "line": 114,
+              "column": 6
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/config",
+            "function": "homes",
+            "receiver": "Config",
+            "position": {
+              "filename": "internal/config/config.go",
+              "offset": 7450,
+              "line": 216,
+              "column": 30
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/config",
+            "function": "CodexHomes",
+            "receiver": "Config",
+            "position": {
+              "filename": "internal/config/config.go",
+              "offset": 6853,
+              "line": 199,
+              "column": 16
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/source/codex",
+            "function": "Probe",
+            "receiver": "*Adapter",
+            "position": {
+              "filename": "internal/source/codex/probe.go",
+              "offset": 534,
+              "line": 19,
+              "column": 39
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "newAgentCmd$1",
+            "position": {
+              "filename": "cmd/session-memory/cmd_agent.go",
+              "offset": 568,
+              "line": 22,
+              "column": 39
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "execute",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 29829,
+              "line": 1015,
+              "column": 19
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "ExecuteC",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 32968,
+              "line": 1148,
+              "column": 19
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "Execute",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 31057,
+              "line": 1071,
+              "column": 22
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1138,
+              "line": 50,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-4866",
+        "summary": "Case-sensitive excludedSubtrees name constraints cause Auth Bypass in crypto/x509",
+        "fixed": "v1.26.2",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/x509",
+            "function": "Verify",
+            "receiver": "*Certificate",
+            "position": {
+              "filename": "src/crypto/x509/verify.go",
+              "offset": 18256,
+              "line": 538,
+              "column": 23
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "anyValidVerifiedChain",
+            "position": {
+              "filename": "src/crypto/tls/common.go",
+              "offset": 70425,
+              "line": 1890,
+              "column": 28
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "loadSession",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/handshake_client.go",
+              "offset": 13524,
+              "line": 420,
+              "column": 28
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "clientHandshake",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/handshake_client.go",
+              "offset": 7806,
+              "line": 236,
+              "column": 55
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "handshakeContext",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 49331,
+              "line": 1562,
+              "column": 32
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "HandshakeContext",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 48150,
+              "line": 1516,
+              "column": 27
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "Handshake",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 47439,
+              "line": 1500,
+              "column": 27
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "Write",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 39074,
+              "line": 1215,
+              "column": 23
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "fmt",
+            "function": "Fprintf",
+            "position": {
+              "filename": "src/fmt/print.go",
+              "offset": 6683,
+              "line": 225,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "fail",
+            "receiver": "*App",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1770,
+              "line": 73,
+              "column": 14
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1172,
+              "line": 51,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-4870",
+        "summary": "Unauthenticated TLS 1.3 KeyUpdate record can cause persistent connection retention and DoS in crypto/tls",
+        "fixed": "v1.26.2",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "Write",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 38821,
+              "line": 1202,
+              "column": 16
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "fmt",
+            "function": "Fprintf",
+            "position": {
+              "filename": "src/fmt/print.go",
+              "offset": 6683,
+              "line": 225,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "fail",
+            "receiver": "*App",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1770,
+              "line": 73,
+              "column": 14
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1172,
+              "line": 51,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-4918",
+        "summary": "Infinite loop in HTTP/2 transport when given bad SETTINGS_MAX_FRAME_SIZE in net/http/internal/http2 in golang.org/x/net",
+        "fixed": "v1.26.3",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "Do",
+            "receiver": "*Client",
+            "position": {
+              "filename": "src/net/http/client.go",
+              "offset": 20745,
+              "line": 591,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "call",
+            "receiver": "*WeiyunClient",
+            "position": {
+              "filename": "internal/transport/weiyun.go",
+              "offset": 2232,
+              "line": 84,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "DeleteKey",
+            "receiver": "*Mirror",
+            "position": {
+              "filename": "internal/transport/weiyun.go",
+              "offset": 19467,
+              "line": 725,
+              "column": 20
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "DeleteKey$1",
+            "position": {
+              "filename": "internal/transport/multi.go",
+              "offset": 10467,
+              "line": 375,
+              "column": 73
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "each",
+            "receiver": "*MultiMirror",
+            "position": {
+              "filename": "internal/transport/multi.go",
+              "offset": 2296,
+              "line": 71,
+              "column": 14
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "Pull",
+            "receiver": "*MultiMirror",
+            "position": {
+              "filename": "internal/transport/multi.go",
+              "offset": 8460,
+              "line": 301,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "newTransportCmd$1",
+            "position": {
+              "filename": "cmd/session-memory/cmd_setup.go",
+              "offset": 3138,
+              "line": 102,
+              "column": 20
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "execute",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 29829,
+              "line": 1015,
+              "column": 19
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "ExecuteC",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 32968,
+              "line": 1148,
+              "column": 19
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "Execute",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 31057,
+              "line": 1071,
+              "column": 22
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1138,
+              "line": 50,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-4946",
+        "summary": "Inefficient policy validation in crypto/x509",
+        "fixed": "v1.26.2",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/x509",
+            "function": "Verify",
+            "receiver": "*Certificate",
+            "position": {
+              "filename": "src/crypto/x509/verify.go",
+              "offset": 18256,
+              "line": 538,
+              "column": 23
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "anyValidVerifiedChain",
+            "position": {
+              "filename": "src/crypto/tls/common.go",
+              "offset": 70425,
+              "line": 1890,
+              "column": 28
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "loadSession",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/handshake_client.go",
+              "offset": 13524,
+              "line": 420,
+              "column": 28
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "clientHandshake",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/handshake_client.go",
+              "offset": 7806,
+              "line": 236,
+              "column": 55
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "handshakeContext",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 49331,
+              "line": 1562,
+              "column": 32
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "HandshakeContext",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 48150,
+              "line": 1516,
+              "column": 27
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "Handshake",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 47439,
+              "line": 1500,
+              "column": 27
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "Write",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 39074,
+              "line": 1215,
+              "column": 23
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "fmt",
+            "function": "Fprintf",
+            "position": {
+              "filename": "src/fmt/print.go",
+              "offset": 6683,
+              "line": 225,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "fail",
+            "receiver": "*App",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1770,
+              "line": 73,
+              "column": 14
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1172,
+              "line": 51,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-4947",
+        "summary": "Unexpected work during chain building in crypto/x509",
+        "fixed": "v1.26.2",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/x509",
+            "function": "Verify",
+            "receiver": "*Certificate",
+            "position": {
+              "filename": "src/crypto/x509/verify.go",
+              "offset": 18256,
+              "line": 538,
+              "column": 23
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "anyValidVerifiedChain",
+            "position": {
+              "filename": "src/crypto/tls/common.go",
+              "offset": 70425,
+              "line": 1890,
+              "column": 28
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "loadSession",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/handshake_client.go",
+              "offset": 13524,
+              "line": 420,
+              "column": 28
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "clientHandshake",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/handshake_client.go",
+              "offset": 7806,
+              "line": 236,
+              "column": 55
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "handshakeContext",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 49331,
+              "line": 1562,
+              "column": 32
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "HandshakeContext",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 48150,
+              "line": 1516,
+              "column": 27
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "Handshake",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 47439,
+              "line": 1500,
+              "column": 27
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "Write",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 39074,
+              "line": 1215,
+              "column": 23
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "fmt",
+            "function": "Fprintf",
+            "position": {
+              "filename": "src/fmt/print.go",
+              "offset": 6683,
+              "line": 225,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "fail",
+            "receiver": "*App",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1770,
+              "line": 73,
+              "column": 14
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1172,
+              "line": 51,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-4971",
+        "summary": "Panic in Dial and LookupPort when handling NUL byte on Windows in net",
+        "fixed": "v1.26.3",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net",
+            "function": "DialContext",
+            "receiver": "*Dialer",
+            "position": {
+              "filename": "src/net/dial.go",
+              "offset": 16379,
+              "line": 526,
+              "column": 18
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "dial",
+            "receiver": "*Transport",
+            "position": {
+              "filename": "src/net/http/transport.go",
+              "offset": 43466,
+              "line": 1307,
+              "column": 26
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "dialConn",
+            "receiver": "*Transport",
+            "position": {
+              "filename": "src/net/http/transport.go",
+              "offset": 57775,
+              "line": 1815,
+              "column": 22
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "dialConnFor",
+            "receiver": "*Transport",
+            "position": {
+              "filename": "src/net/http/transport.go",
+              "offset": 52816,
+              "line": 1648,
+              "column": 23
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "startDialConnForLocked$1",
+            "position": {
+              "filename": "src/net/http/transport.go",
+              "offset": 52270,
+              "line": 1629,
+              "column": 16
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "startDialConnForLocked",
+            "receiver": "*Transport",
+            "position": {
+              "filename": "src/net/http/transport.go",
+              "offset": 52243,
+              "line": 1628,
+              "column": 2
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "decConnsPerHost",
+            "receiver": "*Transport",
+            "position": {
+              "filename": "src/net/http/transport.go",
+              "offset": 54078,
+              "line": 1686,
+              "column": 29
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "roundTrip",
+            "receiver": "*Transport",
+            "position": {
+              "filename": "src/net/http/transport.go",
+              "offset": 25424,
+              "line": 722,
+              "column": 22
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "RoundTrip",
+            "receiver": "*Transport",
+            "position": {
+              "filename": "src/net/http/roundtrip.go",
+              "offset": 1026,
+              "line": 33,
+              "column": 20
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "send",
+            "position": {
+              "filename": "src/net/http/client.go",
+              "offset": 9196,
+              "line": 264,
+              "column": 26
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "send",
+            "receiver": "*Client",
+            "position": {
+              "filename": "src/net/http/client.go",
+              "offset": 7086,
+              "line": 185,
+              "column": 30
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "do",
+            "receiver": "*Client",
+            "position": {
+              "filename": "src/net/http/client.go",
+              "offset": 25008,
+              "line": 733,
+              "column": 36
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "Do",
+            "receiver": "*Client",
+            "position": {
+              "filename": "src/net/http/client.go",
+              "offset": 20795,
+              "line": 592,
+              "column": 13
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "call",
+            "receiver": "*WeiyunClient",
+            "position": {
+              "filename": "internal/transport/weiyun.go",
+              "offset": 2232,
+              "line": 84,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "DeleteKey",
+            "receiver": "*Mirror",
+            "position": {
+              "filename": "internal/transport/weiyun.go",
+              "offset": 19467,
+              "line": 725,
+              "column": 20
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "DeleteKey$1",
+            "position": {
+              "filename": "internal/transport/multi.go",
+              "offset": 10467,
+              "line": 375,
+              "column": 73
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "each",
+            "receiver": "*MultiMirror",
+            "position": {
+              "filename": "internal/transport/multi.go",
+              "offset": 2296,
+              "line": 71,
+              "column": 14
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "Pull",
+            "receiver": "*MultiMirror",
+            "position": {
+              "filename": "internal/transport/multi.go",
+              "offset": 8460,
+              "line": 301,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "newTransportCmd$1",
+            "position": {
+              "filename": "cmd/session-memory/cmd_setup.go",
+              "offset": 3138,
+              "line": 102,
+              "column": 20
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "execute",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 29829,
+              "line": 1015,
+              "column": 19
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "ExecuteC",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 32968,
+              "line": 1148,
+              "column": 19
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "Execute",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 31057,
+              "line": 1071,
+              "column": 22
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1138,
+              "line": 50,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-5026",
+        "summary": "Invoking failure to reject ASCII-only Punycode-encoded labels in golang.org/x/net/idna",
+        "fixed": "v1.26.6",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "Do",
+            "receiver": "*Client",
+            "position": {
+              "filename": "src/net/http/client.go",
+              "offset": 20745,
+              "line": 591,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "call",
+            "receiver": "*WeiyunClient",
+            "position": {
+              "filename": "internal/transport/weiyun.go",
+              "offset": 2232,
+              "line": 84,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "DeleteKey",
+            "receiver": "*Mirror",
+            "position": {
+              "filename": "internal/transport/weiyun.go",
+              "offset": 19467,
+              "line": 725,
+              "column": 20
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "DeleteKey$1",
+            "position": {
+              "filename": "internal/transport/multi.go",
+              "offset": 10467,
+              "line": 375,
+              "column": 73
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "each",
+            "receiver": "*MultiMirror",
+            "position": {
+              "filename": "internal/transport/multi.go",
+              "offset": 2296,
+              "line": 71,
+              "column": 14
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "Pull",
+            "receiver": "*MultiMirror",
+            "position": {
+              "filename": "internal/transport/multi.go",
+              "offset": 8460,
+              "line": 301,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "newTransportCmd$1",
+            "position": {
+              "filename": "cmd/session-memory/cmd_setup.go",
+              "offset": 3138,
+              "line": 102,
+              "column": 20
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "execute",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 29829,
+              "line": 1015,
+              "column": 19
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "ExecuteC",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 32968,
+              "line": 1148,
+              "column": 19
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "Execute",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 31057,
+              "line": 1071,
+              "column": 22
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1138,
+              "line": 50,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-5037",
+        "summary": "Inefficient candidate hostname parsing in crypto/x509",
+        "fixed": "v1.26.4",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/x509",
+            "function": "Error",
+            "receiver": "HostnameError",
+            "position": {
+              "filename": "src/crypto/x509/verify.go",
+              "offset": 3774,
+              "line": 109,
+              "column": 24
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "fmt",
+            "function": "handleMethods",
+            "receiver": "*pp",
+            "position": {
+              "filename": "src/fmt/print.go",
+              "offset": 18374,
+              "line": 668,
+              "column": 24
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "fmt",
+            "function": "printArg",
+            "receiver": "*pp",
+            "position": {
+              "filename": "src/fmt/print.go",
+              "offset": 20223,
+              "line": 750,
+              "column": 22
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "fmt",
+            "function": "doPrintf",
+            "receiver": "*pp",
+            "position": {
+              "filename": "src/fmt/print.go",
+              "offset": 28925,
+              "line": 1075,
+              "column": 16
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "fmt",
+            "function": "Fprintf",
+            "position": {
+              "filename": "src/fmt/print.go",
+              "offset": 6654,
+              "line": 224,
+              "column": 12
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "fail",
+            "receiver": "*App",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1770,
+              "line": 73,
+              "column": 14
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1172,
+              "line": 51,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-5039",
+        "summary": "Arbitrary inputs are included in errors without any escaping in net/textproto",
+        "fixed": "v1.26.4",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/textproto",
+            "function": "ReadMIMEHeader",
+            "receiver": "*Reader",
+            "position": {
+              "filename": "src/net/textproto/reader.go",
+              "offset": 13692,
+              "line": 507,
+              "column": 18
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "readTrailer",
+            "receiver": "*body",
+            "position": {
+              "filename": "src/net/http/transfer.go",
+              "offset": 26815,
+              "line": 937,
+              "column": 53
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "readLocked",
+            "receiver": "*body",
+            "position": {
+              "filename": "src/net/http/transfer.go",
+              "offset": 24363,
+              "line": 851,
+              "column": 25
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "Read",
+            "receiver": "*body",
+            "position": {
+              "filename": "src/net/http/transfer.go",
+              "offset": 24099,
+              "line": 837,
+              "column": 21
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "io",
+            "function": "ReadAll",
+            "position": {
+              "filename": "src/io/io.go",
+              "offset": 22388,
+              "line": 722,
+              "column": 19
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/engine",
+            "function": "Checkpoint",
+            "receiver": "*Engine",
+            "position": {
+              "filename": "internal/engine/capture.go",
+              "offset": 4147,
+              "line": 128,
+              "column": 26
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "newAdoptCmd$1",
+            "position": {
+              "filename": "cmd/session-memory/cmd_adopt.go",
+              "offset": 3847,
+              "line": 103,
+              "column": 42
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "execute",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 29829,
+              "line": 1015,
+              "column": 19
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "ExecuteC",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 32968,
+              "line": 1148,
+              "column": 19
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "Execute",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 31057,
+              "line": 1071,
+              "column": 22
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1138,
+              "line": 50,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-5856",
+        "summary": "Invoking Encrypted Client Hello privacy leak in crypto/tls",
+        "fixed": "v1.26.5",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "Write",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 38821,
+              "line": 1202,
+              "column": 16
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "fmt",
+            "function": "Fprintf",
+            "position": {
+              "filename": "src/fmt/print.go",
+              "offset": 6683,
+              "line": 225,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "fail",
+            "receiver": "*App",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1770,
+              "line": 73,
+              "column": 14
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1172,
+              "line": 51,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-5972",
+        "summary": "Enforce maximum recursion depth in encoding/asn1",
+        "fixed": "v1.26.6",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "encoding/asn1",
+            "function": "Unmarshal",
+            "position": {
+              "filename": "src/encoding/asn1/asn1.go",
+              "offset": 33808,
+              "line": 1140,
+              "column": 6
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/x509",
+            "function": "getSignatureAlgorithmFromAI",
+            "position": {
+              "filename": "src/crypto/x509/x509.go",
+              "offset": 15651,
+              "line": 438,
+              "column": 29
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/x509",
+            "function": "parseCertificate",
+            "position": {
+              "filename": "src/crypto/x509/parser.go",
+              "offset": 30967,
+              "line": 956,
+              "column": 55
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/x509",
+            "function": "ParseCertificate",
+            "position": {
+              "filename": "src/crypto/x509/parser.go",
+              "offset": 34690,
+              "line": 1077,
+              "column": 31
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "newCert",
+            "receiver": "*weakCertCache",
+            "position": {
+              "filename": "src/crypto/tls/cache.go",
+              "offset": 731,
+              "line": 26,
+              "column": 36
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "verifyServerCertificate",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/handshake_client.go",
+              "offset": 34328,
+              "line": 1102,
+              "column": 39
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "readServerCertificate",
+            "receiver": "*clientHandshakeStateTLS13",
+            "position": {
+              "filename": "src/crypto/tls/handshake_client_tls13.go",
+              "offset": 19843,
+              "line": 635,
+              "column": 37
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "handshake",
+            "receiver": "*clientHandshakeStateTLS13",
+            "position": {
+              "filename": "src/crypto/tls/handshake_client_tls13.go",
+              "offset": 3813,
+              "line": 136,
+              "column": 36
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "clientHandshake",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/handshake_client.go",
+              "offset": 11013,
+              "line": 339,
+              "column": 22
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "handshakeContext",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 49331,
+              "line": 1562,
+              "column": 32
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "HandshakeContext",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 48150,
+              "line": 1516,
+              "column": 27
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "Handshake",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 47439,
+              "line": 1500,
+              "column": 27
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "Write",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 39074,
+              "line": 1215,
+              "column": 23
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "fmt",
+            "function": "Fprintf",
+            "position": {
+              "filename": "src/fmt/print.go",
+              "offset": 6683,
+              "line": 225,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "fail",
+            "receiver": "*App",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1770,
+              "line": 73,
+              "column": 14
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1172,
+              "line": 51,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-6090",
+        "summary": "Limit handshake messages we are willing to accept post-handshake in crypto/tls",
+        "fixed": "v1.26.6",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "Write",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 38821,
+              "line": 1202,
+              "column": 16
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "fmt",
+            "function": "Fprintf",
+            "position": {
+              "filename": "src/fmt/print.go",
+              "offset": 6683,
+              "line": 225,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "fail",
+            "receiver": "*App",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1770,
+              "line": 73,
+              "column": 14
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1172,
+              "line": 51,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-6218",
+        "summary": "Avoid quadratic complexity in resolvePath in net/url",
+        "fixed": "v1.26.6",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/url",
+            "function": "Parse",
+            "receiver": "*URL",
+            "position": {
+              "filename": "src/net/url/url.go",
+              "offset": 31064,
+              "line": 1092,
+              "column": 15
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "do",
+            "receiver": "*Client",
+            "position": {
+              "filename": "src/net/http/client.go",
+              "offset": 22354,
+              "line": 650,
+              "column": 27
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "Do",
+            "receiver": "*Client",
+            "position": {
+              "filename": "src/net/http/client.go",
+              "offset": 20795,
+              "line": 592,
+              "column": 13
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "call",
+            "receiver": "*WeiyunClient",
+            "position": {
+              "filename": "internal/transport/weiyun.go",
+              "offset": 2232,
+              "line": 84,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "DeleteKey",
+            "receiver": "*Mirror",
+            "position": {
+              "filename": "internal/transport/weiyun.go",
+              "offset": 19467,
+              "line": 725,
+              "column": 20
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "DeleteKey$1",
+            "position": {
+              "filename": "internal/transport/multi.go",
+              "offset": 10467,
+              "line": 375,
+              "column": 73
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "each",
+            "receiver": "*MultiMirror",
+            "position": {
+              "filename": "internal/transport/multi.go",
+              "offset": 2296,
+              "line": 71,
+              "column": 14
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "Pull",
+            "receiver": "*MultiMirror",
+            "position": {
+              "filename": "internal/transport/multi.go",
+              "offset": 8460,
+              "line": 301,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "newTransportCmd$1",
+            "position": {
+              "filename": "cmd/session-memory/cmd_setup.go",
+              "offset": 3138,
+              "line": 102,
+              "column": 20
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "execute",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 29829,
+              "line": 1015,
+              "column": 19
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "ExecuteC",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 32968,
+              "line": 1148,
+              "column": 19
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "Execute",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 31057,
+              "line": 1071,
+              "column": 22
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1138,
+              "line": 50,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-6603",
+        "summary": "HTTP/2 server memory exhaustion due to Trailer headers in net/http",
+        "fixed": "v1.26.9",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "Error",
+            "receiver": "http2connError",
+            "position": {
+              "filename": "src/net/http/h2_bundle.go",
+              "offset": 63400,
+              "line": 1438,
+              "column": 25
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "fail",
+            "receiver": "*App",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1449,
+              "line": 61,
+              "column": 44
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1172,
+              "line": 51,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-6605",
+        "summary": "HTTP/1 client connection desynchronization after CONNECT rejection in net/http",
+        "fixed": "v1.26.9",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "Do",
+            "receiver": "*Client",
+            "position": {
+              "filename": "src/net/http/client.go",
+              "offset": 20745,
+              "line": 591,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "call",
+            "receiver": "*WeiyunClient",
+            "position": {
+              "filename": "internal/transport/weiyun.go",
+              "offset": 2232,
+              "line": 84,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "DeleteKey",
+            "receiver": "*Mirror",
+            "position": {
+              "filename": "internal/transport/weiyun.go",
+              "offset": 19467,
+              "line": 725,
+              "column": 20
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "DeleteKey$1",
+            "position": {
+              "filename": "internal/transport/multi.go",
+              "offset": 10467,
+              "line": 375,
+              "column": 73
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "each",
+            "receiver": "*MultiMirror",
+            "position": {
+              "filename": "internal/transport/multi.go",
+              "offset": 2296,
+              "line": 71,
+              "column": 14
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "Pull",
+            "receiver": "*MultiMirror",
+            "position": {
+              "filename": "internal/transport/multi.go",
+              "offset": 8460,
+              "line": 301,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "newTransportCmd$1",
+            "position": {
+              "filename": "cmd/session-memory/cmd_setup.go",
+              "offset": 3138,
+              "line": 102,
+              "column": 20
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "execute",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 29829,
+              "line": 1015,
+              "column": 19
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "ExecuteC",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 32968,
+              "line": 1148,
+              "column": 19
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "Execute",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 31057,
+              "line": 1071,
+              "column": 22
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1138,
+              "line": 50,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-6607",
+        "summary": "Reject malformed ECH outer extension references in crypto/tls",
+        "fixed": "v1.26.9",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "Write",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 38821,
+              "line": 1202,
+              "column": 16
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "fmt",
+            "function": "Fprintf",
+            "position": {
+              "filename": "src/fmt/print.go",
+              "offset": 6683,
+              "line": 225,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "fail",
+            "receiver": "*App",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1770,
+              "line": 73,
+              "column": 14
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1172,
+              "line": 51,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-6608",
+        "summary": "Memory limit bypass when parsing MIME headers in net/textproto, mime/multipart",
+        "fixed": "v1.26.9",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/textproto",
+            "function": "ReadMIMEHeader",
+            "receiver": "*Reader",
+            "position": {
+              "filename": "src/net/textproto/reader.go",
+              "offset": 13692,
+              "line": 507,
+              "column": 18
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "readTrailer",
+            "receiver": "*body",
+            "position": {
+              "filename": "src/net/http/transfer.go",
+              "offset": 26815,
+              "line": 937,
+              "column": 53
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "readLocked",
+            "receiver": "*body",
+            "position": {
+              "filename": "src/net/http/transfer.go",
+              "offset": 24363,
+              "line": 851,
+              "column": 25
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "Read",
+            "receiver": "*body",
+            "position": {
+              "filename": "src/net/http/transfer.go",
+              "offset": 24099,
+              "line": 837,
+              "column": 21
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "io",
+            "function": "ReadAll",
+            "position": {
+              "filename": "src/io/io.go",
+              "offset": 22388,
+              "line": 722,
+              "column": 19
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/engine",
+            "function": "Checkpoint",
+            "receiver": "*Engine",
+            "position": {
+              "filename": "internal/engine/capture.go",
+              "offset": 4147,
+              "line": 128,
+              "column": 26
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "newAdoptCmd$1",
+            "position": {
+              "filename": "cmd/session-memory/cmd_adopt.go",
+              "offset": 3847,
+              "line": 103,
+              "column": 42
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "execute",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 29829,
+              "line": 1015,
+              "column": 19
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "ExecuteC",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 32968,
+              "line": 1148,
+              "column": 19
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "Execute",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 31057,
+              "line": 1071,
+              "column": 22
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1138,
+              "line": 50,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-6610",
+        "summary": "HTTP/2 transport accepts malformed framing-related headers in net/http",
+        "fixed": "v1.26.9",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "Do",
+            "receiver": "*Client",
+            "position": {
+              "filename": "src/net/http/client.go",
+              "offset": 20745,
+              "line": 591,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "call",
+            "receiver": "*WeiyunClient",
+            "position": {
+              "filename": "internal/transport/weiyun.go",
+              "offset": 2232,
+              "line": 84,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "DeleteKey",
+            "receiver": "*Mirror",
+            "position": {
+              "filename": "internal/transport/weiyun.go",
+              "offset": 19467,
+              "line": 725,
+              "column": 20
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "DeleteKey$1",
+            "position": {
+              "filename": "internal/transport/multi.go",
+              "offset": 10467,
+              "line": 375,
+              "column": 73
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "each",
+            "receiver": "*MultiMirror",
+            "position": {
+              "filename": "internal/transport/multi.go",
+              "offset": 2296,
+              "line": 71,
+              "column": 14
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/internal/transport",
+            "function": "Pull",
+            "receiver": "*MultiMirror",
+            "position": {
+              "filename": "internal/transport/multi.go",
+              "offset": 8460,
+              "line": 301,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "newTransportCmd$1",
+            "position": {
+              "filename": "cmd/session-memory/cmd_setup.go",
+              "offset": 3138,
+              "line": 102,
+              "column": 20
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "execute",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 29829,
+              "line": 1015,
+              "column": 19
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "ExecuteC",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 32968,
+              "line": 1148,
+              "column": 19
+            }
+          },
+          {
+            "module": "github.com/spf13/cobra",
+            "version": "v1.10.2",
+            "package": "github.com/spf13/cobra",
+            "function": "Execute",
+            "receiver": "*Command",
+            "position": {
+              "filename": "command.go",
+              "offset": 31057,
+              "line": 1071,
+              "column": 22
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1138,
+              "line": 50,
+              "column": 24
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-6611",
+        "summary": "Excessive CPU consumption from repeated initial window changes in net/http",
+        "fixed": "v1.26.9",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "Error",
+            "receiver": "transportReadFromServerError",
+            "position": {
+              "filename": "src/net/http/transport.go",
+              "offset": 36096,
+              "line": 1040,
+              "column": 39
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "fail",
+            "receiver": "*App",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1449,
+              "line": 61,
+              "column": 44
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1172,
+              "line": 51,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-6612",
+        "summary": "Double flow control refund on HTTP/2 server streams in net/http",
+        "fixed": "v1.26.9",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "Error",
+            "receiver": "http2ConnectionError",
+            "position": {
+              "filename": "src/net/http/h2_bundle.go",
+              "offset": 61564,
+              "line": 1389,
+              "column": 31
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "fail",
+            "receiver": "*App",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1449,
+              "line": 61,
+              "column": 44
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1172,
+              "line": 51,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-6613",
+        "summary": "HTTP/1 server connection desynchronization after 2xx CONNECT response in net/http",
+        "fixed": "v1.26.9",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "Error",
+            "receiver": "transportReadFromServerError",
+            "position": {
+              "filename": "src/net/http/transport.go",
+              "offset": 36096,
+              "line": 1040,
+              "column": 39
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "fail",
+            "receiver": "*App",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1449,
+              "line": 61,
+              "column": 44
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1172,
+              "line": 51,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-6617",
+        "summary": "HTTP/2 server crash due to HPACK encoder race in net/http",
+        "fixed": "v1.26.9",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "net/http",
+            "function": "Error",
+            "receiver": "transportReadFromServerError",
+            "position": {
+              "filename": "src/net/http/transport.go",
+              "offset": 36096,
+              "line": 1040,
+              "column": 39
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "fail",
+            "receiver": "*App",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1449,
+              "line": 61,
+              "column": 44
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1172,
+              "line": 51,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      },
+      {
+        "id": "GO-2026-6809",
+        "summary": "Distrust compromised intermediate certificates in crypto/x509",
+        "fixed": "v1.26.10",
+        "example_trace": [
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/x509",
+            "function": "Verify",
+            "receiver": "*Certificate",
+            "position": {
+              "filename": "src/crypto/x509/verify.go",
+              "offset": 18256,
+              "line": 538,
+              "column": 23
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "anyValidVerifiedChain",
+            "position": {
+              "filename": "src/crypto/tls/common.go",
+              "offset": 70425,
+              "line": 1890,
+              "column": 28
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "loadSession",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/handshake_client.go",
+              "offset": 13524,
+              "line": 420,
+              "column": 28
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "clientHandshake",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/handshake_client.go",
+              "offset": 7806,
+              "line": 236,
+              "column": 55
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "handshakeContext",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 49331,
+              "line": 1562,
+              "column": 32
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "HandshakeContext",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 48150,
+              "line": 1516,
+              "column": 27
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "Handshake",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 47439,
+              "line": 1500,
+              "column": 27
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "crypto/tls",
+            "function": "Write",
+            "receiver": "*Conn",
+            "position": {
+              "filename": "src/crypto/tls/conn.go",
+              "offset": 39074,
+              "line": 1215,
+              "column": 23
+            }
+          },
+          {
+            "module": "stdlib",
+            "version": "v1.26.0",
+            "package": "fmt",
+            "function": "Fprintf",
+            "position": {
+              "filename": "src/fmt/print.go",
+              "offset": 6683,
+              "line": 225,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "fail",
+            "receiver": "*App",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1770,
+              "line": 73,
+              "column": 14
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "run",
+            "position": {
+              "filename": "cmd/session-memory/app.go",
+              "offset": 1172,
+              "line": 51,
+              "column": 18
+            }
+          },
+          {
+            "module": "session-memory",
+            "package": "session-memory/cmd/session-memory",
+            "function": "main",
+            "position": {
+              "filename": "cmd/session-memory/main.go",
+              "offset": 183,
+              "line": 7,
+              "column": 26
+            }
+          }
+        ]
+      }
+    ],
+    "note": "Static symbol reachability does not establish exploitability; JSON mode returns zero even with findings."
+  },
+  "installer": {
+    "installer_exit_code": 0,
+    "installed_asset_matches_verified_release": true,
+    "help_has_setup": true,
+    "setup_executed": false,
+    "launchd_modified": false
+  },
+  "workbuddy_probe": {
+    "compatibility": "ok",
+    "sessions_found": 98,
+    "streams_sampled": 20,
+    "read_only": true,
+    "raw_log_local_only": "/tmp/session-memory-release-review-20261029/workbuddy-probe.json"
+  },
+  "static_checks": {
+    "go_vet_dev_failpoint": "pass",
+    "shell_syntax": "pass",
+    "git_diff_check": "pass"
+  },
+  "limitations": [
+    "No real cloud account used; exact token matching happened only in local memory with no credential values emitted.",
+    "No actual second-device or WorkBuddy GUI/model continuation acceptance.",
+    "Read-only structural probe does not prove native installation or model continuation.",
+    "Historical secret scan covers locally reachable refs; cannot prove absence of unknown or previously externally copied secrets.",
+    "Runtime leakage repros use synthetic tokens and local HTTP servers/custom transports.",
+    "Only the published darwin/arm64 asset was downloaded and inspected.",
+    "Nine deferred functional bugs remain; normal test-suite success is not release readiness.",
+    "No source changes, credential rotation, remote edits, commits, tags or publication were performed in this review."
+  ],
+  "new_repros_three_repeats": {
+    "command": [
+      "go",
+      "test",
+      "-race",
+      "-tags",
+      "dev,failpoint",
+      "-overlay",
+      "/private/tmp/session-memory-release-review-20261029/runner-check/overlay.json",
+      "-run",
+      "^TestRelease",
+      "-count",
+      "3",
+      "-timeout",
+      "4m",
+      "-json",
+      "./internal/transport",
+      "./cmd/session-memory"
+    ],
+    "returncode": 1,
+    "test_and_subtest_events": {
+      "fail": 15
+    },
+    "failing_tests": {
+      "TestReleaseMCPRedirectDoesNotForwardCredential": 3,
+      "TestReleaseNetworkErrorRedactsSignedDownloadURL": 3,
+      "TestReleaseServerErrorRedactsMCPToken": 3,
+      "TestReleaseSkillReauthorizationRefreshesSavedToken": 3,
+      "TestReleaseSetupDoesNotPromiseAutomaticRecovery": 3
+    },
+    "build_errors": [],
+    "data_races": [],
+    "log": "/private/tmp/session-memory-release-review-20261029/runner-check/release-review.jsonl"
+  }
+}

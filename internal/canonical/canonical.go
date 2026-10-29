@@ -53,6 +53,9 @@ type Item struct {
 	Raw      RawRef         `json:"raw"`
 	Links    []RawRef       `json:"links,omitempty"`  // the other layer's records for the same event
 	Branch   string         `json:"branch,omitempty"` // "" = active path; else the branch tag
+	// Subagent is the sub-agent stream the item came from; "" for the main
+	// conversation. Tool call ids only pair within the same stream.
+	Subagent string `json:"subagent,omitempty"`
 }
 
 // Issue is a validation finding; Validate never drops items.
