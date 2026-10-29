@@ -18,6 +18,7 @@ func TestMain(m *testing.M) {
 		// a process the hook started: this test binary standing in for the program,
 		// with its own empty credential store instead of the real one
 		newKeyStore = func() vault.KeyStore { return vault.MemStore{} }
+		hookQuiet, hookPoll = 0, 5*time.Millisecond
 		os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 	}
 	// nothing starts a process of the test binary unless a test asks for it

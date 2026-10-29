@@ -130,9 +130,12 @@ func newRelayCmd(a *App) *cobra.Command {
 	c := &cobra.Command{Use: "relay", Short: "One step to hand work over: upload local progress, download the other computer's, update Codex (and WorkBuddy once enabled)", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			quiet, _ := cmd.Flags().GetBool("quiet")
+			pushOnly, _ := cmd.Flags().GetBool("push-only")
 			if quiet { // background runs hold back; one started by hand never does
 				a.quietRun = true
-				if a.allAccountsPaused() || a.idleSkip() {
+				a.defersToHooks = !pushOnly
+				// a push is wanted now, not at the background rhythm: only the quota can hold it
+				if a.allAccountsPaused() || (!pushOnly && a.idleSkip()) {
 					return nil
 				}
 			}
@@ -158,6 +161,9 @@ func newRelayCmd(a *App) *cobra.Command {
 				return err
 			}
 			defer r.Close()
+			if pushOnly {
+				return pushOnce(cmd.Context(), a, r, quiet)
+			}
 			sync, err := syncOnce(cmd.Context(), a, r)
 			if err != nil {
 				return err
@@ -309,6 +315,8 @@ func newRelayCmd(a *App) *cobra.Command {
 		}}
 	c.Flags().String("agent", "", "install into this agent only (default: Codex, and WorkBuddy once agents.workbuddy.allow_registry_write is on)")
 	c.Flags().Bool("quiet", false, "print only when something happened (for background runs)")
+	c.Flags().Bool("push-only", false, "only capture and upload local progress: nothing is asked of the cloud when there is none, and nothing is downloaded or installed (what hooks run)")
+	c.Flags().MarkHidden("push-only")
 	c.Flags().Bool("strict", false, "refuse sessions whose recorded code state differs from this computer's")
 	addInstallFlags(c)
 	return c

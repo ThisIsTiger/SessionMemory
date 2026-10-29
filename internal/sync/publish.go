@@ -135,6 +135,43 @@ func (s *Sync) newObjects(ctx context.Context, r session.Revision) ([]string, er
 
 // Publish sends every unpublished revision and queued entry; it returns the
 // number of entries published.
+// Pending is what Publish would send or finish.
+type Pending struct {
+	Revisions []session.Revision // committed here, not yet in any manifest
+	Outbox    int                // other items (receipts, choices) waiting
+	Journal   bool               // an interrupted publish to complete
+}
+
+// Pending says, without asking the cloud anything, what Publish has to do.
+// Publish itself always looks at the cloud first (to catch a device id used
+// elsewhere), so a caller that wants no cloud traffic when there is nothing to
+// send, or wants to decide when to send, asks this first.
+func (s *Sync) Pending() (Pending, error) {
+	var p Pending
+	if files, _ := filepath.Glob(filepath.Join(s.Store.Root, "journal", "*.json")); len(files) > 0 {
+		p.Journal = true
+	}
+	for _, id := range append([]string{s.Info.DeviceID}, s.Info.PreviousDeviceIDs...) {
+		rs, err := s.Store.UnpublishedRevisions(id)
+		if err != nil {
+			return p, err
+		}
+		p.Revisions = append(p.Revisions, rs...)
+	}
+	out, err := s.Dev.Outbox()
+	if err != nil {
+		return p, err
+	}
+	p.Outbox = len(out)
+	return p, nil
+}
+
+// HasPending reports whether Publish has anything to do.
+func (s *Sync) HasPending() (bool, error) {
+	p, err := s.Pending()
+	return p.Journal || len(p.Revisions) > 0 || p.Outbox > 0, err
+}
+
 func (s *Sync) Publish(ctx context.Context) (int, error) {
 	if _, err := s.Store.Recover(ctx); err != nil {
 		return 0, err

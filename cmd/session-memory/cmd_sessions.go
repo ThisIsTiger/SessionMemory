@@ -317,6 +317,26 @@ func syncOnce(ctx context.Context, a *App, r *rt) (map[string]int, error) {
 	if r.Multi != nil {
 		r.Multi.CatchUp(ctx) // an account that missed writes is brought level; failures are reported by the mirror
 	}
+	if err := captureAndPublish(ctx, a, r, out, a.quietRun); err != nil {
+		return out, err
+	}
+	res, err := r.Sync.Reconcile(ctx)
+	if err != nil {
+		return out, err
+	}
+	out["received_manifests"], out["received_revisions"] = res.Applied, res.Revisions
+	out["pending_objects"], out["quarantined"] = res.PendingObjs, res.Quarantined
+	flushCodexAssign(a, false)
+	return out, nil
+}
+
+// captureAndPublish is the sending half of a round: follow new folders, capture
+// what changed in the tracked sessions (this reads local files only), and
+// upload what is pending. With background set (a background round or a hook's
+// push, never a command the person typed) the cloud is not asked anything when
+// there is nothing to upload, and Codex progress that hooks are about to upload
+// themselves is left to them (see hooksCover).
+func captureAndPublish(ctx context.Context, a *App, r *rt, out map[string]int, background bool) error {
 	if exists(a.keyMarker(markTrackNew)) { // set by setup: new project folders are followed
 		n, _, err := a.trackFolders(ctx, r, a.installedAgents(), a.trackWindowDays(), true)
 		if err != nil {
@@ -342,19 +362,51 @@ func syncOnce(ctx context.Context, a *App, r *rt) (map[string]int, error) {
 			out["captured"]++
 		}
 	}
+	if background {
+		p, err := r.Sync.Pending()
+		if err != nil {
+			return err
+		}
+		if !p.Journal && p.Outbox == 0 && len(p.Revisions) == 0 {
+			out["published"] = 0
+			return nil
+		}
+		if a.defersToHooks && hooksCover(p, a.loadHookState().At, a.Now()) {
+			out["published"], out["left_to_hooks"] = 0, len(p.Revisions)
+			return nil
+		}
+	}
 	n, err := r.Sync.Publish(ctx)
 	if err != nil {
-		return out, err
+		return err
 	}
 	out["published"] = n
-	res, err := r.Sync.Reconcile(ctx)
-	if err != nil {
-		return out, err
+	return nil
+}
+
+// pushOnce is what a hook asks for: send local progress now. It does not look
+// for what other computers sent and does not install anything, so a reply that
+// finishes costs the cloud only the upload of that reply, and nothing at all
+// when there is nothing new to upload.
+func pushOnce(ctx context.Context, a *App, r *rt, quiet bool) error {
+	out := map[string]int{}
+	if err := captureAndPublish(ctx, a, r, out, true); err != nil {
+		return err
 	}
-	out["received_manifests"], out["received_revisions"] = res.Applied, res.Revisions
-	out["pending_objects"], out["quarantined"] = res.PendingObjs, res.Quarantined
-	flushCodexAssign(a, false)
-	return out, nil
+	if err := captureFailure(out); err != nil {
+		return err
+	}
+	if a.JSON {
+		return a.printJSON(map[string]any{"sync": out})
+	}
+	if quiet && out["published"] == 0 {
+		return nil
+	}
+	if quiet {
+		fmt.Fprintf(a.Out, "[%s] ", a.Now().Format("2006-01-02 15:04:05"))
+	}
+	fmt.Fprintf(a.Out, "uploaded %d item(s)\n", out["published"])
+	return nil
 }
 
 func newRevisionsCmd(a *App) *cobra.Command {

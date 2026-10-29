@@ -17,22 +17,41 @@ import (
 	"session-memory/internal/device"
 	"session-memory/internal/errcode"
 	"session-memory/internal/platform"
+	"session-memory/internal/session"
 	"session-memory/internal/source/codex"
+	syncpkg "session-memory/internal/sync"
 )
 
-// Codex can run a command when a session starts and when a reply finishes
-// (hooks). `hooks install` adds ours; each time Codex runs it, `hook` starts
-// one relay in the background and returns at once, so a finished reply is sent
-// to the other computer within seconds instead of at the next two-minute
-// round. The background job stays: it is what picks up work from the other
-// computer and what covers a hook that Codex does not run (hooks need the
-// user's trust, given once in Codex's /hooks).
+// Codex can run a command when a reply finishes (hooks). `hooks install` adds
+// ours. The background job and the hooks share the work by what each is good
+// at:
+//
+//   - a hook knows that something was just written, so it decides WHEN local
+//     progress is uploaded: once a quiet minute has passed since the last
+//     reply (at most hookMaxWait after the first one of a conversation). That
+//     is one upload per burst of conversation, not one per reply and not one per
+//     background round, and it asks the cloud nothing when there is nothing new;
+//   - the background job is the only one that learns what other computers sent,
+//     so it keeps polling, and it is the safety net: while hooks are plainly
+//     working it leaves Codex's fresh progress to them, but uploads anything
+//     that has waited hookSafetyAge (hooks not trusted, not run, or a worker
+//     that died), and everything that is not Codex's, as before.
 
 var (
-	// hookMinGap is the least time between two relays started by hooks, so a
-	// run of quick replies does not hit Weiyun once per reply.
-	hookMinGap = 30 * time.Second
-	// hookMaxRounds bounds how many relays one worker runs back to back.
+	// hookQuiet is how long after the last reply the upload waits, so a
+	// conversation goes up in one batch.
+	hookQuiet = 75 * time.Second
+	// hookMaxWait bounds the wait when replies keep coming.
+	hookMaxWait = 5 * time.Minute
+	// hookPoll is how often a waiting worker looks again (a new reply moves the
+	// deadline).
+	hookPoll = 2 * time.Second
+	// hookSafetyAge is how long the background job leaves Codex progress to the
+	// hooks before it uploads it itself; hookLead is how far before a pending
+	// revision a hook event still counts as "hooks are working".
+	hookSafetyAge = 10 * time.Minute
+	hookLead      = 10 * time.Minute
+	// hookMaxRounds bounds how many uploads one worker runs back to back.
 	hookMaxRounds = 5
 	// hookSpawn starts the worker in its own process; tests replace it.
 	hookSpawn = func(a *App) error {
@@ -58,8 +77,7 @@ type hookState struct {
 }
 
 func (a *App) hookStateFile() string { return filepath.Join(a.Cfg.StateDir(), "hook-state.json") }
-func (a *App) hookAgainFile() string { return filepath.Join(a.Cfg.StateDir(), "hook.again") }
-func (a *App) hookRunFile() string   { return filepath.Join(a.Cfg.StateDir(), "hook-lastrun") }
+func (a *App) hookDirtyFile() string { return filepath.Join(a.Cfg.StateDir(), "hook.dirty") }
 func (a *App) hookLockFile() string  { return filepath.Join(a.Cfg.StateDir(), "locks", "hook.lock") }
 
 func (a *App) loadHookState() hookState {
@@ -75,27 +93,44 @@ func (a *App) saveHookState(s hookState) {
 	platform.AtomicWrite(a.hookStateFile(), b, 0600)
 }
 
-// lastHookRun is when a relay started by a hook last began. It has a file of
-// its own: the worker writes it while hooks update the state above.
-func (a *App) lastHookRun() time.Time {
-	b, err := os.ReadFile(a.hookRunFile())
+// hookDirtySince is when the first reply was written that has not been
+// uploaded yet; false when none is waiting.
+func (a *App) hookDirtySince() (time.Time, bool) {
+	b, err := os.ReadFile(a.hookDirtyFile())
 	if err != nil {
-		return time.Time{}
+		return time.Time{}, false
 	}
 	t, _ := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(b)))
-	return t
+	return t, true // an unreadable time counts as long ago: upload now
 }
 
-// noteActivity brings the background rounds back to the normal rhythm: someone
-// is working, so the next ones should not wait out an idle back-off.
-func (a *App) noteActivity() {
-	s := a.loadIdle()
-	if s.Quiet == 0 {
-		return
+// markHookDirty notes a reply that is not uploaded yet, keeping the time of
+// the first one.
+func (a *App) markHookDirty() error {
+	f, err := os.OpenFile(a.hookDirtyFile(), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if os.IsExist(err) {
+		return nil
 	}
-	s.Quiet = 0
-	b, _ := json.Marshal(s)
-	platform.AtomicWrite(a.idleFile(), b, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(a.Now().Format(time.RFC3339Nano))
+	return err
+}
+
+// hookWorkerRunning says whether a worker holds the lock.
+func (a *App) hookWorkerRunning() bool {
+	f, err := platform.Touch(a.hookLockFile())
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if platform.LockExclusiveNonBlocking(f) != nil {
+		return true
+	}
+	platform.Unlock(f)
+	return false
 }
 
 // hookLog keeps what went wrong where nobody is looking: a hook must never
@@ -129,7 +164,8 @@ func drain(in io.Reader) {
 }
 
 // hookEvent handles one event from a host. It does not look at Weiyun (not even
-// the saved login): a relay that finds every account out of quota ends at once.
+// the saved login): that is the worker's push, which ends at once when every
+// account is out of quota.
 func (a *App) hookEvent(event string) {
 	if _, err := device.At(a.Cfg.StateDir()).Load(); err != nil {
 		return // this computer is not set up (or was reset): nothing to hand over
@@ -137,21 +173,22 @@ func (a *App) hookEvent(event string) {
 	s := a.loadHookState()
 	s.Event, s.At, s.Count = event, a.Now(), s.Count+1
 	a.saveHookState(s)
-	a.noteActivity()
 	// The marker goes first: a worker that is finishing looks for it after it
 	// lets go of the lock, so an event is never lost between the two.
-	if err := platform.AtomicWrite(a.hookAgainFile(), []byte(a.Now().Format(time.RFC3339)), 0600); err != nil {
+	if err := a.markHookDirty(); err != nil {
 		a.hookLog("%v", err)
 		return
+	}
+	if a.hookWorkerRunning() {
+		return // it sees the new time when it looks again
 	}
 	if err := hookSpawn(a); err != nil {
 		a.hookLog("cannot start the worker: %v", err)
 	}
 }
 
-// hookWorker runs the relays the hooks asked for. At most one worker runs; an
-// event that arrives meanwhile leaves the marker, and the running worker goes
-// round again.
+// hookWorker uploads for the hooks. At most one worker runs; it waits for a
+// quiet moment, uploads, and goes round again if a reply came in meanwhile.
 func (a *App) hookWorker(ctx context.Context) {
 	for round := 0; round < hookMaxRounds; round++ {
 		f, err := platform.Touch(a.hookLockFile())
@@ -161,31 +198,54 @@ func (a *App) hookWorker(ctx context.Context) {
 		}
 		if err := platform.LockExclusiveNonBlocking(f); err != nil {
 			f.Close()
-			return // another worker is on it and will see the marker
+			return // another worker is on it
 		}
-		again := a.runHookRelay(ctx)
+		a.runHookPush(ctx)
 		platform.Unlock(f)
 		f.Close()
-		if !again {
+		// after letting go: an event that came while the lock was still held did
+		// not start a worker, and is picked up here
+		if _, dirty := a.hookDirtySince(); !dirty || ctx.Err() != nil {
 			return
 		}
 	}
 }
 
-// runHookRelay waits out the minimum gap, then runs one relay. It returns
-// whether a hook fired in the meantime (a marker is waiting).
-func (a *App) runHookRelay(ctx context.Context) bool {
-	if wait := hookMinGap - a.Now().Sub(a.lastHookRun()); wait > 0 {
+// waitForQuiet returns when the upload is due: hookQuiet after the last reply,
+// or hookMaxWait after the first one that is waiting, whichever comes first.
+// It returns false when nothing is waiting or the worker is told to stop.
+func (a *App) waitForQuiet(ctx context.Context) bool {
+	for {
+		since, dirty := a.hookDirtySince()
+		if !dirty {
+			return false
+		}
+		deadline := a.loadHookState().At.Add(hookQuiet)
+		if cap := since.Add(hookMaxWait); cap.Before(deadline) {
+			deadline = cap
+		}
+		wait := deadline.Sub(a.Now())
+		if wait <= 0 {
+			return true
+		}
+		if wait > hookPoll {
+			wait = hookPoll
+		}
 		select {
 		case <-time.After(wait):
 		case <-ctx.Done():
 			return false
 		}
 	}
-	os.Remove(a.hookAgainFile())
-	a.noteActivity()
-	platform.AtomicWrite(a.hookRunFile(), []byte(a.Now().Format(time.RFC3339Nano)), 0600)
-	if out, err := selfCommand(ctx, "relay", "--quiet"); err != nil || out != "" {
+}
+
+// runHookPush waits for the quiet moment, then uploads once.
+func (a *App) runHookPush(ctx context.Context) {
+	if !a.waitForQuiet(ctx) {
+		return
+	}
+	os.Remove(a.hookDirtyFile())
+	if out, err := selfCommand(ctx, "relay", "--quiet", "--push-only"); err != nil || out != "" {
 		if err != nil {
 			a.hookLog("relay failed: %v", err)
 		}
@@ -196,17 +256,41 @@ func (a *App) runHookRelay(ctx context.Context) bool {
 			}
 		}
 	}
-	_, err := os.Stat(a.hookAgainFile())
-	return err == nil
+}
+
+// hooksCover says whether the background job should leave what is pending to
+// the hooks this round: every pending item is a Codex revision, a hook has run
+// since about the time the oldest was written (so hooks are working here), and
+// the oldest has not yet waited hookSafetyAge. Anything else (another agent, a
+// receipt, an interrupted publish, no sign of hooks, an old item) is uploaded
+// now, as without hooks.
+func hooksCover(p syncpkg.Pending, lastHook, now time.Time) bool {
+	if p.Journal || p.Outbox > 0 || len(p.Revisions) == 0 || lastHook.IsZero() {
+		return false
+	}
+	var oldest time.Time
+	for _, r := range p.Revisions {
+		if r.AgentProfile.Agent != codex.AgentName {
+			return false
+		}
+		t, err := session.ParseTime(r.CreatedAt)
+		if err != nil {
+			return false
+		}
+		if oldest.IsZero() || t.Before(oldest) {
+			oldest = t
+		}
+	}
+	return now.Sub(oldest) < hookSafetyAge && !lastHook.Before(oldest.Add(-hookLead))
 }
 
 func newHookCmd(a *App) *cobra.Command {
-	c := &cobra.Command{Use: "hook", Short: "Run by Codex at the start of a session and after a reply (installed by `hooks install`); starts a relay in the background", Args: cobra.NoArgs, Hidden: true,
+	c := &cobra.Command{Use: "hook", Short: "Run by Codex after a reply (installed by `hooks install`); starts an upload of local progress in the background", Args: cobra.NoArgs, Hidden: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// whatever happens, the host that ran this must see success and no output
 			defer func() { recover() }()
 			if worker, _ := cmd.Flags().GetBool("worker"); worker {
-				ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Minute)
+				ctx, cancel := context.WithTimeout(cmd.Context(), 40*time.Minute)
 				defer cancel()
 				a.hookWorker(ctx)
 				return nil
@@ -352,7 +436,7 @@ func untrusted(hs hookHomeStatus) bool {
 }
 
 func newHooksCmd(a *App) *cobra.Command {
-	c := &cobra.Command{Use: "hooks", Short: "Optional: hand work over right after each Codex reply (instead of waiting for the next background round)"}
+	c := &cobra.Command{Use: "hooks", Short: "Optional: upload right after each Codex reply (instead of waiting for the next background round)"}
 	hostFlag := func(cmd *cobra.Command) { cmd.Flags().String("host", "codex", "which agent's hooks (only codex)") }
 
 	install := &cobra.Command{Use: "install", Short: "Add the session-memory hooks to Codex (your own hooks stay as they are)", Args: cobra.NoArgs,
@@ -385,7 +469,7 @@ func newHooksCmd(a *App) *cobra.Command {
 			if len(failed) == len(homes) {
 				return errcode.New(errcode.Internal, "no hooks were added")
 			}
-			fmt.Fprintln(a.Out, "Codex runs a new hook only after you trust it: in Codex type /hooks and trust the "+fmt.Sprint(len(codex.HookEvents))+" session-memory entries, once. Until then nothing changes: syncing keeps running in the background as before.")
+			fmt.Fprintln(a.Out, "Codex runs a new hook only after you trust it: in Codex type /hooks and trust the session-memory entry, once. Until then nothing changes: syncing keeps running in the background as before.")
 			return nil
 		}}
 	hostFlag(install)
@@ -428,6 +512,9 @@ func newHooksCmd(a *App) *cobra.Command {
 			last := a.loadHookState()
 			if a.JSON {
 				doc := map[string]any{"codex": homes}
+				if since, waiting := a.hookDirtySince(); waiting {
+					doc["upload_waiting_since"] = since.Format(time.RFC3339)
+				}
 				if !last.At.IsZero() {
 					doc["last_event"] = map[string]any{"event": last.Event, "at": last.At.Format(time.RFC3339), "count": last.Count}
 				}
@@ -458,7 +545,7 @@ func newHooksCmd(a *App) *cobra.Command {
 					fmt.Fprintf(a.Out, "  %s: %s\n", ev, hs.Trust[ev])
 				}
 				if untrusted(hs) {
-					fmt.Fprintln(a.Out, "  Codex does not run them yet: in Codex type /hooks and trust the session-memory entries")
+					fmt.Fprintln(a.Out, "  Codex does not run it yet: in Codex type /hooks and trust the session-memory entry")
 				}
 				for _, p := range hs.Problems {
 					fmt.Fprintf(a.Out, "  problem: %s\n", p)
@@ -468,6 +555,9 @@ func newHooksCmd(a *App) *cobra.Command {
 				fmt.Fprintln(a.Out, "no hook has fired on this computer yet")
 			} else {
 				fmt.Fprintf(a.Out, "last hook: %s at %s (%d in all)\n", last.Event, last.At.Format("2006-01-02 15:04:05"), last.Count)
+			}
+			if since, waiting := a.hookDirtySince(); waiting {
+				fmt.Fprintf(a.Out, "an upload is waiting for a quiet moment (replies since %s)\n", since.Format("15:04:05"))
 			}
 			return nil
 		}}

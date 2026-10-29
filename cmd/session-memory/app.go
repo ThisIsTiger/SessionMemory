@@ -30,6 +30,9 @@ type App struct {
 	// quietRun is set by a background run (relay --quiet): it leaves a Weiyun
 	// account alone while that account's quota is known to be used up.
 	quietRun bool
+	// defersToHooks is set by a background round (not by a hook's own push): it
+	// leaves Codex progress to the hooks while they are plainly working.
+	defersToHooks bool
 	// jsonPrinted is set once a JSON document went to stdout: a later failure
 	// is then reported on stderr, so stdout never holds two documents.
 	jsonPrinted bool

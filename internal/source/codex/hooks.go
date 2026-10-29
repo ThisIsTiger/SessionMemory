@@ -19,12 +19,13 @@ import (
 // Codex runs the commands in <home>/hooks.json at the events of a session
 // (https://developers.openai.com/codex/hooks): event name -> groups of
 // handlers. session-memory adds one handler per event in HookEvents so a
-// finished reply is handed over at once instead of at the next background
-// round. Everything else in the file is the user's and is kept as it is.
+// finished reply is uploaded at once instead of at the next background round.
+// Everything else in the file is the user's and is kept as it is.
 
-// HookEvents are the events session-memory listens to: a session starting (take
-// what the other computer sent) and a reply finishing (send what was done).
-var HookEvents = []string{"SessionStart", "Stop"}
+// HookEvents are the events session-memory listens to: a reply finishing (send
+// what was done). A session starting is not one: what other computers sent
+// cannot be put into a Codex that is already running anyway.
+var HookEvents = []string{"Stop"}
 
 // hookTimeout is the seconds Codex waits for the command; it only starts a
 // background job and returns, so this is a ceiling, not an expectation.
@@ -313,6 +314,25 @@ func InstallHooks(home string, commands map[string]string) (bool, error) {
 	before, err := d.marshal()
 	if err != nil {
 		return false, err
+	}
+	// an event an earlier version listened to and this one does not
+	for ev, groups := range d.events {
+		if _, wanted := commands[ev]; wanted {
+			continue
+		}
+		var kept []json.RawMessage
+		for _, g := range groups {
+			ours, rest, err := splitGroup(g)
+			if err != nil {
+				return false, err
+			}
+			if len(ours) == 0 {
+				kept = append(kept, g)
+			} else if rest != nil {
+				kept = append(kept, rest)
+			}
+		}
+		d.events[ev] = kept
 	}
 	for ev, cmd := range commands {
 		var groups []json.RawMessage

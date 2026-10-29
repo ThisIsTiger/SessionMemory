@@ -386,3 +386,32 @@ func TestRealCodexListsTheInstalledHooksAsUntrusted(t *testing.T) {
 		}
 	}
 }
+
+// An event an earlier version listened to is taken out on the next install,
+// together with nothing of the user's.
+func TestInstallDropsOurHandlerFromEventsNoLongerUsed(t *testing.T) {
+	home := t.TempDir()
+	old := HookCommand("/x/session-memory", "", "SessionStart")
+	content := map[string]any{"hooks": map[string]any{
+		"SessionStart": []any{
+			map[string]any{"hooks": []any{map[string]any{"type": "command", "command": old}}},
+			map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "/x/mine.sh"}}},
+		},
+	}}
+	b, _ := json.Marshal(content)
+	os.WriteFile(HooksPath(home), b, 0644)
+	if changed, err := InstallHooks(home, cmds("/x/session-memory")); err != nil || !changed {
+		t.Fatalf("install: %v %v", changed, err)
+	}
+	doc := readJSON(t, HooksPath(home))["hooks"].(map[string]any)
+	ss := doc["SessionStart"].([]any)
+	if len(ss) != 1 || ss[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)["command"] != "/x/mine.sh" {
+		t.Fatalf("SessionStart = %v", ss)
+	}
+	if _, ok := doc["Stop"]; !ok {
+		t.Fatal("Stop was not installed")
+	}
+	if len(HookEvents) != 1 || HookEvents[0] != "Stop" {
+		t.Fatalf("events = %v", HookEvents)
+	}
+}

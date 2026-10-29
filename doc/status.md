@@ -5,11 +5,18 @@
 
 本文记录**代码已经做到哪里、与规格有哪些偏差、什么还不能做以及为什么**。规格仍是规范性文档；这里的偏差中，已影响格式的都已回写 spec。
 
-## Codex hooks：回复结束时立即同步（2026-10-29，可选）
+## Codex hooks：聊完就上传，与后台轮询分工（2026-10-29，可选）
 
-参考腾讯网盘 skill 的做法（宿主 hooks 触发，而不是只靠轮询）：`hooks install` 往 `<CODEX_HOME>/hooks.json` 加两条自己的记录（`SessionStart`、`Stop`），命令是 `SM_HOOK=1 '<程序>' hook --event <事件>`。`hook` 只记录事件、重置空闲退避，并在后台起一个 worker（`hook --worker`）后立刻返回，从不输出、从不失败；worker 持 `locks/hook.lock`，一次只有一个，运行 `relay --quiet`，两次之间至少隔 30 秒，运行期间又来的事件通过 `hook.again` 标记合并为再跑一轮（最多 5 轮）。后台定时任务不变，仍负责拉取别的电脑的更新。
+参考腾讯网盘 skill 的做法（宿主 hooks 触发，而不是只靠轮询）。`hooks install` 往 `<CODEX_HOME>/hooks.json` 加一条自己的记录（`Stop`），命令是 `SM_HOOK=1 '<程序>' hook --event Stop`。
 
-边界：Codex 只运行被用户信任的 hook（`/hooks` 里确认一次；新 hook 或命令变化后都要再确认）；`hooks status` 用 `app-server` 的 `hooks/list` 读出信任状态。用真实 Codex 0.162 验证过 hooks.json 的格式被接受并列为 `untrusted`；hook 在真实 Codex 回复结束时是否触发，需用户信任后用 `hooks status` 的“last hook”确认（没有在测试里使用用户的 Codex 凭据）。WorkBuddy 没做：它的 hooks 配置与信任方式没有可核实的资料，且 `settings.json` 里有应用自己维护的内容。
+**为什么这样分工**（担心是对的）：实测（`TestMirrorCallCosts`）一次轮询约 2 次微云调用，与库大小无关；上传一条回复约 `N/50 + 7` 次/账号（N 是库里的对象数，真实服务每页 50 个），因为 `Mirror.Put` 要先列出整个 objects 目录确认名字没被占用——本机库里 224 个对象约 12 次/账号，是轮询的 6 倍。所以上传的次数才是成本，hooks 如果“每条回复传一次”只会更糟。
+
+- **hooks 决定“什么时候上传”**：`hook` 只记录事件和第一条未上传回复的时间（`hook.dirty`），并确保有一个后台 worker（`hook --worker`，持 `locks/hook.lock`，一次一个）。worker 等到“最后一条回复后安静 `hookQuiet`（75 秒）”或“第一条未上传回复后 `hookMaxWait`（5 分钟）”，先到者为准，然后运行 `relay --quiet --push-only`；等待期间的新回复只推后期限，不另起 worker；上传期间来的回复在释放锁之后被重新检查，不会丢（最多连跑 5 轮）。一段对话 = 一次上传。
+- **push-only 只采集本地并上传**：先用 `Sync.Pending`（纯本地）判断，没有待传内容时一次微云请求都没有（`Publish` 本身总会先列一次云端）；不下载、不安装、不受空闲退避限制，但受日额度暂停限制。
+- **后台轮询负责下载和兜底**：只有它能知道别的电脑发来了什么，所以照常轮询（空闲退避不变）。后台一轮（`relay --quiet`，非 hook 的 push）在 `hooksCover` 为真时不上传：待传内容全是 Codex 的修订、没有回执/中断的发布、`hook-state.json` 里最近一次 hook 不早于最老待传内容 10 分钟前（说明 hooks 在起作用）、且最老的内容等了不到 `hookSafetyAge`（10 分钟）。其余情况——WorkBuddy 的内容、没有 hook 的迹象、hooks 被禁用或没被信任、worker 死了、内容等久了——都照旧立即上传；用户手动运行的 `relay`/`sync` 永远立即上传。没有待传内容时，后台一轮也不再单独请求一次云端（以前 `Publish` 总会列一次）。
+- 效果（本机 224 个对象估算，持续聊 20 分钟、每分钟一条回复）：只靠轮询约 10 次上传；一回复一次的版本最坏约 15～20 次；现在约 4 次（`hookMaxWait` 5 分钟一次）。聊完后最后一段约 1～2 分钟内上传，空闲时好于 10 分钟。
+
+边界：它不改善“另一台电脑多久能收到”，那仍由对方的轮询周期决定（≤2～10 分钟）。Codex 只运行被用户信任的 hook（`/hooks` 里确认一次；新 hook 或命令变化后都要再确认）；`hooks status` 用 `app-server` 的 `hooks/list` 读出信任状态。用真实 Codex 0.162 验证过 hooks.json 的格式被接受并列为 `untrusted`；hook 在真实 Codex 回复结束时是否触发，需用户信任后用 `hooks status` 的“last hook”确认（没有在测试里使用用户的 Codex 凭据）。没有监听 SessionStart：别的电脑发来的内容装不进已经在运行的 Codex，拉取没有收益。WorkBuddy 没做：它的 hooks 配置与信任方式没有可核实的资料，且 `settings.json` 里有应用自己维护的内容。**下一步**（需要真实微云验证后才能做）：让上传不再每次列整个 objects 目录，需要先确认重复上传同名文件时微云的行为。
 
 ## Review 修复（2026-10-26）
 
