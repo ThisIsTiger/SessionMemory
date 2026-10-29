@@ -1,11 +1,11 @@
 #!/bin/sh
 # SessionMemory installer: downloads the program for this computer, checks it,
 # puts it in ~/.local/bin and runs `session-memory setup`.
-#   curl -fsSL https://raw.githubusercontent.com/OWNER/session-memory/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/ThisIsTiger/SessionMemory/main/install.sh | sh
 # SM_BASE_URL, SM_BIN_DIR and SM_NO_SETUP exist for testing. SM_REPO overrides the GitHub repository; SM_VERSION pins a release (default: latest).
 set -eu
 
-REPO="${SM_REPO:-OWNER/session-memory}"
+REPO="${SM_REPO:-ThisIsTiger/SessionMemory}"
 VERSION="${SM_VERSION:-latest}"
 DEST="${SM_BIN_DIR:-$HOME/.local/bin}"
 

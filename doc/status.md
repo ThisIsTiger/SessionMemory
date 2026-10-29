@@ -252,6 +252,6 @@ source "$HOME/.session-memory/dev/sandboxes/e1/env.sh"      # 然后从这个终
 - 令牌优先级不变：环境变量 > 已保存 > skill 配置（只在前两者都没有时用，并会保存下来供后台使用），避免已切换的账号被旧 skill 配置覆盖。
 - relay 现在也会把“恰好只有一个同名文件夹”的项目自动映射，不再只限 WorkBuddy 任务目录；还没有文件夹的项目只说一句“有 N 个来自其他电脑的项目暂时没有对应文件夹（名字…），有了同名文件夹会自动加入”，后台静默运行不再因此每次输出。
 - `project restore` 不写 `--agent` 时按项目会话的来源自动选；`--plan` 不再写入映射，输出 `would install`。
-- 分发：`install.sh`（下载 → sha256 校验 → `~/.local/bin` → `setup`），`.github/workflows/release.yml` 在打 `v*` 标签时构建 darwin/linux × arm64/amd64 并附 `checksums.txt`，并在仍有 `OWNER/` 占位时让发布失败；`INSTALL.md` 是给 AI 助手的执行说明（列出程序输出的每个标记及处理办法），README 顶部是给用户复制的一句话。只支持 macOS（Linux 没有后台同步）。
+- 分发：`install.sh`（下载 → sha256 校验 → `~/.local/bin` → `setup`），`.github/workflows/release.yml` 在打 `v*` 标签时构建 darwin/linux × arm64/amd64 并附 `checksums.txt`，并在仍有 `OWNER/` 占位时让发布失败（占位已替换为 `ThisIsTiger/SessionMemory`，该检查保留作保险）；`INSTALL.md` 是给 AI 助手的执行说明（列出程序输出的每个标记及处理办法），README 顶部是给用户复制的一句话。只支持 macOS（Linux 没有后台同步）。
 - 对话保存在用户自己的微云里，保护程度等同于其微云账号；云端密钥与数据同处一个文件夹，不是对账号持有人的强加密。
-- 待办：仓库地址目前是占位 `OWNER/session-memory`（install.sh、INSTALL.md、README，发布前由 release.yml 检查）；仓库需公开、README 的“private / unlicensed”说明要改；没有同名文件夹的空间项目（如 GEO）仍需指定目录；未在真实第二台电脑上端到端验证（单元测试用文件夹传输和假微云模拟）。
+- 待办：仓库已公开（https://github.com/ThisIsTiger/SessionMemory），但尚未打 `v*` 标签发布，install.sh 要等第一个 release 才能下载到程序；未指定开源许可证；没有同名文件夹的空间项目（如 GEO）仍需指定目录；未在真实第二台电脑上端到端验证（单元测试用文件夹传输和假微云模拟）。

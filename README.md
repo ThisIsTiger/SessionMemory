@@ -5,7 +5,7 @@
 在**每台**电脑（仅限 macOS）上，把下面这句话发给你的 AI 助手（Codex、WorkBuddy、Claude 等都可以），然后等它做完（可能要几分钟，请不要中途打断；被打断了让它重新运行即可）：
 
 ```
-请打开 https://github.com/OWNER/session-memory/blob/main/INSTALL.md ，按里面的说明帮我安装并开启会话同步。
+请打开 https://github.com/ThisIsTiger/SessionMemory/blob/main/INSTALL.md ，按里面的说明帮我安装并开启会话同步。
 ```
 
 - 需要用**同一个微信/QQ 登录的微云账号**。微云还没接通时，助手会一步步带你扫码授权；已经接通就直接用，不用再做任何事。
@@ -47,4 +47,4 @@ go test ./...
 go test -race ./internal/...
 ```
 
-本仓库目前为 private / unlicensed，不应对外分发。
+本仓库公开，但尚未指定开源许可证（保留所有权利）。

@@ -8,7 +8,7 @@
 1. 运行：
 
    ```sh
-   curl -fsSL https://raw.githubusercontent.com/OWNER/session-memory/main/install.sh | sh
+   curl -fsSL https://raw.githubusercontent.com/ThisIsTiger/SessionMemory/main/install.sh | sh
    ```
 
    它会下载程序、校验、装到 `~/.local/bin/session-memory`，然后自动运行 `setup`：连接微云、创建或加入同步库、纳入本机最近 60 天的会话、开启后台同步、上传一次。
