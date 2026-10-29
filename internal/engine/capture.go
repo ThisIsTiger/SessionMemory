@@ -167,8 +167,7 @@ func (e *Engine) Checkpoint(ctx context.Context, ad agent.Adapter, bindingID, pr
 		if st.Cursor != nil {
 			gen = st.Cursor.Generation
 		}
-		snap.Artifacts = append(snap.Artifacts, session.Artifact{Path: p, Kind: st.Kind, Form: st.Form, Generation: gen, Mode: st.Mode,
-			Size: st.Size, Digest: st.Digest, Segments: st.Segments})
+		snap.Artifacts = append(snap.Artifacts, snapshotArtifact(p, gen, st))
 	}
 	sj, err := canonjson.Marshal(snap)
 	if err != nil {
@@ -233,4 +232,16 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// snapshotArtifact is the snapshot entry of a captured artifact. An empty
+// file has no segments; they are written as [] because the canonical encoding
+// does not allow null.
+func snapshotArtifact(path string, gen int, st session.ArtifactState) session.Artifact {
+	segs := st.Segments
+	if segs == nil {
+		segs = []session.SegmentRef{}
+	}
+	return session.Artifact{Path: path, Kind: st.Kind, Form: st.Form, Generation: gen, Mode: st.Mode,
+		Size: st.Size, Digest: st.Digest, Segments: segs}
 }
