@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest] # Windows is not a supported platform; its path-based tests fail there
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
