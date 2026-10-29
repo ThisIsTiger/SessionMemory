@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -901,6 +902,54 @@ func (m *Mirror) Get(ctx context.Context, path string) (io.ReadCloser, error) {
 		return nil, perr
 	}
 	return m.Local.Get(ctx, path)
+}
+
+// Fetch is Get for a single file: unlike Get, which downloads everything the
+// local copy lacks under the file's top-level directory, it downloads only
+// that file (a few small objects out of the huge objects/ directory).
+func (m *Mirror) Fetch(ctx context.Context, path string) (io.ReadCloser, error) {
+	if rc, err := m.Local.Get(ctx, path); err == nil {
+		return rc, nil
+	}
+	m.mu.Lock()
+	err := m.fetchLocked(ctx, path, nil)
+	m.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return m.Local.Get(ctx, path)
+}
+
+// fetchLocked downloads one file the local copy lacks. The caller holds m.mu.
+// A file missing from the (possibly cached) remote view is looked for once more
+// in a fresh listing before it counts as not there.
+func (m *Mirror) fetchLocked(ctx context.Context, path string, beforeReceive func() error) error {
+	only := firstSegment(path)
+	if err := m.refresh(ctx, false, only); err != nil {
+		return err
+	}
+	f, ok := m.remote[path]
+	if !ok {
+		if err := m.refresh(ctx, true, only); err != nil {
+			return err
+		}
+		if f, ok = m.remote[path]; !ok {
+			return fs.ErrNotExist
+		}
+	}
+	if beforeReceive != nil {
+		if err := beforeReceive(); err != nil {
+			return err
+		}
+	}
+	data, err := m.C.download(ctx, f)
+	if err != nil {
+		return err
+	}
+	if err := m.Local.Put(ctx, path, bytes.NewReader(data)); err != nil && !errors.Is(err, ErrExists) {
+		return err
+	}
+	return nil
 }
 
 // Stable reports on the local copy.

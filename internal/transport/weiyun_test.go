@@ -393,6 +393,55 @@ func TestMirrorManifestPollSkipsTheObjectsDirectory(t *testing.T) {
 	rc.Close()
 }
 
+// Fetch brings in one file of the objects directory; Get would download every
+// object the local copy lacks.
+func TestMirrorFetchDownloadsOnlyTheFileAskedFor(t *testing.T) {
+	targets = map[string]string{}
+	fake := newFake(t)
+	ctx := context.Background()
+	mk := func() *Mirror {
+		m := NewMirror(NewFolder(t.TempDir()), fake.client(), "SessionMemory")
+		m.Local.Settle = 0
+		m.TTL = 0
+		return m
+	}
+	a, b := mk(), mk()
+	for path, data := range map[string][]byte{
+		"public/vault.json":         []byte("{}"),
+		"objects/ab/abcdef0123.obj": []byte("object"),
+		"objects/cd/cdef.obj":       []byte("x"),
+	} {
+		if err := a.Put(ctx, path, bytes.NewReader(data)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rc, err := FetchOne(ctx, b, "objects/ab/abcdef0123.obj")
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if d, _ := io.ReadAll(rc); string(d) != "object" {
+		t.Fatalf("object = %q", d)
+	}
+	rc.Close()
+	if _, err := os.Stat(filepath.Join(b.Local.Root, "objects", "cd", "cdef.obj")); err == nil {
+		t.Fatal("fetch of one object downloaded another")
+	}
+	if _, err := FetchOne(ctx, b, "objects/ee/none.obj"); err == nil {
+		t.Fatal("fetch of a file that is not there succeeded")
+	}
+	// a plain folder has no such trouble: FetchOne is Get there
+	f := NewFolder(t.TempDir())
+	f.Settle = 0
+	if err := f.Put(ctx, "objects/ab/x.obj", strings.NewReader("y")); err != nil {
+		t.Fatal(err)
+	}
+	if rc, err := FetchOne(ctx, f, "objects/ab/x.obj"); err != nil {
+		t.Fatal(err)
+	} else {
+		rc.Close()
+	}
+}
+
 func TestWeiyunQuotaIsRecognisedAndReported(t *testing.T) {
 	fake := newFake(t)
 	fake.quota = true

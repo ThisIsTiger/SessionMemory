@@ -54,7 +54,9 @@ func pathWithin(p, dir string) bool {
 }
 
 // trackProject puts every not-yet-tracked native session of agent ad whose cwd
-// is inside pm.LocalPath under SessionMemory, labelled with the project.
+// is inside pm.LocalPath under SessionMemory, labelled with the project. A
+// session that is already in the vault with exactly this content is linked to
+// its vault session instead of being tracked as a second one (trackOne).
 func trackProject(ctx context.Context, r *rt, ad agent.Adapter, pm session.ProjectMap) (tracked, already int, err error) {
 	list, err := ad.Discover(ctx, agent.DiscoverOptions{})
 	if err != nil {
@@ -68,7 +70,7 @@ func trackProject(ctx context.Context, r *rt, ad agent.Adapter, pm session.Proje
 		if t, err := session.ParseTime(s.UpdatedAt); err == nil && !since.IsZero() && t.Before(since) {
 			continue // older than the window this project was set up with
 		}
-		if _, _, err := r.Eng.Track(ctx, ad, s.Ref, pm.ProjectRef); err != nil {
+		if err := r.trackOne(ctx, ad, s.Ref, pm.ProjectRef); err != nil {
 			if errcode.CodeOf(err) == errcode.Conflict {
 				already++
 				continue

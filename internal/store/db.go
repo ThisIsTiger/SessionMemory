@@ -242,6 +242,54 @@ func (s *FS) Revisions(sessionID string) ([]session.Revision, error) {
 	return out, rows.Err()
 }
 
+// RevisionsOfAgent returns every known revision of an agent's sessions, in any
+// status (a revision whose snapshot object is not here yet is included), oldest first.
+func (s *FS) RevisionsOfAgent(agent string) ([]session.Revision, error) {
+	rows, err := s.db.Query(`SELECT json FROM revisions WHERE agent=? ORDER BY created_at, revision_id`, agent)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []session.Revision
+	for rows.Next() {
+		var j string
+		if err := rows.Scan(&j); err != nil {
+			return nil, err
+		}
+		var r session.Revision
+		if json.Unmarshal([]byte(j), &r) == nil {
+			out = append(out, r)
+		}
+	}
+	return out, rows.Err()
+}
+
+// AdoptRevisions records revisions read from another device's manifest before
+// that manifest is imported, so a binding can name one of them. Their segment
+// objects need not be here; a revision counts as committed once its snapshot
+// object is. Importing the manifest later stores the same rows again. The
+// revisions are validated, persisted as files (a rebuild keeps them) and indexed.
+func (s *FS) AdoptRevisions(revs ...session.Revision) error {
+	for _, r := range revs {
+		if err := r.Validate(); err != nil {
+			return errcode.Wrap(errcode.UnsafeRecord, "invalid revision", err)
+		}
+	}
+	for _, r := range revs {
+		b, err := canonjson.Marshal(r)
+		if err != nil {
+			return err
+		}
+		if err := platform.AtomicWrite(s.revisionPath(r.RevisionID), append(b, '\n'), 0600); err != nil {
+			return err
+		}
+		if err := s.insertRevision(r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *FS) LoadRevision(id string) (session.Revision, error) {
 	var r session.Revision
 	var raw string

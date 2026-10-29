@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"sort"
 	"sync"
@@ -330,6 +331,39 @@ func (m *MultiMirror) Get(ctx context.Context, path string) (io.ReadCloser, erro
 	m.mu.Unlock()
 	if found != nil {
 		return found, nil
+	}
+	if ok == 0 && len(m.Accounts) > 0 {
+		return nil, first
+	}
+	return m.Local.Get(ctx, path)
+}
+
+// Fetch is Get for a single file: it downloads only that file from the first
+// account that has it, not everything the local copy lacks in its directory.
+func (m *MultiMirror) Fetch(ctx context.Context, path string) (io.ReadCloser, error) {
+	if rc, err := m.Local.Get(ctx, path); err == nil {
+		return rc, nil
+	}
+	m.mu.Lock()
+	found := false
+	ok, _, first := m.each(func(a Account) error {
+		if found {
+			return nil
+		}
+		a.M.mu.Lock()
+		err := a.M.fetchLocked(ctx, path, m.markReceived)
+		a.M.mu.Unlock()
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // this account does not have it; another may
+		}
+		if err == nil {
+			found = true
+		}
+		return err
+	})
+	m.mu.Unlock()
+	if found {
+		return m.Local.Get(ctx, path)
 	}
 	if ok == 0 && len(m.Accounts) > 0 {
 		return nil, first

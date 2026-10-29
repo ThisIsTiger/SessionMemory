@@ -163,12 +163,15 @@ func newSetupCmd(a *App) *cobra.Command {
 				}
 				a.Cfg.Agents.WorkBuddy.AllowRegistryWrite = true
 			}
-			n, skipped, err := a.trackAll(ctx, agents, days)
+			n, skipped, linked, err := a.trackAll(ctx, agents, days)
 			if err != nil {
 				return err
 			}
 			platform.AtomicWrite(a.keyMarker(markTrackNew), []byte(strconv.Itoa(days)+"\n"), 0600) // from now on every sync follows new project folders, within the same window
 			say("sessions of the last %d days (%s): %d covered, %d skipped (no project folder)", days, strings.Join(agents, ", "), n, skipped)
+			if linked > 0 {
+				say("%d session(s) were already in your Weiyun and are now linked (nothing was uploaded)", linked)
+			}
 			a.repairCloudKey(ctx, say)
 
 			if !noAuto {
@@ -303,14 +306,20 @@ func (a *App) installedAgents() []string {
 }
 
 // trackAll is setup's use of trackFolders: local only, nothing is published
-// here; the relay that follows uploads everything not yet uploaded.
-func (a *App) trackAll(ctx context.Context, agents []string, days int) (tracked, skipped int, err error) {
+// here; the relay that follows uploads everything not yet uploaded. Sessions
+// that are already in the vault, exactly as they are on this computer, are
+// linked to it instead (linked counts them): after a reset or a reinstall the
+// vault still holds this computer's sessions, and tracking them again would
+// upload a second copy of each.
+func (a *App) trackAll(ctx context.Context, agents []string, days int) (tracked, skipped, linked int, err error) {
 	r, err := a.openRT(ctx, true)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	defer r.Close()
-	return a.trackFolders(ctx, r, agents, days, false)
+	r.claims = r.vaultClaims()
+	tracked, skipped, err = a.trackFolders(ctx, r, agents, days, false)
+	return tracked, skipped, r.claimed, err
 }
 
 // trackFolders brings every recent session of the given agents under
@@ -390,6 +399,9 @@ func (a *App) trackFolders(ctx context.Context, r *rt, agents []string, days int
 			existing = append(existing, pm)
 			t, already, err := trackProject(ctx, r, ad, pm)
 			if err != nil {
+				return tracked, skipped, err
+			}
+			if existing, err = a.mapClaimedProjects(r, pm, existing); err != nil {
 				return tracked, skipped, err
 			}
 			tracked += t

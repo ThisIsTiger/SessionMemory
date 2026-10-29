@@ -117,39 +117,67 @@ func (s *Sync) quarantine(path string, data []byte, reason errcode.Code, res *Pu
 	s.Store.DB().Exec(`INSERT INTO quarantine(path, reason, at) VALUES(?,?,?)`, path, string(reason), session.FormatTime(s.Store.Now()))
 }
 
-// importOne validates and applies one manifest. ok=false,stop=true halts the
-// device's remaining manifests (pending or quarantined); ok=false,stop=false
-// skips only this one.
-func (s *Sync) importOne(ctx context.Context, dev string, seq int64, hash12 string, e transport.Entry, prevSha string, res *PullResult) (ok, stop bool, err error) {
-	stable, err := s.T.Stable(ctx, e)
-	if err != nil || !stable {
-		return false, true, nil
-	}
-	rc, err := s.T.Get(ctx, e.Path)
-	if err != nil {
-		if errors.Is(err, transport.ErrNotStable) || errors.Is(err, fs.ErrNotExist) {
-			return false, true, nil
+// manifestVerdict is what reading one manifest file led to.
+type manifestVerdict int
+
+const (
+	manifestOK   manifestVerdict = iota
+	manifestWait                 // not readable yet (still being written or downloaded)
+	manifestBad                  // readable but wrong: reason says why
+)
+
+// readManifest reads, authenticates and validates the manifest file e of
+// device dev. data is the file's bytes whenever they were read. With
+// checkStable the transport must first vouch that the file is complete; without
+// it an incomplete file is caught by its name's hash and reported as wait.
+func (s *Sync) readManifest(ctx context.Context, dev string, seq int64, hash12 string, e transport.Entry, prevSha string, checkStable bool) (m session.Manifest, data []byte, h string, v manifestVerdict, reason errcode.Code, err error) {
+	if checkStable {
+		stable, serr := s.T.Stable(ctx, e)
+		if serr != nil || !stable {
+			return m, nil, "", manifestWait, "", nil
 		}
-		return false, true, err
+	}
+	rc, gerr := s.T.Get(ctx, e.Path)
+	if gerr != nil {
+		if errors.Is(gerr, transport.ErrNotStable) || errors.Is(gerr, fs.ErrNotExist) {
+			return m, nil, "", manifestWait, "", nil
+		}
+		return m, nil, "", manifestWait, "", gerr
 	}
 	data, rerr := io.ReadAll(rc)
 	rc.Close()
 	if rerr != nil {
-		return false, true, rerr
+		return m, nil, "", manifestWait, "", rerr
 	}
-	h := sha(data)
+	h = sha(data)
 	if h[:12] != hash12 {
-		s.quarantine(e.Path, data, errcode.AuthFailed, res)
-		return false, true, nil
+		if !checkStable {
+			return m, data, h, manifestWait, "", nil
+		}
+		return m, data, h, manifestBad, errcode.AuthFailed, nil
 	}
 	plain, oerr := s.V.Open(vault.TypeManifest, vault.ManifestAAD(dev, seq, prevSha), data)
 	if oerr != nil {
-		s.quarantine(e.Path, data, errcode.AuthFailed, res)
-		return false, true, nil
+		return m, data, h, manifestBad, errcode.AuthFailed, nil
 	}
-	var m session.Manifest
 	if err := json.Unmarshal(plain, &m); err != nil || !manifestValid(m, dev, seq, prevSha) {
-		s.quarantine(e.Path, data, errcode.UnsafeRecord, res)
+		return m, data, h, manifestBad, errcode.UnsafeRecord, nil
+	}
+	return m, data, h, manifestOK, "", nil
+}
+
+// importOne validates and applies one manifest. ok=false,stop=true halts the
+// device's remaining manifests (pending or quarantined); ok=false,stop=false
+// skips only this one.
+func (s *Sync) importOne(ctx context.Context, dev string, seq int64, hash12 string, e transport.Entry, prevSha string, res *PullResult) (ok, stop bool, err error) {
+	m, data, h, verdict, reason, rerr := s.readManifest(ctx, dev, seq, hash12, e, prevSha, true)
+	switch {
+	case rerr != nil:
+		return false, true, rerr
+	case verdict == manifestWait:
+		return false, true, nil
+	case verdict == manifestBad:
+		s.quarantine(e.Path, data, reason, res)
 		return false, true, nil
 	}
 	// objects

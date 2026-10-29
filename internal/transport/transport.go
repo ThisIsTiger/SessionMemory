@@ -43,6 +43,23 @@ type Transport interface {
 	Stable(ctx context.Context, e Entry) (bool, error)
 }
 
+// Fetcher is an optional capability. A transport that mirrors a whole
+// directory at a time (Weiyun) downloads every missing file of that directory
+// when Get misses one; Fetch brings in only the file asked for. Callers that
+// need a few small files of the big objects/ directory use FetchOne.
+type Fetcher interface {
+	Fetch(ctx context.Context, path string) (io.ReadCloser, error)
+}
+
+// FetchOne is Get, but without downloading the rest of the directory on
+// transports that would.
+func FetchOne(ctx context.Context, t Transport, path string) (io.ReadCloser, error) {
+	if f, ok := t.(Fetcher); ok {
+		return f.Fetch(ctx, path)
+	}
+	return t.Get(ctx, path)
+}
+
 // FolderOptions tunes FolderTransport.
 type FolderOptions struct {
 	Root   string

@@ -275,3 +275,17 @@ source "$HOME/.session-memory/dev/sandboxes/e1/env.sh"      # 然后从这个终
 - **F03 复核**：MultiMirror.CatchUp 记录每个账号是否已完整读取（`<StateFile>.read`），升级期间无法联系的账号不再导致每轮都清除状态并对健康账号强制全量拉取；`.received-v1` 仍表示完整并集已核对、旧标记已清除。
 - **A07**：`SaveBinding` 在写文件前检查唯一的 active binding，冲突时不留下文件。**A13**：`--json` 下命令已输出结果文档后再失败，错误只写 stderr，stdout 保持一个文档。
 - 仍延期：A08、A09、A10、A15、A16。
+
+## 认领云端已有的会话（2026-10-29，reset / 重装之后不再生出重复会话）
+
+问题：本机状态丢失（`reset`、重装）后，`setup` 把本机原生会话都当新会话追踪；其中许多已在云端（本机自己发布过，或从另一台安装来，两边原生 id 相同），结果云端出现重复会话，另一台收到自己的会话又装不上，relay 永远 `recovery_needed`。
+
+做法（`internal/engine/claim.go`，`Engine.Claim`；`cmd_claim.go` 的 `trackOne` 在 setup / `project track` / 同步里代替直接 `Track`）：
+- **只读元数据**：`Sync.PeekRevisions` 读其他设备尚未导入的 manifest（不导入、不写 store、不下载任何 segment），`FetchSnapshot` 只取被比较的 revision 的 snapshot 小对象（链接成功后再取该 revision 的 repo-state）；微云上用新增的 `transport.Fetcher.Fetch` 按单文件下载（`Get` 会把 `objects/` 里缺的全拉下来）。setup 第一个原生会话需要时才读一次；读不到云端清单时 setup 中止而不追踪，宁可重跑也不制造副本。
+- **候选**：同 agent、首个 revision 的 `origin_native_id` 等于该原生 id、且本机没有它的 active binding 的 session；多个时取最老的（早先 setup 造成的副本更年轻）。
+- **精确校验**：原生文件的 artifact 集合、各 artifact 大小与某个 revision R 的 snapshot 完全一致，并用 R 自己的分段边界重新哈希原生字节（`VerifyBinding(deep)`，流用 segment `raw_hash`，blob 含 0 字节文件用 segments digest）。优先最新的匹配 R（可以是祖先，之后 relay 快进）。每个 session 最多比较最新 12 个 revision；若原生文件已超出最新 revision（历史单头），只取这一个 snapshot 就停。
+- **绑定**：匹配后按安装后的形态建 binding（`ad.Capture` 取游标，`BaseRevisionID = InstalledRevisionID = R`，`InstallNative`），不产生 revision、不上传任何对象，只往 outbox 放一条 `installed` 回执；R（及根 revision）预先记入本机 store（`Store.AdoptRevisions`），之后的正常拉取会再写同样的行。一次原子的 binding 文件写入，崩溃矩阵测试覆盖。
+- **不匹配则不变**：有未发布进度、内容不同、被篡改/半行/截断、无候选，一律回到原来的 `Track`（仍会新建一个 session，是已知的剩余情形）。仅凭原生 id 从不认领；不改原生文件。
+- 输出：`N session(s) were already in your Weiyun and are now linked (nothing was uploaded)`（不是标记，INSTALL.md 不变）。被认领会话的项目 ref 来自另一台，setup 会把它们也映射到该文件夹，以便之后 relay 更新。
+
+未覆盖：从另一台**安装**来、且安装时改写过内容（cwd 路径映射、Codex 的 model_provider、WorkBuddy 的 `projects/<目录>` 路径）的原生会话，字节与云端 revision 不同，仍会被当作新会话（需要「按 Writer 计划比对」的第二层，要下载该会话全部 segment）；已经存在于云端的重复会话不会被合并或清理。

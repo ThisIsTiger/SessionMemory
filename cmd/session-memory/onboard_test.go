@@ -704,3 +704,171 @@ func TestRateLimitPausesForMinutesOnly(t *testing.T) {
 		t.Fatal("a call that goes through must end the pause")
 	}
 }
+
+// a Codex session of m recorded in cwd, written with the provider the machines
+// of these tests run with (so an install elsewhere changes none of its bytes)
+func addCustomCodexSession(m *machine, seed int64, cwd string) string {
+	tid := codexgen.ThreadIDFor(seed)
+	p := filepath.Join(m.home, "codex", "sessions", "2026", "09", "01", "rollout-2026-09-01T01-46-53-"+tid+".jsonl")
+	os.MkdirAll(filepath.Dir(p), 0700)
+	os.WriteFile(p, codexgen.Rollout(codexgen.Options{Seed: seed, Turns: 2, Cwd: cwd, ModelProvider: "custom"}), 0600)
+	return p
+}
+
+func sessionIDs(t *testing.T, m *machine) map[string]bool {
+	t.Helper()
+	var rows []struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal([]byte(m.must("list", "--json")), &rows); err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]bool{}
+	for _, r := range rows {
+		out[r.SessionID] = true
+	}
+	return out
+}
+
+func fileCount(dir string) int {
+	n := 0
+	filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			n++
+		}
+		return nil
+	})
+	return n
+}
+
+// resetAndReconnect is what a person does to start a computer over: reset puts
+// the state aside, the settings are given again, setup runs.
+func resetAndReconnect(t *testing.T, m *machine, shared string) string {
+	t.Helper()
+	m.must("reset", "--yes")
+	m.must("config", "set", "transport.folder", shared)
+	m.must("config", "set", "agents.codex.home", filepath.Join(m.home, "codex"))
+	selfVia(t, m, nil)
+	return m.must("setup", "--no-autosync", "--client-closed", "--days", "36500")
+}
+
+// Two computers share sessions; both are reset and set up again. Every session
+// that is already in the cloud is linked to, not tracked a second time: the same
+// session ids, nothing new uploaded, and a sync that ends with nothing to attend to.
+func TestResetBothComputersThenSetupLinksInsteadOfDuplicating(t *testing.T) {
+	root := t.TempDir()
+	shared := filepath.Join(root, "cloud")
+	A := newComputer(t, root, "a", shared)
+	B := newComputer(t, root, "b", shared)
+	dir := filepath.Join(root, "work", "app") // the same folder on both computers
+	os.MkdirAll(dir, 0700)
+	pa1 := addCustomCodexSession(A, 61, dir)
+	pa2 := addCustomCodexSession(A, 62, dir)
+
+	selfVia(t, A, nil)
+	A.must("setup", "--no-autosync", "--days", "36500")
+	ref := regexp.MustCompile(`prj_[a-z2-7]{16}`).FindString(A.must("project", "list"))
+	if ref == "" {
+		t.Fatal("A has no project")
+	}
+	selfVia(t, B, nil)
+	B.must("setup", "--no-autosync", "--client-closed", "--days", "36500")
+	B.must("project", "restore", ref, "--cwd", dir, "--client-closed", "--allow-code-mismatch")
+	installed := mustGlob(t, filepath.Join(B.home, "codex", "sessions", "*", "*", "*", "*.jsonl"))
+	if len(installed) != 2 {
+		t.Fatalf("B installed %v", installed)
+	}
+	for _, f := range installed { // an exact copy, which is what makes it recognisable later
+		want := pa1
+		if strings.Contains(f, codexgen.ThreadIDFor(62)) {
+			want = pa2
+		}
+		a, _ := os.ReadFile(want)
+		b, _ := os.ReadFile(f)
+		if string(a) != string(b) {
+			t.Fatalf("fixture: the install on B differs from A's file %s", f)
+		}
+	}
+	selfVia(t, A, nil)
+	A.must("relay", "--client-closed")
+	selfVia(t, B, nil)
+	B.must("relay", "--client-closed")
+	idsA, idsB := sessionIDs(t, A), sessionIDs(t, B)
+	if len(idsA) != 2 || len(idsB) != 2 {
+		t.Fatalf("before the reset: A has %v, B has %v", idsA, idsB)
+	}
+	objects := fileCount(filepath.Join(shared, "objects"))
+
+	for _, c := range []struct {
+		name string
+		m    *machine
+	}{{"A", A}, {"B", B}} {
+		out := resetAndReconnect(t, c.m, shared)
+		if !strings.Contains(out, "2 session(s) were already in your Weiyun and are now linked (nothing was uploaded)") || !strings.Contains(out, "done: JOINED") {
+			t.Fatalf("%s: setup after the reset:\n%s", c.name, out)
+		}
+		if strings.Contains(out, "NEEDS_ACTION") || strings.Contains(out, "need attention") {
+			t.Fatalf("%s: setup ended with sessions that need attention:\n%s", c.name, out)
+		}
+	}
+	for _, c := range []struct {
+		name string
+		m    *machine
+		want map[string]bool
+	}{{"A", A, idsA}, {"B", B, idsB}} {
+		selfVia(t, c.m, nil)
+		out := c.m.must("relay", "--client-closed") // exit 0: nothing needs attention
+		if strings.Contains(out, "need attention") {
+			t.Fatalf("%s: relay:\n%s", c.name, out)
+		}
+		c.m.must("relay", "--client-closed")
+		got := sessionIDs(t, c.m)
+		if len(got) != len(c.want) {
+			t.Fatalf("%s: sessions %v, before the reset %v", c.name, got, c.want)
+		}
+		for id := range c.want {
+			if !got[id] {
+				t.Fatalf("%s: session %s is gone or replaced: %v", c.name, id, got)
+			}
+		}
+		if list := c.m.must("list"); strings.Contains(list, "unpublished=1") || strings.Contains(list, "conflict=true") {
+			t.Fatalf("%s:\n%s", c.name, list)
+		}
+	}
+	if n := fileCount(filepath.Join(shared, "objects")); n != objects {
+		t.Fatalf("the cloud holds %d objects after the reset of both computers, %d before: something was uploaded again", n, objects)
+	}
+}
+
+// Progress the cloud does not have is not linked: that session is tracked as a
+// new one, as before. The other session is still linked.
+func TestSetupAfterResetStillTracksWhatTheCloudDoesNotHold(t *testing.T) {
+	root := t.TempDir()
+	shared := filepath.Join(root, "cloud")
+	A := newComputer(t, root, "a", shared)
+	dir := filepath.Join(root, "work", "app")
+	os.MkdirAll(dir, 0700)
+	addCustomCodexSession(A, 71, dir)
+	p2 := addCustomCodexSession(A, 72, dir)
+	selfVia(t, A, nil)
+	A.must("setup", "--no-autosync", "--days", "36500")
+	before := sessionIDs(t, A)
+
+	f, _ := os.OpenFile(p2, os.O_APPEND|os.O_WRONLY, 0600)
+	f.WriteString(`{"timestamp":"2026-09-01T02:00:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"later"}}` + "\n")
+	f.Close()
+	out := resetAndReconnect(t, A, shared)
+	if !strings.Contains(out, "1 session(s) were already in your Weiyun and are now linked") {
+		t.Fatalf("one of the two is still what the cloud holds:\n%s", out)
+	}
+	got := sessionIDs(t, A)
+	kept := 0
+	for id := range got {
+		if before[id] {
+			kept++
+		}
+	}
+	if len(got) != 3 || kept != 2 {
+		t.Fatalf("the session with new progress becomes a new session (and the old one stays in the cloud): %v from %v", got, before)
+	}
+}

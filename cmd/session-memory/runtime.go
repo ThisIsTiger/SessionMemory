@@ -36,6 +36,14 @@ type rt struct {
 	Sync   *syncpkg.Sync
 	Multi  *transport.MultiMirror // the Weiyun accounts, when Weiyun is the transport
 	unlock func()
+
+	// claims lets tracking link native sessions to sessions the vault already
+	// holds (see trackOne); set by setup, which reads the vault's list for it.
+	claims *engine.ClaimIndex
+	// claimed counts the sessions linked rather than tracked, claimedRefs the
+	// project refs they carry (reset by whoever reads them).
+	claimed     int
+	claimedRefs map[string]bool
 }
 
 func (r *rt) Close() {
@@ -79,6 +87,10 @@ func lockStore(root string) (func(), error) {
 		time.Sleep(500 * time.Millisecond)
 	}
 }
+
+// folderSettle is how long a file in the sync folder must stay unchanged before
+// it is read (the transport's default); tests shorten it.
+var folderSettle = transport.NewFolder("").Settle
 
 // lockWait is how long a command waits for another session-memory to finish.
 var lockWait = 3 * time.Minute
@@ -131,7 +143,9 @@ func (a *App) openRT(ctx context.Context, needSync bool) (*rt, error) {
 		r.Sync = syncpkg.New(st, m, v, root, info)
 		r.Multi = m
 	} else if folder := a.Cfg.Transport.Folder; folder != "" {
-		r.Sync = syncpkg.New(st, transport.NewFolder(config.ExpandPath(folder)), v, root, info)
+		tf := transport.NewFolder(config.ExpandPath(folder))
+		tf.Settle = folderSettle
+		r.Sync = syncpkg.New(st, tf, v, root, info)
 	} else if needSync {
 		r.Close()
 		return nil, errcode.New(errcode.Usage, "no sync folder configured; run transport attach-folder or attach-weiyun")

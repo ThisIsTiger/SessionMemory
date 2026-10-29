@@ -168,6 +168,7 @@ func (a *App) weiyunMirror(name string) (*transport.MultiMirror, error) {
 	}
 	a.migrateAccountKeys(accounts)
 	local := transport.NewFolder(a.weiyunCache())
+	local.Settle = folderSettle
 	var mirrors []transport.Account
 	for _, ac := range accounts {
 		ac := ac
