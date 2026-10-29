@@ -60,9 +60,13 @@ func trackProject(ctx context.Context, r *rt, ad agent.Adapter, pm session.Proje
 	if err != nil {
 		return 0, 0, err
 	}
+	since, _ := session.ParseTime(pm.Since)
 	for _, s := range list {
 		if s.Cwd == "" || !pathWithin(s.Cwd, pm.LocalPath) {
 			continue
+		}
+		if t, err := session.ParseTime(s.UpdatedAt); err == nil && !since.IsZero() && t.Before(since) {
+			continue // older than the window this project was set up with
 		}
 		if _, _, err := r.Eng.Track(ctx, ad, s.Ref, pm.ProjectRef); err != nil {
 			if errcode.CodeOf(err) == errcode.Conflict {

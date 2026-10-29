@@ -300,6 +300,9 @@ type ProjectMap struct {
 	// Watch lists the agents whose new sessions under LocalPath are tracked
 	// automatically by sync (set by project track; device-local).
 	Watch []string `json:"watch,omitempty"`
+	// Since, when set (TimeLayout), leaves out sessions last updated before it:
+	// setup takes on recent work only, not the whole history of a folder.
+	Since string `json:"since,omitempty"`
 }
 
 // PathRuleJSON is the persisted form of agent.PathRule.

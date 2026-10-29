@@ -19,6 +19,7 @@ import (
 	"session-memory/internal/config"
 	"session-memory/internal/device"
 	"session-memory/internal/errcode"
+	"session-memory/internal/platform"
 	"session-memory/internal/session"
 	"session-memory/internal/transport"
 )
@@ -166,7 +167,7 @@ func newSetupCmd(a *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			touch(a.keyMarker(markTrackNew)) // from now on every sync follows new project folders
+			platform.AtomicWrite(a.keyMarker(markTrackNew), []byte(strconv.Itoa(days)+"\n"), 0600) // from now on every sync follows new project folders, within the same window
 			say("sessions of the last %d days (%s): %d covered, %d skipped (no project folder)", days, strings.Join(agents, ", "), n, skipped)
 			a.repairCloudKey(ctx, say)
 
@@ -252,7 +253,7 @@ func (a *App) joinOrCreateVault(ctx context.Context, say func(string, ...any)) (
 	if _, err := runSelf(ctx, "init"); err != nil {
 		return 0, err
 	}
-	attach := []string{"transport", "attach-weiyun", weiyunDirName}
+	attach := []string{"transport", "attach-weiyun", a.Cfg.Transport.Weiyun}
 	if a.Cfg.Transport.Weiyun == "" {
 		attach = []string{"transport", "attach-folder", a.Cfg.Transport.Folder}
 	}
@@ -374,6 +375,9 @@ func (a *App) trackFolders(ctx context.Context, r *rt, agents []string, days int
 				}
 			}
 			pm.LocalPath = dir
+			if pm.Since == "" && days < 3650 {
+				pm.Since = since.UTC().Format(session.TimeLayout)
+			}
 			if pm.Label == "" {
 				pm.Label = filepath.Base(dir)
 			}

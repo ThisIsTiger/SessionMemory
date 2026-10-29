@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -315,7 +318,7 @@ func syncOnce(ctx context.Context, a *App, r *rt) (map[string]int, error) {
 		r.Multi.CatchUp(ctx) // an account that missed writes is brought level; failures are reported by the mirror
 	}
 	if exists(a.keyMarker(markTrackNew)) { // set by setup: new project folders are followed
-		n, _, err := a.trackFolders(ctx, r, a.installedAgents(), 60, true)
+		n, _, err := a.trackFolders(ctx, r, a.installedAgents(), a.trackWindowDays(), true)
 		if err != nil {
 			fmt.Fprintf(a.Err, "warning: could not look for new project folders: %v\n", err)
 		}
@@ -431,4 +434,15 @@ func captureFailure(out map[string]int) error {
 		return errcode.New(errcode.RecoveryNeeded, fmt.Sprintf("%d session(s) could not be captured; see the warnings above", n))
 	}
 	return nil
+}
+
+// trackWindowDays is the number of days setup was told to look back; every
+// sync keeps to the same window when it follows new project folders.
+func (a *App) trackWindowDays() int {
+	if b, err := os.ReadFile(a.keyMarker(markTrackNew)); err == nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 60
 }

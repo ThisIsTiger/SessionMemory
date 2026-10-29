@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"session-memory/internal/device"
 	"session-memory/internal/testutil/codexgen"
@@ -619,4 +620,70 @@ func TestResetPutsStateAsideAndSetupStartsAgain(t *testing.T) {
 	if !strings.Contains(out, "done: JOINED") {
 		t.Fatalf("after a reset, setup must rejoin the vault in the cloud:\n%s", out)
 	}
+}
+
+// --days limits the sessions, not just the folders: a folder taken on because
+// of recent work does not bring its whole history, now or on later syncs.
+func TestSetupTakesOnlyRecentSessions(t *testing.T) {
+	root := t.TempDir()
+	shared := filepath.Join(root, "cloud")
+	A := newComputer(t, root, "a", shared)
+	app := filepath.Join(A.home, "work", "app")
+	os.MkdirAll(app, 0700)
+	addCodexSession(A, 41, app) // old
+	addCodexSession(A, 42, app) // recent
+	files, _ := filepath.Glob(filepath.Join(A.home, "codex", "sessions", "*", "*", "*", "*.jsonl"))
+	if len(files) != 2 {
+		t.Fatalf("fixture: %v", files)
+	}
+	old := time.Now().Add(-100 * 24 * time.Hour)
+	for _, f := range files {
+		if strings.Contains(f, codexgen.ThreadIDFor(41)) {
+			os.Chtimes(f, old, old)
+		}
+	}
+	selfVia(t, A, nil)
+	A.must("setup", "--no-autosync", "--days", "30")
+	if n := sessionLines(A); n != 1 {
+		t.Fatalf("only the recent session must be tracked, got %d:\n%s", n, A.must("list"))
+	}
+	A.must("sync")
+	if n := sessionLines(A); n != 1 {
+		t.Fatalf("a later sync must not take on the old session, got %d", n)
+	}
+}
+
+// A sync after setup keeps to the window setup was given: a folder whose only
+// recent session is older than that is not taken on later.
+func TestSyncKeepsToTheSetupWindow(t *testing.T) {
+	root := t.TempDir()
+	shared := filepath.Join(root, "cloud")
+	A := newComputer(t, root, "a", shared)
+	app := filepath.Join(A.home, "work", "app")
+	other := filepath.Join(A.home, "work", "other")
+	os.MkdirAll(app, 0700)
+	os.MkdirAll(other, 0700)
+	addCodexSession(A, 51, app)
+	addCodexSession(A, 52, other)
+	for _, f := range mustGlob(t, filepath.Join(A.home, "codex", "sessions", "*", "*", "*", "*.jsonl")) {
+		if strings.Contains(f, codexgen.ThreadIDFor(52)) {
+			d := time.Now().Add(-20 * 24 * time.Hour) // inside 60 days, outside 3
+			os.Chtimes(f, d, d)
+		}
+	}
+	selfVia(t, A, nil)
+	A.must("setup", "--no-autosync", "--days", "3")
+	A.must("sync")
+	if n := sessionLines(A); n != 1 {
+		t.Fatalf("a sync must not widen the window setup was given, got %d:\n%s", n, A.must("list"))
+	}
+}
+
+func mustGlob(t *testing.T, pattern string) []string {
+	t.Helper()
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
 }
