@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"session-memory/internal/config"
+	"session-memory/internal/source/codex"
 )
 
 // aside is where a file or folder goes when it is put aside rather than
@@ -39,10 +40,15 @@ func newResetCmd(a *App) *cobra.Command {
 			shortcut := filepath.Join(home, "Desktop", "开启同步.command")
 			_, shortcutErr := os.Stat(shortcut)
 
+			hooked := a.homesWithOurHooks()
+
 			if !yes {
 				fmt.Fprintln(a.Out, "This would, on this computer only:")
 				if hasJob {
 					fmt.Fprintln(a.Out, "  - stop the background sync")
+				}
+				for _, h := range hooked {
+					fmt.Fprintf(a.Out, "  - take the session-memory hooks out of %s (your own hooks stay)\n", codex.HooksPath(h))
 				}
 				for _, p := range move {
 					fmt.Fprintf(a.Out, "  - put %s aside as %s\n", p, aside(p, stamp))
@@ -59,6 +65,12 @@ func newResetCmd(a *App) *cobra.Command {
 					return err // a running job would only recreate what is put aside
 				}
 				fmt.Fprintln(a.Out, "background sync is off")
+			}
+			for _, h := range hooked {
+				if _, err := codex.RemoveHooks(h); err != nil {
+					return err
+				}
+				fmt.Fprintf(a.Out, "session-memory hooks removed from %s\n", codex.HooksPath(h))
 			}
 			for _, p := range move {
 				to := aside(p, stamp)

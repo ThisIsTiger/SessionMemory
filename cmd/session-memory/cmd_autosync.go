@@ -145,6 +145,9 @@ func newAutosyncCmd(a *App) *cobra.Command {
 			} else if w := idleWait(a.loadIdle().Quiet); w > 0 {
 				fmt.Fprintf(a.Out, "quiet: nothing has changed for a while, so it checks about every %d minutes (any change brings it back to every 2)\n", int(w.Minutes()))
 			}
+			if h := a.loadHookState(); !h.At.IsZero() {
+				fmt.Fprintf(a.Out, "Codex hooks: last %s at %s (they start a sync right after a reply)\n", h.Event, h.At.Format("2006-01-02 15:04:05"))
+			}
 			if b, err := os.ReadFile(filepath.Join(a.Cfg.StateDir(), "autosync.log")); err == nil {
 				lines := strings.Split(strings.TrimSpace(string(b)), "\n")
 				if len(lines) > 8 {
