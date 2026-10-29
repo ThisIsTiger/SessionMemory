@@ -185,6 +185,13 @@ func (a *App) weiyunMirror(name string) (*transport.MultiMirror, error) {
 				a.recordQuota(ac.id)
 			}
 		}
+		ratedOnce := false
+		c.OnRate = func(error) {
+			if !ratedOnce {
+				ratedOnce = true
+				a.recordRate(ac.id)
+			}
+		}
 		c.OnOK = func() { a.clearQuota(ac.id) }
 		mir := transport.NewMirror(local, c, name)
 		mir.KeyCache = filepath.Join(a.Cfg.StateDir(), "weiyun-keys-"+strings.ReplaceAll(ac.id, "#", "-")+".json")
@@ -198,7 +205,7 @@ func (a *App) weiyunMirror(name string) (*transport.MultiMirror, error) {
 		return a.quietRun && paused
 	}
 	mm.Note = func(label string, err error) {
-		if !errors.Is(err, transport.ErrQuota) {
+		if !errors.Is(err, transport.ErrQuota) && !errors.Is(err, transport.ErrRate) {
 			fmt.Fprintf(a.Err, "warning: Weiyun account %s: %v\n", label, err)
 		}
 	}

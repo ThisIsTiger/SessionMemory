@@ -38,6 +38,7 @@ type WeiyunClient struct {
 	// OnQuota is called when Weiyun says today's quota is used up; OnOK once,
 	// at the first call that goes through.
 	OnQuota func(error)
+	OnRate  func(error)
 	OnOK    func()
 	okSeen  bool
 	// Reauth is asked once, when Weiyun rejects the token, for a replacement
@@ -50,12 +51,20 @@ type WeiyunClient struct {
 // nothing helps until it resets.
 var ErrQuota = errors.New("weiyun daily quota used up")
 
+// ErrRate means Weiyun refused the call because too many came in a short
+// time; the same call works again after a few minutes.
+var ErrRate = errors.New("weiyun request rate limit")
+
 // ErrAuth means Weiyun rejected the token (expired or revoked).
 var ErrAuth = errors.New("weiyun token rejected")
 
 func isAuthMessage(msg string) bool {
 	m := strings.ToLower(msg)
 	return strings.Contains(m, "unauthorized") || (strings.Contains(m, "token") && (strings.Contains(m, "invalid") || strings.Contains(m, "expired")))
+}
+
+func isRateMessage(msg string) bool {
+	return strings.Contains(msg, "190054") || strings.Contains(msg, "请求次数超限")
 }
 
 func isQuotaMessage(msg string) bool {
@@ -104,12 +113,19 @@ func sameOrigin(req *http.Request, via []*http.Request) error {
 }
 
 func (c *WeiyunClient) failure(tool, msg string) error {
-	quota, auth := isQuotaMessage(msg), isAuthMessage(msg)
+	quota, auth, rate := isQuotaMessage(msg), isAuthMessage(msg), isRateMessage(msg)
 	msg = c.redact(msg)
 	if quota {
 		err := fmt.Errorf("weiyun: %s: %w (%s)", tool, ErrQuota, msg)
 		if c.OnQuota != nil {
 			c.OnQuota(err)
+		}
+		return err
+	}
+	if rate {
+		err := fmt.Errorf("weiyun: %s: %w (%s)", tool, ErrRate, msg)
+		if c.OnRate != nil {
+			c.OnRate(err)
 		}
 		return err
 	}

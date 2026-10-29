@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -146,5 +147,28 @@ func TestServerErrorRedactsMCPTokenButKeepsQuotaClass(t *testing.T) {
 		if errors.Is(err, ErrQuota) != quota || (reported != nil) != quota {
 			t.Fatalf("quota classification changed (quota=%v): %v", quota, err)
 		}
+	}
+}
+
+// "Too many requests in a short time" (190054) is its own kind of refusal:
+// it is told apart from the day's quota, reported to the caller once, and the
+// message stays readable.
+func TestRateLimitIsNotTheDailyQuota(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"error\":\"type:business, code:190054, msg:(190054)请求次数超限，请等待一段时间后重试\"}"}]}}`)
+	}))
+	defer srv.Close()
+	c := NewWeiyunClient("tok")
+	c.URL = srv.URL
+	rated, quota := 0, 0
+	c.OnRate = func(error) { rated++ }
+	c.OnQuota = func(error) { quota++ }
+	err := c.call(context.Background(), "weiyun.list", map[string]any{}, nil)
+	if !errors.Is(err, ErrRate) || errors.Is(err, ErrQuota) {
+		t.Fatalf("want a rate-limit error, got %v", err)
+	}
+	if rated != 1 || quota != 0 {
+		t.Fatalf("OnRate %d OnQuota %d", rated, quota)
 	}
 }

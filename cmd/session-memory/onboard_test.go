@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"session-memory/internal/config"
 	"session-memory/internal/device"
 	"session-memory/internal/testutil/codexgen"
 	"session-memory/internal/vault"
@@ -686,4 +687,20 @@ func mustGlob(t *testing.T, pattern string) []string {
 		t.Fatal(err)
 	}
 	return files
+}
+
+// A rate-limited account is left alone for minutes, not until tomorrow, and a
+// call that goes through ends the pause.
+func TestRateLimitPausesForMinutesOnly(t *testing.T) {
+	a := &App{Cfg: config.DefaultConfig(), Keys: vault.MemStore{}, Now: time.Now}
+	a.Cfg.Home = t.TempDir()
+	a.recordRate("acct")
+	until, paused := a.quotaPausedUntil("acct")
+	if !paused || until.Sub(time.Now()) > 6*time.Minute || !a.loadQuota()["acct"].Rate {
+		t.Fatalf("first refusal must pause about five minutes: %v %v", until, paused)
+	}
+	a.clearQuota("acct")
+	if _, paused := a.quotaPausedUntil("acct"); paused {
+		t.Fatal("a call that goes through must end the pause")
+	}
 }

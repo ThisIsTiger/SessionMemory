@@ -83,7 +83,7 @@ func relayOutcome(out string, err error) (pending bool, blocked int, needsAction
 		}
 		return false, blocked, true
 	}
-	for _, k := range []string{"117401", strings.ToLower(transport.ErrQuota.Error()), "quota",
+	for _, k := range []string{"117401", strings.ToLower(transport.ErrQuota.Error()), "quota", "190054", strings.ToLower(transport.ErrRate.Error()),
 		"dial tcp", "no such host", "connection refused", "connection reset", "network is unreachable", "i/o timeout", "client.timeout", "deadline exceeded", "unexpected eof", "http 5"} {
 		if strings.Contains(s, k) {
 			return true, 0, false

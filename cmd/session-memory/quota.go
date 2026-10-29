@@ -16,7 +16,8 @@ import (
 
 type quotaPause struct {
 	Until   time.Time `json:"until"`
-	Strikes int       `json:"strikes"` // refusals in a row; reset by any call that goes through
+	Strikes int       `json:"strikes"`        // refusals in a row; reset by any call that goes through
+	Rate    bool      `json:"rate,omitempty"` // too many calls in a short time, not the day's quota
 }
 
 // one pause per Weiyun account (primary, backup)
@@ -84,6 +85,27 @@ func (a *App) recordQuota(label string) {
 		}
 		q.Until = now.Add(time.Duration(h) * time.Hour)
 	}
+	all[label] = q
+	a.saveQuota(all)
+}
+
+// recordRate notes that one account was asked too often within a short time.
+// That clears by itself in minutes, so background runs leave the account alone
+// for five minutes, longer (up to half an hour) while it keeps refusing.
+func (a *App) recordRate(label string) {
+	now := a.Now()
+	all := a.loadQuota()
+	q, had := all[label]
+	if had && now.Before(q.Until) {
+		return
+	}
+	q.Strikes++
+	n := q.Strikes
+	if n > 6 {
+		n = 6
+	}
+	q.Until = now.Add(time.Duration(n) * 5 * time.Minute)
+	q.Rate = true
 	all[label] = q
 	a.saveQuota(all)
 }

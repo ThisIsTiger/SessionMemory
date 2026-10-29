@@ -131,7 +131,11 @@ func newAutosyncCmd(a *App) *cobra.Command {
 			for _, ac := range accts {
 				if until, paused := a.quotaPausedUntil(ac.id); paused {
 					stopped++
-					fmt.Fprintf(a.Out, "Weiyun account %s: daily quota used up; left alone until %s\n", ac.id, until.Format("2006-01-02 15:04"))
+					if a.loadQuota()[ac.id].Rate {
+						fmt.Fprintf(a.Out, "Weiyun account %s: asked too often for now; left alone until %s\n", ac.id, until.Format("15:04"))
+					} else {
+						fmt.Fprintf(a.Out, "Weiyun account %s: daily quota used up; left alone until %s\n", ac.id, until.Format("2006-01-02 15:04"))
+					}
 				}
 			}
 			if stopped > 0 && stopped < len(accts) {

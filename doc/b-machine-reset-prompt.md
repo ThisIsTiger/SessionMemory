@@ -50,3 +50,22 @@
 期望最后一行是 `done: JOINED`（A 机已先建立同步库）。
 如果出现 `NEEDS_USER`，按提示让用户双击桌面的「开启同步.command」。
 完成后汇报：最后一行、`status` 的输出、`list` 里的会话数量。
+
+## 附：2026-10-29 测试用的第二部分（v0.1.2，微云主账号当天额度已用完）
+
+背景：微云主账号当天额度用完，`setup` 会因“读不到云端”而拒绝；测试改用 `SessionMemoryTest` 文件夹，并让两个账号槽都使用没被限额的那个账号（令牌只在进程内使用，不打印）。
+
+```
+# 1. 新版程序（等 v0.1.2 发布后）
+curl -fsSL https://raw.githubusercontent.com/ThisIsTiger/SessionMemory/main/install.sh | SM_NO_SETUP=1 sh
+~/.local/bin/session-memory version        # 应显示 v0.1.2
+
+# 2. 指向测试文件夹
+~/.local/bin/session-memory config set transport.weiyun SessionMemoryTest
+
+# 3. 接入，只带最近 3 天的会话（令牌取自 ~/.mcporter/mcporter.json，不要打印）
+T="$(python3 -c 'import json,os;c=json.load(open(os.path.expanduser("~/.mcporter/mcporter.json")));print(c["mcpServers"]["weiyun"]["headers"]["WyHeader"].split("mcp_token=",1)[1])')"
+WEIYUN_MCP_TOKEN="$T" WEIYUN_MCP_TOKEN_2="$T" ~/.local/bin/session-memory setup --days 3
+```
+
+期望最后一行是 `done: JOINED`。
