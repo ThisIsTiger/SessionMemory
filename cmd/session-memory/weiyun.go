@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 
 	"session-memory/internal/device"
 	"session-memory/internal/errcode"
+	"session-memory/internal/session"
 	"session-memory/internal/transport"
 	"session-memory/internal/vault"
 )
@@ -124,15 +126,16 @@ func (a *App) saveWeiyunToken() error {
 
 // reauthorizedToken is called when the saved token is rejected. After the
 // user authorises again in the Weiyun skill, the skill holds a new token; it
-// is used only when it opens this computer's own vault (never a different
-// account's), and is then saved in place of the rejected one.
+// is used only when it opens this computer's own vault. During an explicit
+// setup/join after reset, the new vault's cloud key must authenticate its
+// public metadata before the replacement login is saved.
 func (a *App) reauthorizedToken(ctx context.Context, ac wyAccount, dir string) string {
 	fresh := mcporterWeiyunToken()
 	if fresh == "" || fresh == ac.token {
 		return ""
 	}
-	info, err := device.At(a.Cfg.StateDir()).Load()
-	if err != nil {
+	info, identityErr := device.At(a.Cfg.StateDir()).Load()
+	if identityErr != nil && (!a.joiningVault || errcode.CodeOf(identityErr) != errcode.NoVault) {
 		return ""
 	}
 	c := transport.NewWeiyunClient(fresh)
@@ -141,8 +144,28 @@ func (a *App) reauthorizedToken(ctx context.Context, ac wyAccount, dir string) s
 	}
 	data, ok, err := c.ReadFile(ctx, dir, "public", "vault.json")
 	var v vault.Info
-	if err != nil || !ok || json.Unmarshal(data, &v) != nil || v.VaultID != info.VaultID {
+	if err != nil || !ok || json.Unmarshal(data, &v) != nil {
 		return ""
+	}
+	if identityErr == nil {
+		if v.VaultID != info.VaultID {
+			return ""
+		}
+	} else {
+		data, ok, err := c.ReadFile(ctx, dir, "public", "vault-key.json")
+		var kf keyFile
+		if err != nil || !ok || json.Unmarshal(data, &kf) != nil || kf.Format != keyFormat ||
+			v.SchemaVersion != 1 || !session.ValidVaultID(v.VaultID) || kf.VaultID != v.VaultID {
+			return ""
+		}
+		key, err := base64.StdEncoding.DecodeString(kf.Key)
+		if err != nil {
+			return ""
+		}
+		verified, err := vault.New(v.VaultID, key)
+		if err != nil || !verified.CheckKey(v) {
+			return ""
+		}
 	}
 	if a.Keys.Store(ac.storeKey, []byte(fresh)) != nil {
 		return ""

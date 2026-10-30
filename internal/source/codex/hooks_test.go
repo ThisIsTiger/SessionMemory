@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"session-memory/internal/hookfile"
 )
 
 func cmds(exe string) map[string]string {
@@ -57,8 +59,8 @@ func TestHookCommandAndRecognition(t *testing.T) {
 		}
 	}
 	// the quoted path survives a round trip through the shell-like splitter
-	f := shellFields(HookCommand("/Users/a b/it's/session-memory", "/tmp/my state", "Stop"))
-	want := []string{"SM_HOOK=1", "SM_HOME=/tmp/my state", "/Users/a b/it's/session-memory", "hook", "--event", "Stop"}
+	f := hookfile.Fields(HookCommand("/Users/a b/it's/session-memory", "/tmp/my state", "Stop"))
+	want := []string{"SM_HOOK=1", "SM_HOME=/tmp/my state", "/Users/a b/it's/session-memory", "hook", "--event", "Stop", "--agent", "codex"}
 	if !reflect.DeepEqual(f, want) {
 		t.Errorf("fields = %q, want %q", f, want)
 	}
@@ -79,7 +81,7 @@ func TestInstallCreatesTheFileAndIsIdempotent(t *testing.T) {
 	for _, ev := range HookEvents {
 		groups := hooks[ev].([]any)
 		h := groups[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
-		if h["type"] != "command" || h["command"] != c[ev] || h["timeout"].(float64) != hookTimeout {
+		if h["type"] != "command" || h["command"] != c[ev] || h["timeout"].(float64) != hookfile.Timeout {
 			t.Errorf("%s handler = %v", ev, h)
 		}
 	}
@@ -415,3 +417,5 @@ func TestInstallDropsOurHandlerFromEventsNoLongerUsed(t *testing.T) {
 		t.Fatalf("events = %v", HookEvents)
 	}
 }
+
+func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -64,15 +65,57 @@ func (a *App) adapter(name string) (agent.Adapter, error) {
 }
 
 func lockStore(root string) (func(), error) {
-	f, err := platform.Touch(filepath.Join(root, "locks", "store.lock"))
+	release, err := lockStateLifetime(root, false, lockWait)
+	if err != nil {
+		return nil, err
+	}
+	unlock, err := lockFile(filepath.Join(root, "locks", "store.lock"), false, lockWait)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	return func() { unlock(); release() }, nil
+}
+
+// This guard lives beside the state directory, so reset cannot move it away
+// and let a new process lock a different inode at the old path. Shared users
+// include waiting hooks and commands that write config before opening a Store.
+func lockStateLifetime(root string, exclusive bool, wait time.Duration) (func(), error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	// Resolve parent aliases without depending on the state directory existing.
+	if err := os.MkdirAll(filepath.Dir(abs), 0700); err != nil {
+		return nil, err
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(abs))
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(parent, filepath.Base(abs)) + ".state.lock"
+	return lockFile(path, !exclusive, wait)
+}
+
+func lockFile(path string, shared bool, wait time.Duration) (func(), error) {
+	// Do not chmod an existing parent: the lifetime guard may be in HOME.
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
 	}
 	// a background relay may hold the lock for a minute or two: wait for it
 	// instead of failing the command the user just typed
-	deadline := time.Now().Add(lockWait)
+	deadline := time.Now().Add(wait)
 	for {
-		err := platform.LockExclusiveNonBlocking(f)
+		var err error
+		if shared {
+			err = platform.LockSharedNonBlocking(f)
+		} else {
+			err = platform.LockExclusiveNonBlocking(f)
+		}
 		if err == nil {
 			return func() { platform.Unlock(f); f.Close() }, nil
 		}
@@ -82,9 +125,9 @@ func lockStore(root string) (func(), error) {
 		}
 		if time.Now().After(deadline) {
 			f.Close()
-			return nil, errcode.New(errcode.Internal, "another session-memory is running")
+			return nil, errcode.New(errcode.Internal, "another session-memory is running (sync, setup or hook worker); retry after it finishes")
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(min(500*time.Millisecond, time.Until(deadline)))
 	}
 }
 

@@ -153,6 +153,7 @@ func newProjectTrackCmd(a *App) *cobra.Command {
 				pm = session.ProjectMap{SchemaVersion: 1, ProjectRef: ref}
 			}
 			pm.LocalPath = abs
+			pm.Since = "" // explicitly tracking a whole project removes setup's window
 			if label != "" {
 				pm.Label = label
 			} else if pm.Label == "" {

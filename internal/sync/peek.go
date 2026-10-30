@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"session-memory/internal/errcode"
 	"session-memory/internal/session"
 	"session-memory/internal/transport"
 )
@@ -16,8 +17,9 @@ import (
 // segment object is downloaded, nothing is written to the store, no manifest
 // is marked applied, nothing is quarantined. It reads the manifests exactly as
 // Reconcile would (same order, same chain checks, applied ones skipped), and
-// stops at a device's first manifest that cannot be read yet, as Reconcile
-// does. Together with the revisions already in the store this is every
+// returns an error if a device's chain cannot be read completely. A partial
+// list must not be used to decide that a native session is new. Together with
+// the revisions already in the store this is every
 // revision this device knows the vault to hold, which is what claiming a
 // native session needs to know (see engine.Claim).
 func (s *Sync) PeekRevisions(ctx context.Context) ([]session.Revision, error) {
@@ -52,14 +54,17 @@ func (s *Sync) PeekRevisions(ctx context.Context) ([]session.Revision, error) {
 				continue
 			}
 			if seq != applied+1 {
-				break
+				return nil, errcode.New(errcode.DepsMissing, "cloud manifest chain is incomplete; retry setup after it finishes syncing")
 			}
-			mf, _, h, verdict, _, err := s.readManifest(ctx, dev, seq, m[2], e, prevSha, false)
+			mf, _, h, verdict, reason, err := s.readManifest(ctx, dev, seq, m[2], e, prevSha, false)
 			if err != nil {
 				return nil, err
 			}
 			if verdict != manifestOK {
-				break
+				if verdict == manifestBad {
+					return nil, errcode.New(reason, "cloud manifest validation failed; nothing can be claimed from this list")
+				}
+				return nil, errcode.New(errcode.DepsMissing, "cloud manifest is not complete yet; retry setup after it finishes syncing")
 			}
 			for _, en := range mf.Entries {
 				if en.Revision != nil {

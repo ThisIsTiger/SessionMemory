@@ -206,6 +206,7 @@ func newDeviceCmd(a *App) *cobra.Command {
 			var key []byte
 			fromCloud, _ := cmd.Flags().GetBool("from-cloud")
 			if fromCloud {
+				a.joiningVault = true
 				if wy, _ := cmd.Flags().GetString("weiyun"); wy != "" {
 					if err := config.Set("transport.weiyun", wy); err != nil {
 						return errcode.Wrap(errcode.Usage, err.Error(), err)

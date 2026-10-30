@@ -32,10 +32,16 @@ func (r *snapReader) Artifacts() []session.Artifact { return r.snap.Artifacts }
 func (r *snapReader) Open(ctx context.Context, path string) (io.ReadCloser, error) {
 	for _, a := range r.snap.Artifacts {
 		if a.Path == path {
-			return &segReader{ctx: ctx, s: r.s, segs: a.Segments}, nil
+			return r.s.OpenSegments(ctx, a.Segments), nil
 		}
 	}
 	return nil, errcode.New(errcode.NotFound, "artifact not in snapshot")
+}
+
+// OpenSegments reads captured, immutable objects in artifact order. It does
+// not reopen the native file, whose bytes may have changed since capture.
+func (s *FS) OpenSegments(ctx context.Context, segs []session.SegmentRef) io.ReadCloser {
+	return &segReader{ctx: ctx, s: s, segs: segs}
 }
 
 // segReader concatenates segment objects lazily.

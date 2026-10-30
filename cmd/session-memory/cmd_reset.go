@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"session-memory/internal/config"
-	"session-memory/internal/source/codex"
+	"session-memory/internal/errcode"
 )
 
 // aside is where a file or folder goes when it is put aside rather than
@@ -25,7 +25,7 @@ func newResetCmd(a *App) *cobra.Command {
 	c := &cobra.Command{Use: "reset", Short: "Stop background sync and put this computer's state aside, so setup starts again from nothing", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			yes, _ := cmd.Flags().GetBool("yes")
-			stamp := time.Now().Format("20060102-150405")
+			stamp := time.Now().Format("20060102-150405.000000000")
 			home, _ := os.UserHomeDir()
 			state := a.Cfg.StateDir()
 			var move []string
@@ -48,7 +48,7 @@ func newResetCmd(a *App) *cobra.Command {
 					fmt.Fprintln(a.Out, "  - stop the background sync")
 				}
 				for _, h := range hooked {
-					fmt.Fprintf(a.Out, "  - take the session-memory hooks out of %s (your own hooks stay)\n", codex.HooksPath(h))
+					fmt.Fprintf(a.Out, "  - take the session-memory hooks out of %s (your own hooks stay)\n", h.file())
 				}
 				for _, p := range move {
 					fmt.Fprintf(a.Out, "  - put %s aside as %s\n", p, aside(p, stamp))
@@ -59,6 +59,42 @@ func newResetCmd(a *App) *cobra.Command {
 				fmt.Fprintln(a.Out, "Nothing is deleted. Run it again with --yes to do it.")
 				return nil
 			}
+			// Refuse before changing hooks/jobs/settings if any live operation
+			// uses this state. The external guard stays put across every rename.
+			release, err := lockStateLifetime(state, true, 0)
+			if err != nil {
+				return err
+			}
+			defer release()
+			// Recheck after taking the guard; the preview scan may have raced
+			// with an operation that completed just before we acquired it.
+			hooked = a.homesWithOurHooks()
+			_, jobErr = os.Stat(job)
+			hasJob = runtime.GOOS == "darwin" && jobErr == nil
+			_, shortcutErr = os.Stat(shortcut)
+			move = nil
+			for _, p := range []string{state, config.GlobalConfigPath()} {
+				if _, err := os.Stat(p); err == nil {
+					move = append(move, p)
+				} else if !os.IsNotExist(err) {
+					return err
+				}
+			}
+			if st, err := os.Lstat(state); err == nil {
+				if st.Mode()&os.ModeSymlink != 0 {
+					return errcode.New(errcode.Usage, "reset requires the state directory itself, not a symlink; use --home with its actual path")
+				}
+				// Also honor locks held by a worker from an older release.
+				for _, name := range []string{"store.lock", "hook.lock"} {
+					unlock, err := lockFile(filepath.Join(state, "locks", name), false, 0)
+					if err != nil {
+						return err
+					}
+					defer unlock()
+				}
+			} else if !os.IsNotExist(err) {
+				return err
+			}
 
 			if hasJob {
 				if _, err := runSelf(cmd.Context(), "autosync", "disable"); err != nil {
@@ -67,10 +103,10 @@ func newResetCmd(a *App) *cobra.Command {
 				fmt.Fprintln(a.Out, "background sync is off")
 			}
 			for _, h := range hooked {
-				if _, err := codex.RemoveHooks(h); err != nil {
+				if _, err := h.host.remove(h.home); err != nil {
 					return err
 				}
-				fmt.Fprintf(a.Out, "session-memory hooks removed from %s\n", codex.HooksPath(h))
+				fmt.Fprintf(a.Out, "session-memory hooks removed from %s\n", h.file())
 			}
 			for _, p := range move {
 				to := aside(p, stamp)

@@ -55,6 +55,7 @@ type fakeWeiyun struct {
 	srv     *httptest.Server
 	token   string
 	calls   int
+	uploads int            // files that finished uploading, duplicates included
 	listed  map[string]int // dir key -> weiyun.list calls
 	quota   bool           // refuse every call as Weiyun does when the day's quota is used up
 }
@@ -158,6 +159,10 @@ func (f *fakeWeiyun) serve(w http.ResponseWriter, r *http.Request) {
 		name := strings.TrimPrefix(it["file_id"].(string), "id-")
 		out = map[string]any{"items": []map[string]any{{"https_download_url": f.srv.URL + "/dl/" + it["pdir_key"].(string) + "/" + name, "cookie": "dl=1"}}}
 	case "weiyun.upload":
+		if pd, _ := a["pdir_key"].(string); pd != "" && f.files[pd] == nil {
+			json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "dir not found"}})
+			return
+		}
 		out = f.upload(a)
 	case "weiyun.delete":
 		if a["delete_completely"] != false {
@@ -184,9 +189,26 @@ func (f *fakeWeiyun) upload(a map[string]any) any {
 		raw, _ := base64.StdEncoding.DecodeString(d)
 		f.pending[key] = append(f.pending[key], raw...)
 		if len(f.pending[key]) >= size {
-			dir := a["pdir_key"]
-			_ = dir
-			f.files[f.target(name)][name] = f.pending[key]
+			// as the real service does: identical content under a taken name adds
+			// nothing, other content gets "name(1)", "name(2)", ...
+			dir := f.files[f.target(name)]
+			data := f.pending[key]
+			final, dup := name, false
+			for n := 1; ; n++ {
+				old, taken := dir[final]
+				if !taken {
+					break
+				}
+				if bytes.Equal(old, data) {
+					dup = true
+					break
+				}
+				final = fmt.Sprintf("%s(%d)", name, n)
+			}
+			if !dup {
+				dir[final] = data
+			}
+			f.uploads++
 			delete(f.pending, key)
 			return map[string]any{"upload_state": 2}
 		}

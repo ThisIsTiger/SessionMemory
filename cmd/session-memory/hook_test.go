@@ -570,8 +570,11 @@ func TestHooksStatusSaysWhenItCannotAskCodexOrHooksAreOff(t *testing.T) {
 
 func TestHooksRefuseWhatTheyCannotDo(t *testing.T) {
 	m := readyComputer(t)
-	if code, _, errs := m.run("hooks", "install", "--host", "workbuddy"); code == 0 || !strings.Contains(errs, "only available for Codex") {
-		t.Fatalf("workbuddy: exit %d %s", code, errs)
+	if code, _, errs := m.run("hooks", "install", "--host", "workbuddy"); code == 0 || !strings.Contains(errs, "no WorkBuddy home") {
+		t.Fatalf("workbuddy without a home: exit %d %s", code, errs)
+	}
+	if code, _, errs := m.run("hooks", "install", "--host", "cursor"); code == 0 || !strings.Contains(errs, "codex and workbuddy") {
+		t.Fatalf("an unknown host: exit %d %s", code, errs)
 	}
 	// a hooks file that is not valid is not overwritten
 	path := codex.HooksPath(filepath.Join(m.home, "codex"))
@@ -589,7 +592,7 @@ func TestHooksRefuseWhatTheyCannotDo(t *testing.T) {
 	os.Remove(path)
 	// no Codex on this computer
 	os.RemoveAll(filepath.Join(m.home, "codex"))
-	if code, _, errs := m.run("hooks", "install"); code == 0 || !strings.Contains(errs, "no Codex home") {
+	if code, _, errs := m.run("hooks", "install"); code == 0 || !strings.Contains(errs, "no Codex or WorkBuddy home") {
 		t.Fatalf("no Codex: exit %d %s", code, errs)
 	}
 }
@@ -814,7 +817,7 @@ func TestHooksCoverDecidesWhoUploads(t *testing.T) {
 		{"nothing pending", syncpkg.Pending{}, now.Add(-min(1)), false},
 		{"a time that cannot be read", syncpkg.Pending{Revisions: []session.Revision{{AgentProfile: session.AgentProfile{Agent: "codex"}, CreatedAt: "yesterday"}}}, now.Add(-min(1)), false},
 	} {
-		if got := hooksCover(tc.p, tc.hook, now); got != tc.want {
+		if got := hooksCover(tc.p, map[string]time.Time{"codex": tc.hook}, now); got != tc.want {
 			t.Errorf("%s: hooksCover = %v, want %v", tc.name, got, tc.want)
 		}
 	}

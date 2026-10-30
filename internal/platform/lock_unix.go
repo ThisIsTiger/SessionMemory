@@ -21,8 +21,17 @@ func LockExclusive(f *os.File) error {
 
 // LockExclusiveNonBlocking returns ErrLockHeld when the lock is busy.
 func LockExclusiveNonBlocking(f *os.File) error {
+	return lockNonBlocking(f, syscall.LOCK_EX)
+}
+
+// LockSharedNonBlocking allows concurrent users while excluding a reset.
+func LockSharedNonBlocking(f *os.File) error {
+	return lockNonBlocking(f, syscall.LOCK_SH)
+}
+
+func lockNonBlocking(f *os.File, mode int) error {
 	for {
-		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		err := syscall.Flock(int(f.Fd()), mode|syscall.LOCK_NB)
 		switch err {
 		case syscall.EINTR:
 			continue

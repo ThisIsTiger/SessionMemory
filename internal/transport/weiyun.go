@@ -14,11 +14,13 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -86,18 +88,51 @@ func (c *WeiyunClient) redact(msg string) string {
 	return msg
 }
 
-// netError strips the query, user info and path from the URL in a transport
-// error; the class of the error (timeout, context, DNS ...) stays intact.
+// networkError keeps the cause available to errors.Is/As without rendering
+// it. Nested redirect/URL parsing errors can include entire signed URLs too.
+type networkError struct {
+	cause error
+	host  string
+	kind  string
+}
+
+func (e *networkError) Error() string { return "weiyun: " + e.kind + " (" + e.host + ")" }
+func (e *networkError) Unwrap() error { return e.cause }
+func (e *networkError) Timeout() bool {
+	var ne net.Error
+	return errors.As(e.cause, &ne) && ne.Timeout()
+}
+func (e *networkError) Temporary() bool {
+	var ne net.Error
+	return errors.As(e.cause, &ne) && ne.Temporary()
+}
+
+// netError covers request construction and transport failures. Display only
+// a safely parsed origin and an error category, never any nested Error text.
 func netError(err error) error {
+	if err == nil {
+		return nil
+	}
+	e := &networkError{cause: err, host: "remote endpoint", kind: "network request failed"}
 	var ue *url.Error
-	if !errors.As(err, &ue) {
-		return err
+	if errors.As(err, &ue) {
+		if u, perr := url.Parse(ue.URL); perr == nil && u.Host != "" {
+			e.host = u.Scheme + "://" + u.Host
+		}
+		if ue.Op == "parse" {
+			e.kind = "invalid request URL"
+		}
 	}
-	shown := "(url)"
-	if u, perr := url.Parse(ue.URL); perr == nil && u.Host != "" {
-		shown = u.Scheme + "://" + u.Host
+	var dns *net.DNSError
+	switch {
+	case errors.Is(err, context.Canceled):
+		e.kind = "request canceled"
+	case e.Timeout() || errors.Is(err, context.DeadlineExceeded):
+		e.kind = "request timed out"
+	case errors.As(err, &dns):
+		e.kind = "DNS lookup failed"
 	}
-	return &url.Error{Op: ue.Op, URL: shown, Err: ue.Err}
+	return e
 }
 
 // sameOrigin is the redirect policy for requests that carry the token: they
@@ -165,7 +200,7 @@ func (c *WeiyunClient) callOnce(ctx context.Context, tool string, args map[strin
 	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": c.id, "method": "tools/call", "params": map[string]any{"name": tool, "arguments": args}})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return netError(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("WyHeader", "mcp_token="+c.Token)
@@ -346,7 +381,7 @@ func (c *WeiyunClient) download(ctx context.Context, f wyFile) ([]byte, error) {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.Items[0].URL, nil)
 	if err != nil {
-		return nil, err
+		return nil, netError(err)
 	}
 	if r.Items[0].Cookie != "" {
 		req.Header.Set("Cookie", r.Items[0].Cookie)
@@ -505,6 +540,7 @@ type Mirror struct {
 	// a daily quota).
 	KeyCache string
 	cached   bool                 // the keys came from KeyCache and no listing has confirmed them yet
+	pushed   map[string]int64     // objects already sent, loaded from KeyCache+".pushed": "dir key\tpath" -> size
 	remote   map[string]wyFile    // key: slash path
 	fresh    map[string]time.Time // per top-level directory ("" = the vault folder itself)
 	TTL      time.Duration
@@ -579,9 +615,10 @@ func (m *Mirror) saveKeys() {
 
 // dropKeys forgets the remembered keys (they pointed at something that is gone).
 func (m *Mirror) dropKeys() {
-	m.rootKey, m.dirKeys, m.cached, m.remote, m.fresh = "", nil, false, nil, nil
+	m.rootKey, m.dirKeys, m.cached, m.remote, m.fresh, m.pushed = "", nil, false, nil, nil, nil
 	if m.KeyCache != "" {
 		os.Remove(m.KeyCache)
+		os.Remove(m.KeyCache + pushedSuffix)
 	}
 }
 
@@ -800,6 +837,9 @@ func (m *Mirror) uploadLocked(ctx context.Context, path string, data []byte) err
 	if err := m.C.upload(ctx, key, name, data); err != nil {
 		return err
 	}
+	if m.remote == nil {
+		m.remote, m.fresh = map[string]wyFile{}, map[string]time.Time{}
+	}
 	m.remote[path] = wyFile{Name: name, PDir: key, Size: int64(len(data))}
 	return nil
 }
@@ -866,6 +906,9 @@ func (m *Mirror) Put(ctx context.Context, path string, r io.Reader) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if firstSegment(path) == objectDir {
+		return m.putObject(ctx, path, data)
+	}
 	if err := m.refresh(ctx, false, firstSegment(path)); err != nil {
 		return err
 	}
@@ -876,6 +919,102 @@ func (m *Mirror) Put(ctx context.Context, path string, r io.Reader) error {
 		return nil
 	}
 	return m.pushLocked(ctx, path)
+}
+
+// objectDir holds the content-addressed objects: a name there is the hash of
+// the file's bytes, so one name is one content, and the service keeps a single
+// copy of identical content (measured live: uploading the same name and bytes
+// again adds nothing). Whether the name is taken therefore need not be looked
+// up, which would list the whole directory (by far the largest, 50 names per
+// call) on every upload; what this computer has already sent is remembered in
+// a small file instead. The remembered entries carry the directory's key, so a
+// vault folder that was replaced is filled again.
+const objectDir = "objects"
+
+const pushedSuffix = ".pushed"
+
+func (m *Mirror) putObject(ctx context.Context, path string, data []byte) error {
+	if r, ok := m.remote[path]; ok {
+		if r.Size != int64(len(data)) {
+			return ErrExists
+		}
+		return nil
+	}
+	if _, err := m.root(ctx); err != nil {
+		return err
+	}
+	if size, ok := m.pushedSize(path); ok {
+		if size != int64(len(data)) {
+			return ErrExists
+		}
+		return nil
+	}
+	err := m.uploadLocked(ctx, path, data)
+	if err != nil && m.cached && !errors.Is(err, ErrQuota) {
+		m.dropKeys() // remembered keys that no longer work: learn them again
+		err = m.uploadLocked(ctx, path, data)
+	}
+	if err != nil {
+		return err
+	}
+	m.notePushed(path, int64(len(data)))
+	return nil
+}
+
+func (m *Mirror) pushedKey(path string) string {
+	return m.dirKeys[firstSegment(path)] + "\t" + path
+}
+
+func (m *Mirror) loadPushed() {
+	if m.pushed != nil {
+		return
+	}
+	m.pushed = map[string]int64{}
+	if m.KeyCache == "" {
+		return
+	}
+	b, err := os.ReadFile(m.KeyCache + pushedSuffix)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Split(line, "\t")
+		if len(f) != 3 {
+			continue
+		}
+		if n, err := strconv.ParseInt(f[2], 10, 64); err == nil {
+			m.pushed[f[0]+"\t"+f[1]] = n
+		}
+	}
+}
+
+func (m *Mirror) pushedSize(path string) (int64, bool) {
+	if m.dirKeys[firstSegment(path)] == "" {
+		return 0, false
+	}
+	m.loadPushed()
+	n, ok := m.pushed[m.pushedKey(path)]
+	return n, ok
+}
+
+// notePushed remembers that path, size bytes, is in the cloud folder. A file
+// that cannot be written only costs a listing or an upload later.
+func (m *Mirror) notePushed(path string, size int64) {
+	if m.dirKeys[firstSegment(path)] == "" {
+		return
+	}
+	m.loadPushed()
+	m.pushed[m.pushedKey(path)] = size
+	if m.KeyCache == "" {
+		return
+	}
+	os.MkdirAll(filepath.Dir(m.KeyCache), 0o700)
+	f, err := os.OpenFile(m.KeyCache+pushedSuffix, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s\t%s\t%d\n", m.dirKeys[firstSegment(path)], path, size)
 }
 
 // List pulls what the local copy lacks, then lists the local copy.

@@ -33,6 +33,10 @@ type App struct {
 	// defersToHooks is set by a background round (not by a hook's own push): it
 	// leaves Codex progress to the hooks while they are plainly working.
 	defersToHooks bool
+	// joiningVault permits recovery from a rejected saved login before a
+	// device identity exists, only in explicit setup / join workflows.
+	joiningVault bool
+	releaseState func()
 	// jsonPrinted is set once a JSON document went to stdout: a later failure
 	// is then reported on stderr, so stdout never holds two documents.
 	jsonPrinted bool
@@ -50,6 +54,11 @@ func (a *App) printJSON(v any) error {
 // run executes the CLI and returns the process exit code.
 func run(args []string, in io.Reader, out, errW io.Writer) int {
 	app := &App{In: in, Out: out, Err: errW, Now: time.Now, Keys: newKeyStore()}
+	defer func() {
+		if app.releaseState != nil {
+			app.releaseState()
+		}
+	}()
 	root := newRoot(app)
 	root.SetArgs(args)
 	root.SetOut(out)
@@ -112,6 +121,24 @@ func (a *App) setup(cmd *cobra.Command) error {
 		return errcode.Wrap(errcode.Usage, "invalid configuration: "+err.Error(), err)
 	}
 	a.Cfg = cfg
+	top := cmd
+	for top.Parent() != nil && top.Parent().Parent() != nil {
+		top = top.Parent()
+	}
+	// reset takes the exclusive guard itself; its autosync disable child must
+	// be able to stop launchd while that guard is held. Hooks guard their own
+	// event/worker lifetimes, including workers started by in-process tests.
+	guard := false
+	switch top.Name() {
+	case "init", "setup", "device", "transport", "config", "key", "project", "track", "checkpoint", "sync", "relay", "restore", "adopt", "choose", "convert", "continue", "auto-install", "file-projects", "hooks", "autosync":
+		guard = !(top.Name() == "autosync" && cmd.Name() == "disable")
+	}
+	if guard {
+		a.releaseState, err = lockStateLifetime(cfg.StateDir(), false, lockWait)
+		if err != nil {
+			return err
+		}
+	}
 	level := slog.LevelError
 	if v, _ := cmd.Flags().GetBool("verbose"); v {
 		level = slog.LevelDebug

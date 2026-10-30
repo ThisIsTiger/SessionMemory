@@ -14,16 +14,19 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"session-memory/internal/config"
 	"session-memory/internal/device"
 	"session-memory/internal/errcode"
+	"session-memory/internal/hookfile"
 	"session-memory/internal/platform"
 	"session-memory/internal/session"
 	"session-memory/internal/source/codex"
+	"session-memory/internal/source/workbuddy"
 	syncpkg "session-memory/internal/sync"
 )
 
-// Codex can run a command when a reply finishes (hooks). `hooks install` adds
-// ours. The background job and the hooks share the work by what each is good
+// Codex and WorkBuddy can run a command when a reply finishes (hooks). `hooks
+// install` adds ours. The background job and the hooks share the work by what each is good
 // at:
 //
 //   - a hook knows that something was just written, so it decides WHEN local
@@ -32,10 +35,11 @@ import (
 //     is one upload per burst of conversation, not one per reply and not one per
 //     background round, and it asks the cloud nothing when there is nothing new;
 //   - the background job is the only one that learns what other computers sent,
-//     so it keeps polling, and it is the safety net: while hooks are plainly
-//     working it leaves Codex's fresh progress to them, but uploads anything
-//     that has waited hookSafetyAge (hooks not trusted, not run, or a worker
-//     that died), and everything that is not Codex's, as before.
+//     so it keeps polling, and it is the safety net: while an agent's hooks are
+//     plainly working it leaves that agent's fresh progress to them, but uploads
+//     anything that has waited hookSafetyAge (hooks not trusted, not run, or a
+//     worker that died), and everything from an agent without working hooks, as
+//     before.
 
 var (
 	// hookQuiet is how long after the last reply the upload waits, so a
@@ -74,6 +78,27 @@ type hookState struct {
 	Event string    `json:"event"`
 	At    time.Time `json:"at"`
 	Count int       `json:"count"`
+	// Agents is the same for each agent whose hook has run.
+	Agents map[string]hookAgentState `json:"agents,omitempty"`
+}
+
+type hookAgentState struct {
+	Event string    `json:"event"`
+	At    time.Time `json:"at"`
+	Count int       `json:"count"`
+}
+
+// lastByAgent is when each agent's hook last ran. A state written before the
+// agents were told apart belongs to Codex, the only one there was.
+func (s hookState) lastByAgent() map[string]time.Time {
+	out := map[string]time.Time{}
+	for name, st := range s.Agents {
+		out[name] = st.At
+	}
+	if len(s.Agents) == 0 && !s.At.IsZero() {
+		out[codex.AgentName] = s.At
+	}
+	return out
 }
 
 func (a *App) hookStateFile() string { return filepath.Join(a.Cfg.StateDir(), "hook-state.json") }
@@ -166,12 +191,25 @@ func drain(in io.Reader) {
 // hookEvent handles one event from a host. It does not look at Weiyun (not even
 // the saved login): that is the worker's push, which ends at once when every
 // account is out of quota.
-func (a *App) hookEvent(event string) {
+func (a *App) hookEvent(event, agent string) {
+	release, err := lockStateLifetime(a.Cfg.StateDir(), false, 0)
+	if err != nil {
+		return // reset owns the state; never recreate it or report to the host
+	}
+	defer release()
 	if _, err := device.At(a.Cfg.StateDir()).Load(); err != nil {
 		return // this computer is not set up (or was reset): nothing to hand over
 	}
 	s := a.loadHookState()
+	if len(s.Agents) == 0 && !s.At.IsZero() { // a state from before agents were told apart is Codex's
+		s.Agents = map[string]hookAgentState{codex.AgentName: {Event: s.Event, At: s.At, Count: s.Count}}
+	}
 	s.Event, s.At, s.Count = event, a.Now(), s.Count+1
+	if s.Agents == nil {
+		s.Agents = map[string]hookAgentState{}
+	}
+	as := s.Agents[agent]
+	s.Agents[agent] = hookAgentState{Event: event, At: s.At, Count: as.Count + 1}
 	a.saveHookState(s)
 	// The marker goes first: a worker that is finishing looks for it after it
 	// lets go of the lock, so an event is never lost between the two.
@@ -190,6 +228,14 @@ func (a *App) hookEvent(event string) {
 // hookWorker uploads for the hooks. At most one worker runs; it waits for a
 // quiet moment, uploads, and goes round again if a reply came in meanwhile.
 func (a *App) hookWorker(ctx context.Context) {
+	release, err := lockStateLifetime(a.Cfg.StateDir(), false, 0)
+	if err != nil {
+		return
+	}
+	defer release()
+	if _, err := device.At(a.Cfg.StateDir()).Load(); err != nil {
+		return // a delayed spawn after reset has nothing to upload
+	}
 	for round := 0; round < hookMaxRounds; round++ {
 		f, err := platform.Touch(a.hookLockFile())
 		if err != nil {
@@ -259,33 +305,40 @@ func (a *App) runHookPush(ctx context.Context) {
 }
 
 // hooksCover says whether the background job should leave what is pending to
-// the hooks this round: every pending item is a Codex revision, a hook has run
-// since about the time the oldest was written (so hooks are working here), and
-// the oldest has not yet waited hookSafetyAge. Anything else (another agent, a
-// receipt, an interrupted publish, no sign of hooks, an old item) is uploaded
-// now, as without hooks.
-func hooksCover(p syncpkg.Pending, lastHook, now time.Time) bool {
-	if p.Journal || p.Outbox > 0 || len(p.Revisions) == 0 || lastHook.IsZero() {
+// the hooks this round: every pending item belongs to an agent whose hook has
+// run since about the time that agent's oldest item was written (so its hooks
+// are working here), and that oldest item has not yet waited hookSafetyAge.
+// Anything else (an agent without working hooks, a receipt, an interrupted
+// publish, no sign of hooks, an old item) is uploaded now, as without hooks.
+// lastHook is when each agent's hook last ran.
+func hooksCover(p syncpkg.Pending, lastHook map[string]time.Time, now time.Time) bool {
+	if p.Journal || p.Outbox > 0 || len(p.Revisions) == 0 {
 		return false
 	}
-	var oldest time.Time
+	oldest := map[string]time.Time{}
 	for _, r := range p.Revisions {
-		if r.AgentProfile.Agent != codex.AgentName {
+		agent := r.AgentProfile.Agent
+		if lastHook[agent].IsZero() {
 			return false
 		}
 		t, err := session.ParseTime(r.CreatedAt)
 		if err != nil {
 			return false
 		}
-		if oldest.IsZero() || t.Before(oldest) {
-			oldest = t
+		if o, ok := oldest[agent]; !ok || t.Before(o) {
+			oldest[agent] = t
 		}
 	}
-	return now.Sub(oldest) < hookSafetyAge && !lastHook.Before(oldest.Add(-hookLead))
+	for agent, o := range oldest {
+		if now.Sub(o) >= hookSafetyAge || lastHook[agent].Before(o.Add(-hookLead)) {
+			return false
+		}
+	}
+	return true
 }
 
 func newHookCmd(a *App) *cobra.Command {
-	c := &cobra.Command{Use: "hook", Short: "Run by Codex after a reply (installed by `hooks install`); starts an upload of local progress in the background", Args: cobra.NoArgs, Hidden: true,
+	c := &cobra.Command{Use: "hook", Short: "Run by Codex or WorkBuddy after a reply (installed by `hooks install`); starts an upload of local progress in the background", Args: cobra.NoArgs, Hidden: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// whatever happens, the host that ran this must see success and no output
 			defer func() { recover() }()
@@ -296,27 +349,73 @@ func newHookCmd(a *App) *cobra.Command {
 				return nil
 			}
 			event, _ := cmd.Flags().GetString("event")
+			agent, _ := cmd.Flags().GetString("agent")
 			drain(a.In)
-			a.hookEvent(event)
+			a.hookEvent(event, agent)
 			return nil
 		}}
 	c.Flags().String("event", "", "the host event that fired")
+	c.Flags().String("agent", codex.AgentName, "the agent whose hook fired")
 	c.Flags().Bool("worker", false, "(internal) run the relays that hooks asked for")
 	return c
 }
 
-// codexHomesToHook lists the Codex homes hooks go into: the ones that exist.
-func (a *App) codexHomesToHook() []string {
+// hookHost is an agent whose hooks session-memory can add.
+type hookHost struct {
+	name    string // the --host value, and the agent's name in the vault
+	label   string // for messages
+	homes   func(config.Config) []string
+	path    func(home string) string
+	events  []string
+	command func(exe, smHome, event string) string
+	read    func(home string, commands map[string]string) (hookfile.State, error)
+	install func(home string, commands map[string]string) (bool, error)
+	remove  func(home string) (int, error)
+}
+
+var hookHosts = []*hookHost{
+	{name: codex.AgentName, label: "Codex", homes: config.Config.CodexHomes, path: codex.HooksPath, events: codex.HookEvents,
+		command: codex.HookCommand, read: codex.ReadHooks, install: codex.InstallHooks, remove: codex.RemoveHooks},
+	{name: workbuddy.AgentName, label: "WorkBuddy", homes: config.Config.WorkBuddyHomes, path: workbuddy.HooksPath, events: workbuddy.HookEvents,
+		command: workbuddy.HookCommand, read: workbuddy.ReadHooks, install: workbuddy.InstallHooks, remove: workbuddy.RemoveHooks},
+}
+
+// hookTarget is one home of one host.
+type hookTarget struct {
+	host *hookHost
+	home string
+}
+
+func (t hookTarget) file() string { return t.host.path(t.home) }
+
+// existingHomes lists the homes of the host that exist on this computer.
+func (a *App) existingHomes(h *hookHost) []string {
 	var out []string
-	for _, h := range a.Cfg.CodexHomes() {
-		if st, err := os.Stat(h); err == nil && st.IsDir() {
-			out = append(out, h)
+	for _, home := range h.homes(a.Cfg) {
+		if st, err := os.Stat(home); err == nil && st.IsDir() {
+			out = append(out, home)
 		}
 	}
 	return out
 }
 
-func (a *App) hookCommands() (map[string]string, error) {
+// hooksHosts is the hosts a command is about: the one named by --host, or, with
+// none named, every host that is on this computer.
+func (a *App) hooksHosts(cmd *cobra.Command) ([]*hookHost, error) {
+	name, _ := cmd.Flags().GetString("host")
+	var out []*hookHost
+	for _, h := range hookHosts {
+		if name == "" && len(a.existingHomes(h)) > 0 || name == h.name {
+			out = append(out, h)
+		}
+	}
+	if name != "" && len(out) == 0 {
+		return nil, errcode.New(errcode.Unsupported, "hooks are available for codex and workbuddy (--host codex|workbuddy)")
+	}
+	return out, nil
+}
+
+func (a *App) hookCommands(h *hookHost) (map[string]string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -325,30 +424,24 @@ func (a *App) hookCommands() (map[string]string, error) {
 		return nil, err
 	}
 	cmds := map[string]string{}
-	for _, ev := range codex.HookEvents {
-		cmds[ev] = codex.HookCommand(exe, os.Getenv("SM_HOME"), ev)
+	for _, ev := range h.events {
+		cmds[ev] = h.command(exe, os.Getenv("SM_HOME"), ev)
 	}
 	return cmds, nil
 }
 
-// homesWithOurHooks lists the Codex homes whose hooks file holds a
-// session-memory handler.
-func (a *App) homesWithOurHooks() []string {
-	var out []string
-	for _, h := range a.codexHomesToHook() {
-		if st, err := codex.ReadHooks(h, nil); err == nil && len(st.Installed) > 0 {
-			out = append(out, h)
+// homesWithOurHooks lists the homes whose hooks file holds a session-memory
+// handler.
+func (a *App) homesWithOurHooks() []hookTarget {
+	var out []hookTarget
+	for _, h := range hookHosts {
+		for _, home := range a.existingHomes(h) {
+			if st, err := h.read(home, nil); err == nil && len(st.Installed) > 0 {
+				out = append(out, hookTarget{h, home})
+			}
 		}
 	}
 	return out
-}
-
-func hookHost(cmd *cobra.Command) error {
-	host, _ := cmd.Flags().GetString("host")
-	if host != "codex" {
-		return errcode.New(errcode.Unsupported, "hooks are only available for Codex (--host codex)")
-	}
-	return nil
 }
 
 type hookHomeStatus struct {
@@ -384,14 +477,14 @@ func featureOff(home string) bool {
 	return false
 }
 
-func (a *App) hookStatus(ctx context.Context, home string, cmds map[string]string, withTrust bool) (hookHomeStatus, error) {
-	hs := hookHomeStatus{Home: home, File: codex.HooksPath(home), Installed: []string{}}
-	st, err := codex.ReadHooks(home, cmds)
+func (a *App) hookStatus(ctx context.Context, h *hookHost, home string, cmds map[string]string, withTrust bool) (hookHomeStatus, error) {
+	hs := hookHomeStatus{Home: home, File: h.path(home), Installed: []string{}}
+	st, err := h.read(home, cmds)
 	if err != nil {
 		hs.Problems = append(hs.Problems, err.Error())
 		return hs, nil
 	}
-	for _, ev := range codex.HookEvents {
+	for _, ev := range h.events {
 		switch {
 		case !st.Installed[ev]:
 			hs.Missing = append(hs.Missing, ev)
@@ -402,6 +495,12 @@ func (a *App) hookStatus(ctx context.Context, home string, cmds map[string]strin
 			hs.Installed = append(hs.Installed, ev)
 		}
 	}
+	if h.name == workbuddy.AgentName && workbuddy.HooksSwitchedOff(home) {
+		hs.Problems = append(hs.Problems, "hooks are switched off in "+h.path(home)+" (disableAllHooks); WorkBuddy will not run them until that is changed")
+	}
+	if h.name != codex.AgentName {
+		return hs, nil
+	}
 	if featureOff(home) {
 		hs.Problems = append(hs.Problems, "hooks are switched off in "+filepath.Join(home, "config.toml")+" ([features] hooks = false); Codex will not run them until that is changed")
 	}
@@ -411,11 +510,11 @@ func (a *App) hookStatus(ctx context.Context, home string, cmds map[string]strin
 		if err != nil {
 			hs.Problems = append(hs.Problems, "could not ask Codex whether the hooks are trusted: "+err.Error())
 		}
-		for _, h := range list {
-			for _, ev := range codex.HookEvents {
-				if strings.EqualFold(h.Event, ev) {
-					status := h.Trust
-					if !h.Enabled {
+		for _, hk := range list {
+			for _, ev := range h.events {
+				if strings.EqualFold(hk.Event, ev) {
+					status := hk.Trust
+					if !hk.Enabled {
 						status += ", disabled"
 					}
 					hs.Trust[ev] = status
@@ -436,82 +535,110 @@ func untrusted(hs hookHomeStatus) bool {
 }
 
 func newHooksCmd(a *App) *cobra.Command {
-	c := &cobra.Command{Use: "hooks", Short: "Optional: upload right after each Codex reply (instead of waiting for the next background round)"}
-	hostFlag := func(cmd *cobra.Command) { cmd.Flags().String("host", "codex", "which agent's hooks (only codex)") }
+	c := &cobra.Command{Use: "hooks", Short: "Optional: upload right after each Codex or WorkBuddy reply (instead of waiting for the next background round)"}
+	hostFlag := func(cmd *cobra.Command) {
+		cmd.Flags().String("host", "", "which agent's hooks: codex or workbuddy (default: every one found on this computer)")
+	}
 
-	install := &cobra.Command{Use: "install", Short: "Add the session-memory hooks to Codex (your own hooks stay as they are)", Args: cobra.NoArgs,
+	install := &cobra.Command{Use: "install", Short: "Add the session-memory hooks to Codex and WorkBuddy (your own hooks stay as they are)", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := hookHost(cmd); err != nil {
-				return err
-			}
-			cmds, err := a.hookCommands()
+			hosts, err := a.hooksHosts(cmd)
 			if err != nil {
 				return err
 			}
-			homes := a.codexHomesToHook()
-			if len(homes) == 0 {
-				return errcode.New(errcode.NotFound, "no Codex home found on this computer; open Codex once, then run this again")
+			if len(hosts) == 0 {
+				return errcode.New(errcode.NotFound, "no Codex or WorkBuddy home found on this computer; open the app once, then run this again")
 			}
-			var failed []string
-			for _, h := range homes {
-				changed, err := codex.InstallHooks(h, cmds)
+			added := map[string]bool{}
+			failedAll := true
+			for _, h := range hosts {
+				cmds, err := a.hookCommands(h)
 				if err != nil {
-					fmt.Fprintf(a.Err, "%s: %v\n", h, err)
-					failed = append(failed, h)
+					return err
+				}
+				homes := a.existingHomes(h)
+				if len(homes) == 0 {
+					fmt.Fprintf(a.Err, "no %s home found on this computer; open %s once, then run this again\n", h.label, h.label)
 					continue
 				}
-				if changed {
-					fmt.Fprintf(a.Out, "hooks added to %s\n", codex.HooksPath(h))
-				} else {
-					fmt.Fprintf(a.Out, "hooks already in place in %s\n", codex.HooksPath(h))
+				for _, home := range homes {
+					changed, err := h.install(home, cmds)
+					if err != nil {
+						fmt.Fprintf(a.Err, "%s: %v\n", home, err)
+						continue
+					}
+					failedAll = false
+					added[h.name] = true
+					if changed {
+						fmt.Fprintf(a.Out, "%s hooks added to %s\n", h.label, h.path(home))
+					} else {
+						fmt.Fprintf(a.Out, "%s hooks already in place in %s\n", h.label, h.path(home))
+					}
 				}
 			}
-			if len(failed) == len(homes) {
+			if failedAll {
 				return errcode.New(errcode.Internal, "no hooks were added")
 			}
-			fmt.Fprintln(a.Out, "Codex runs a new hook only after you trust it: in Codex type /hooks and trust the session-memory entry, once. Until then nothing changes: syncing keeps running in the background as before.")
+			if added[codex.AgentName] {
+				fmt.Fprintln(a.Out, "Codex runs a new hook only after you trust it: in Codex type /hooks and trust the session-memory entry, once (the Codex desktop app has no /hooks, so there it stays off). Until then nothing changes: syncing keeps running in the background as before.")
+			}
+			if added[workbuddy.AgentName] {
+				fmt.Fprintln(a.Out, "WorkBuddy runs the hook from its next reply; there is nothing to confirm.")
+			}
 			return nil
 		}}
 	hostFlag(install)
 
-	uninstall := &cobra.Command{Use: "uninstall", Short: "Take the session-memory hooks out of Codex (your own hooks stay)", Args: cobra.NoArgs,
+	uninstall := &cobra.Command{Use: "uninstall", Short: "Take the session-memory hooks out of Codex and WorkBuddy (your own hooks stay)", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := hookHost(cmd); err != nil {
+			hosts, err := a.hooksHosts(cmd)
+			if err != nil {
 				return err
 			}
-			total := 0
-			for _, h := range a.codexHomesToHook() {
-				n, err := codex.RemoveHooks(h)
-				if err != nil {
-					return err
+			for _, h := range hosts {
+				total := 0
+				for _, home := range a.existingHomes(h) {
+					n, err := h.remove(home)
+					if err != nil {
+						return err
+					}
+					total += n
 				}
-				total += n
+				fmt.Fprintf(a.Out, "removed %d session-memory hook(s) from %s\n", total, h.label)
 			}
-			fmt.Fprintf(a.Out, "removed %d session-memory hook(s) from Codex\n", total)
 			return nil
 		}}
 	hostFlag(uninstall)
 
 	status := &cobra.Command{Use: "status", Short: "Show whether the hooks are in place, trusted by Codex, and when one last fired", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := hookHost(cmd); err != nil {
-				return err
-			}
-			cmds, err := a.hookCommands()
+			hosts, err := a.hooksHosts(cmd)
 			if err != nil {
 				return err
 			}
-			var homes []hookHomeStatus
-			for _, h := range a.codexHomesToHook() {
-				hs, err := a.hookStatus(cmd.Context(), h, cmds, true)
+			byHost := map[string][]hookHomeStatus{}
+			for _, h := range hosts {
+				cmds, err := a.hookCommands(h)
 				if err != nil {
 					return err
 				}
-				homes = append(homes, hs)
+				for _, home := range a.existingHomes(h) {
+					hs, err := a.hookStatus(cmd.Context(), h, home, cmds, true)
+					if err != nil {
+						return err
+					}
+					byHost[h.name] = append(byHost[h.name], hs)
+				}
 			}
 			last := a.loadHookState()
 			if a.JSON {
-				doc := map[string]any{"codex": homes}
+				doc := map[string]any{}
+				for _, h := range hosts {
+					doc[h.name] = byHost[h.name]
+				}
+				if _, ok := doc[codex.AgentName]; !ok {
+					doc[codex.AgentName] = []hookHomeStatus(nil)
+				}
 				if since, waiting := a.hookDirtySince(); waiting {
 					doc["upload_waiting_since"] = since.Format(time.RFC3339)
 				}
@@ -520,41 +647,56 @@ func newHooksCmd(a *App) *cobra.Command {
 				}
 				return a.printJSON(doc)
 			}
-			if len(homes) == 0 {
-				fmt.Fprintln(a.Out, "no Codex home found on this computer")
+			if len(hosts) == 0 {
+				fmt.Fprintln(a.Out, "no Codex or WorkBuddy home found on this computer")
 			}
-			for _, hs := range homes {
-				switch {
-				case len(hs.Installed) == 0:
-					fmt.Fprintf(a.Out, "%s: hooks are NOT installed (run `session-memory hooks install`)\n", hs.Home)
-				default:
-					fmt.Fprintf(a.Out, "%s: installed for %s\n", hs.Home, strings.Join(hs.Installed, ", "))
+			for _, h := range hosts {
+				homes := byHost[h.name]
+				if len(homes) == 0 {
+					fmt.Fprintf(a.Out, "no %s home found on this computer\n", h.label)
 				}
-				if len(hs.Installed) > 0 && len(hs.Missing) > 0 {
-					fmt.Fprintf(a.Out, "  missing: %s (run `session-memory hooks install`)\n", strings.Join(hs.Missing, ", "))
-				}
-				if len(hs.Outdated) > 0 {
-					fmt.Fprintf(a.Out, "  points at another copy of the program for %s (run `session-memory hooks install` to update; Codex asks for trust again)\n", strings.Join(hs.Outdated, ", "))
-				}
-				evs := make([]string, 0, len(hs.Trust))
-				for ev := range hs.Trust {
-					evs = append(evs, ev)
-				}
-				sort.Strings(evs)
-				for _, ev := range evs {
-					fmt.Fprintf(a.Out, "  %s: %s\n", ev, hs.Trust[ev])
-				}
-				if untrusted(hs) {
-					fmt.Fprintln(a.Out, "  Codex does not run it yet: in Codex type /hooks and trust the session-memory entry")
-				}
-				for _, p := range hs.Problems {
-					fmt.Fprintf(a.Out, "  problem: %s\n", p)
+				for _, hs := range homes {
+					switch {
+					case len(hs.Installed) == 0:
+						fmt.Fprintf(a.Out, "%s: hooks are NOT installed (run `session-memory hooks install`)\n", hs.Home)
+					default:
+						fmt.Fprintf(a.Out, "%s: installed for %s\n", hs.Home, strings.Join(hs.Installed, ", "))
+					}
+					if len(hs.Installed) > 0 && len(hs.Missing) > 0 {
+						fmt.Fprintf(a.Out, "  missing: %s (run `session-memory hooks install`)\n", strings.Join(hs.Missing, ", "))
+					}
+					if len(hs.Outdated) > 0 {
+						fmt.Fprintf(a.Out, "  points at another copy of the program for %s (run `session-memory hooks install` to update%s)\n", strings.Join(hs.Outdated, ", "), map[bool]string{true: "; Codex asks for trust again", false: ""}[h.name == codex.AgentName])
+					}
+					evs := make([]string, 0, len(hs.Trust))
+					for ev := range hs.Trust {
+						evs = append(evs, ev)
+					}
+					sort.Strings(evs)
+					for _, ev := range evs {
+						fmt.Fprintf(a.Out, "  %s: %s\n", ev, hs.Trust[ev])
+					}
+					if untrusted(hs) {
+						fmt.Fprintln(a.Out, "  Codex does not run it yet: in Codex type /hooks and trust the session-memory entry")
+					}
+					for _, p := range hs.Problems {
+						fmt.Fprintf(a.Out, "  problem: %s\n", p)
+					}
 				}
 			}
 			if last.At.IsZero() {
 				fmt.Fprintln(a.Out, "no hook has fired on this computer yet")
 			} else {
 				fmt.Fprintf(a.Out, "last hook: %s at %s (%d in all)\n", last.Event, last.At.Format("2006-01-02 15:04:05"), last.Count)
+				names := make([]string, 0, len(last.Agents))
+				for name := range last.Agents {
+					names = append(names, name)
+				}
+				sort.Strings(names)
+				for _, name := range names {
+					st := last.Agents[name]
+					fmt.Fprintf(a.Out, "  %s: %s at %s (%d)\n", name, st.Event, st.At.Format("2006-01-02 15:04:05"), st.Count)
+				}
 			}
 			if since, waiting := a.hookDirtySince(); waiting {
 				fmt.Fprintf(a.Out, "an upload is waiting for a quiet moment (replies since %s)\n", since.Format("15:04:05"))

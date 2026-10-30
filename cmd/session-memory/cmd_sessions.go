@@ -371,7 +371,7 @@ func captureAndPublish(ctx context.Context, a *App, r *rt, out map[string]int, b
 			out["published"] = 0
 			return nil
 		}
-		if a.defersToHooks && hooksCover(p, a.loadHookState().At, a.Now()) {
+		if a.defersToHooks && hooksCover(p, a.loadHookState().lastByAgent(), a.Now()) {
 			out["published"], out["left_to_hooks"] = 0, len(p.Revisions)
 			return nil
 		}

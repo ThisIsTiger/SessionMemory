@@ -220,6 +220,7 @@ func (a *App) joinOrCreateVault(ctx context.Context, say func(string, ...any)) (
 		}
 		return vaultConnected, nil
 	}
+	a.joiningVault = errcode.CodeOf(loaded) == errcode.NoVault
 	if a.Cfg.Transport.Weiyun == "" && a.Cfg.Transport.Folder == "" {
 		if err := config.Set("transport.weiyun", weiyunDirName); err != nil {
 			return 0, errcode.Wrap(errcode.Usage, err.Error(), err)
@@ -384,8 +385,24 @@ func (a *App) trackFolders(ctx context.Context, r *rt, agents []string, days int
 				}
 			}
 			pm.LocalPath = dir
-			if pm.Since == "" && days < 3650 {
-				pm.Since = since.UTC().Format(session.TimeLayout)
+			if !onlyNew || pm.Since == "" {
+				pm.Since = ""
+				if days < 3650 {
+					pm.Since = since.UTC().Format(session.TimeLayout)
+				}
+			}
+			if !onlyNew {
+				// Claimed sessions can have several project refs for this path.
+				// Update every mapping so an older watcher cannot retain the old window.
+				for i, p := range existing {
+					if p.LocalPath == dir && p.Since != pm.Since {
+						p.Since = pm.Since
+						if err := saveProject(a, p); err != nil {
+							return tracked, skipped, err
+						}
+						existing[i] = p
+					}
+				}
 			}
 			if pm.Label == "" {
 				pm.Label = filepath.Base(dir)

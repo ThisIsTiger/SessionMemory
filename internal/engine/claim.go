@@ -131,11 +131,14 @@ func (e *Engine) Claim(ctx context.Context, ad agent.Adapter, ref agent.NativeRe
 			if i >= maxClaimProbes {
 				break
 			}
-			snap, ok := e.claimSnapshot(ctx, r, ix)
-			if i == 0 && ok && c.singleHead && r.ReplacesRevisionID == "" && beyond(snap, probe.Cursor.Artifacts) {
+			snap, err := e.claimSnapshot(ctx, r, ix)
+			if err != nil {
+				return b, rev, false, err
+			}
+			if i == 0 && c.singleHead && r.ReplacesRevisionID == "" && beyond(snap, probe.Cursor.Artifacts) {
 				break // the files hold more than the newest revision of a plain history: none of its ancestors can match
 			}
-			if !ok || !sameShape(snap, probe.Cursor.Artifacts) {
+			if !sameShape(snap, probe.Cursor.Artifacts) {
 				continue
 			}
 			bad, err := verifier.VerifyBinding(ctx, ref, statesOf(snap), true)
@@ -225,17 +228,23 @@ func claimCandidates(revs []session.Revision, agentName, nativeID string, bound 
 
 // claimSnapshot loads the snapshot of r, fetching it first when the store lacks
 // it and a fetcher is at hand.
-func (e *Engine) claimSnapshot(ctx context.Context, r session.Revision, ix *ClaimIndex) (session.Snapshot, bool) {
+func (e *Engine) claimSnapshot(ctx context.Context, r session.Revision, ix *ClaimIndex) (session.Snapshot, error) {
 	if !e.Store.HasObject(r.NativeSnapshotRef) {
-		if ix == nil || ix.FetchSnapshot == nil || ix.FetchSnapshot(ctx, r) != nil {
-			return session.Snapshot{}, false
+		if ix == nil || ix.FetchSnapshot == nil {
+			return session.Snapshot{}, errcode.New(errcode.DepsMissing, "a candidate snapshot is missing; sync and retry before tracking")
+		}
+		if err := ix.FetchSnapshot(ctx, r); err != nil {
+			return session.Snapshot{}, errcode.Wrap(errcode.DepsMissing, "cannot read a candidate snapshot; retry before tracking", err)
 		}
 	}
 	snap, err := e.Store.LoadSnapshot(ctx, r.NativeSnapshotRef)
-	if err != nil || snap.Validate() != nil {
-		return session.Snapshot{}, false
+	if err != nil {
+		return session.Snapshot{}, err
 	}
-	return snap, true
+	if err := snap.Validate(); err != nil {
+		return session.Snapshot{}, errcode.Wrap(errcode.UnsafeRecord, "invalid candidate snapshot", err)
+	}
+	return snap, nil
 }
 
 // exactCapture reports whether a capture of the native files saw every byte of
@@ -303,6 +312,17 @@ func (e *Engine) bindClaimed(ctx context.Context, ad agent.Adapter, ref agent.Na
 	if !exactCapture(adopted) || !sameShape(snap, adopted.Cursor.Artifacts) {
 		return session.Binding{}, tx.Finish()
 	}
+	// Verify the bytes actually backing the cursor, not another read of the
+	// mutable native files. A same-size rewrite after VerifyBinding must not
+	// become an unrecorded change hidden behind the adopted cursor.
+	match, err := e.capturedMatches(ctx, snap, adopted.Cursor.Artifacts)
+	if err != nil {
+		tx.Finish()
+		return session.Binding{}, err
+	}
+	if !match {
+		return session.Binding{}, tx.Finish()
+	}
 	if _, err := e.Store.LoadRevision(r.RevisionID); err != nil {
 		if ix != nil && ix.FetchState != nil {
 			if err := ix.FetchState(ctx, r); err != nil {
@@ -342,6 +362,31 @@ func (e *Engine) bindClaimed(ctx context.Context, ad agent.Adapter, ref agent.Na
 		return b, err
 	}
 	return b, tx.Finish()
+}
+
+// capturedMatches hashes the immutable capture at the remote snapshot's own
+// boundaries; different segmentations of the same bytes still match.
+func (e *Engine) capturedMatches(ctx context.Context, snap session.Snapshot, captured map[string]session.ArtifactState) (bool, error) {
+	for _, art := range snap.Artifacts {
+		rc := e.Store.OpenSegments(ctx, captured[art.Path].Segments)
+		for _, seg := range art.Segments {
+			h := sha256.New()
+			if _, err := io.CopyN(h, rc, seg.End-seg.Start); err != nil {
+				rc.Close()
+				return false, err
+			}
+			if hex.EncodeToString(h.Sum(nil)) != seg.RawHash {
+				rc.Close()
+				return false, nil
+			}
+		}
+		n, err := io.Copy(io.Discard, rc)
+		rc.Close()
+		if err != nil || n != 0 {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 // discardSink hashes what a capture delivers and keeps nothing: Claim reads the

@@ -53,8 +53,17 @@ func LockExclusive(f *os.File) error {
 // the lock; any other failure (invalid handle, I/O error) is returned as is so
 // callers do not mistake it for contention.
 func LockExclusiveNonBlocking(f *os.File) error {
+	return lockNonBlocking(f, lockfileExclusiveLock)
+}
+
+// LockSharedNonBlocking allows concurrent users while excluding a reset.
+func LockSharedNonBlocking(f *os.File) error {
+	return lockNonBlocking(f, 0)
+}
+
+func lockNonBlocking(f *os.File, mode uintptr) error {
 	ol := new(overlapped)
-	r1, _, callErr := procLockFileEx.Call(f.Fd(), lockfileExclusiveLock|lockfileFailImmediately, 0,
+	r1, _, callErr := procLockFileEx.Call(f.Fd(), mode|lockfileFailImmediately, 0,
 		0xFFFFFFFF, 0xFFFFFFFF, uintptr(unsafe.Pointer(ol)))
 	runtime.KeepAlive(f)
 	if r1 == 0 {

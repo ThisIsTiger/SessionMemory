@@ -10,11 +10,10 @@ import (
 
 // What a round costs Weiyun, in calls, in a vault that already holds a few
 // hundred objects (a new process each time, as in life). A poll is a couple of
-// calls whatever the vault holds. An upload is not: it lists the whole objects
-// directory to see whether the name is taken, at 50 names per call in the real
-// service (3 in this fake, which is why the number below is large), so it costs
-// about N/50 + 7 calls per account for N objects. That is why anything that
-// uploads more often than the background job (hooks) is held back to its pace.
+// calls whatever the vault holds, and so is an upload: the objects directory,
+// by far the largest, is never listed to see whether a name is taken (an object
+// name is the hash of its bytes, and the service keeps one copy of identical
+// content), so what a reply costs does not grow with the vault.
 func TestMirrorCallCosts(t *testing.T) {
 	targets = map[string]string{}
 	fake := newFake(t)
@@ -63,11 +62,19 @@ func TestMirrorCallCosts(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+	again := measure("send the same object again", func(m *Mirror) {
+		if err := m.Put(ctx, fmt.Sprintf("objects/ab/%064x.obj", 999), strings.NewReader("new")); err != nil {
+			t.Fatal(err)
+		}
+	})
 	if poll > 2 {
 		t.Errorf("a poll is %d calls", poll)
 	}
-	// the listing of 300 objects in pages of 3, plus the files themselves
-	if want := 300/3 + 15; push > want {
-		t.Errorf("uploading one reply took %d calls, more than the %d the listing and the files explain", push, want)
+	// list the device's manifests, upload an object, list again, upload the manifest
+	if push > 8 {
+		t.Errorf("uploading one reply took %d calls; it must not depend on the %d objects already there", push, 300)
+	}
+	if again != 0 {
+		t.Errorf("sending an object this computer already sent took %d calls", again)
 	}
 }
