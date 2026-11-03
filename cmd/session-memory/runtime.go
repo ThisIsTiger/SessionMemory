@@ -54,12 +54,15 @@ func (r *rt) Close() {
 	}
 }
 
+// wrapAdapter lets a test stand between the commands and a real adapter.
+var wrapAdapter = func(ad agent.Adapter) agent.Adapter { return ad }
+
 func (a *App) adapter(name string) (agent.Adapter, error) {
 	switch name {
 	case "codex":
-		return codex.New(a.Cfg), nil
+		return wrapAdapter(codex.New(a.Cfg)), nil
 	case "workbuddy":
-		return workbuddy.New(a.Cfg), nil
+		return wrapAdapter(workbuddy.New(a.Cfg)), nil
 	}
 	return nil, errcode.New(errcode.Unsupported, name+" adapter is not available yet")
 }

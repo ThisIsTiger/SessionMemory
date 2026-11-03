@@ -148,13 +148,15 @@ func TestWorkBuddyHookEventIsRememberedPerAgentAndResetRemovesIt(t *testing.T) {
 	_, file := workbuddyHome(t, m, workbuddySettings)
 	m.must("hooks", "install", "--host", "workbuddy")
 
-	events, _ := hookWorkers(t, 1)
+	events, wait := hookWorkers(t, 1)
 	if code, out, errs := m.run("hook", "--event", "Stop", "--agent", "workbuddy"); code != 0 || out != "" || errs != "" {
 		t.Fatalf("hook: exit %d out=%q err=%q", code, out, errs)
 	}
 	if events.Load() != 1 {
 		t.Fatalf("workers started = %d", events.Load())
 	}
+	// reset refuses while a worker is alive, so let the one just started finish
+	wait()
 	var st hookState
 	if err := json.Unmarshal(mustRead(t, filepath.Join(m.home, "sm", "hook-state.json")), &st); err != nil {
 		t.Fatal(err)

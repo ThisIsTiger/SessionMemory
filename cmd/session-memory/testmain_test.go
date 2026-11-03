@@ -13,6 +13,13 @@ import (
 // Tests must never start the Codex that happens to be installed on the machine.
 func TestMain(m *testing.M) {
 	os.Setenv("SM_CODEX_BIN", "/nonexistent/codex")
+	if os.Getenv("SM_LIVE_WEIYUN") != "1" {
+		// the developer's own Weiyun login must neither change what a test means
+		// nor reach the real service; a test that wants a token sets its own
+		os.Unsetenv(envWeiyunToken)
+		os.Unsetenv(envWeiyunToken2)
+		os.Unsetenv("WEIYUN_MCP_URL")
+	}
 	folderSettle = 20 * time.Millisecond // files in these tests are never half-written
 	if os.Getenv("SM_TEST_AS_CLI") == "1" {
 		// a process the hook started: this test binary standing in for the program,

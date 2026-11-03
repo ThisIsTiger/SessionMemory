@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -63,6 +64,7 @@ func trackProject(ctx context.Context, r *rt, ad agent.Adapter, pm session.Proje
 		return 0, 0, err
 	}
 	since, _ := session.ParseTime(pm.Since)
+	var failed []error
 	for _, s := range list {
 		if s.Cwd == "" || !pathWithin(s.Cwd, pm.LocalPath) {
 			continue
@@ -75,11 +77,17 @@ func trackProject(ctx context.Context, r *rt, ad agent.Adapter, pm session.Proje
 				already++
 				continue
 			}
-			return tracked, already, fmt.Errorf("track %s: %w", s.Ref.NativeID, err)
+			if ctx.Err() != nil {
+				return tracked, already, err
+			}
+			// one session that cannot be tracked now must not keep the rest of
+			// the project from being tracked; it is reported once the others are done
+			failed = append(failed, fmt.Errorf("track %s: %w", s.Ref.NativeID, err))
+			continue
 		}
 		tracked++
 	}
-	return tracked, already, nil
+	return tracked, already, errors.Join(failed...)
 }
 
 // autoTrackProjects is the sync-time half of project track: sessions created
@@ -92,8 +100,10 @@ func autoTrackProjects(ctx context.Context, a *App, r *rt) int {
 			if err != nil {
 				continue
 			}
-			if t, _, err := trackProject(ctx, r, ad, pm); err == nil {
-				n += t
+			t, _, err := trackProject(ctx, r, ad, pm)
+			n += t
+			if err != nil {
+				fmt.Fprintf(a.Err, "warning: some sessions of project %s were not tracked this round: %v\n", pm.Label, err)
 			}
 		}
 	}

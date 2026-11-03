@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	osexec "os/exec"
@@ -340,6 +341,7 @@ func (a *App) trackFolders(ctx context.Context, r *rt, agents []string, days int
 		}
 	}
 	existing := loadProjects(a.Cfg.StateDir())
+	var failed []error
 	for _, name := range agents {
 		ad, err := a.adapter(name)
 		if err != nil {
@@ -416,7 +418,11 @@ func (a *App) trackFolders(ctx context.Context, r *rt, agents []string, days int
 			existing = append(existing, pm)
 			t, already, err := trackProject(ctx, r, ad, pm)
 			if err != nil {
-				return tracked, skipped, err
+				if ctx.Err() != nil {
+					return tracked + t, skipped, err
+				}
+				// the other folders are still tracked; the failure is reported at the end
+				failed = append(failed, err)
 			}
 			if existing, err = a.mapClaimedProjects(r, pm, existing); err != nil {
 				return tracked, skipped, err
@@ -427,7 +433,7 @@ func (a *App) trackFolders(ctx context.Context, r *rt, agents []string, days int
 			}
 		}
 	}
-	return tracked, skipped, nil
+	return tracked, skipped, errors.Join(failed...)
 }
 
 func coveredByProject(projects []session.ProjectMap, dir string) bool {
