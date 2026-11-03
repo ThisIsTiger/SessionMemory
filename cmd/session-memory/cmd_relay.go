@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -128,7 +129,7 @@ func unmappedNames(ctx context.Context, a *App, r *rt, refs, agents []string) st
 // leaving a computer and again when arriving at another.
 func newRelayCmd(a *App) *cobra.Command {
 	c := &cobra.Command{Use: "relay", Short: "One step to hand work over: upload local progress, download the other computer's, update Codex (and WorkBuddy once enabled)", Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) (err error) {
 			quiet, _ := cmd.Flags().GetBool("quiet")
 			pushOnly, _ := cmd.Flags().GetBool("push-only")
 			if quiet { // background runs hold back; one started by hand never does
@@ -137,6 +138,9 @@ func newRelayCmd(a *App) *cobra.Command {
 				// a push is wanted now, not at the background rhythm: only the quota can hold it
 				if a.allAccountsPaused() || (!pushOnly && a.idleSkip()) {
 					return nil
+				}
+				if !pushOnly { // a round that really ran: remember how it ended, for `check` and the notifications
+					defer func() { a.noteOutcome(err) }()
 				}
 			}
 			explicit, _ := cmd.Flags().GetString("agent")
@@ -260,6 +264,20 @@ func newRelayCmd(a *App) *cobra.Command {
 					active = active || p.Updated > 0
 				}
 				a.noteRound(active)
+				installed := 0
+				for _, p := range projects {
+					installed += p.Updated
+				}
+				var apps []string
+				for _, n := range names {
+					apps = append(apps, agentTitle(n))
+				}
+				if installed > 0 {
+					a.notify("installed", 0, fmt.Sprintf("收到别的电脑的对话：%d 个已装进本机，重新打开 %s 就能看到。", installed, strings.Join(apps, " / ")))
+				}
+				if waiting > 0 {
+					a.notify("waiting", 6*time.Hour, fmt.Sprintf("有 %d 个来自别的电脑的对话在等：请完全退出 %s（Cmd+Q），几分钟内会自动装入。", waiting, strings.Join(apps, " / ")))
+				}
 			}
 			if quiet && !a.JSON {
 				noteworthy := sync["published"] > 0 || sync["received_revisions"] > 0 || sync["quarantined"] > 0 || failed > 0 || waiting > 0

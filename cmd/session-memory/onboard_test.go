@@ -227,7 +227,13 @@ func TestSetupLastLineSaysWhatHappened(t *testing.T) {
 	addCodexSession(A, 21, filepath.Join(A.home, "work", "app"))
 	setup := func(m *machine) string {
 		selfVia(t, m, nil)
-		return lastLine(m.must("setup", "--no-autosync", "--days", "36500"))
+		out := m.must("setup", "--no-autosync", "--days", "36500")
+		// the words for the person come just before the status line
+		lines := strings.Split(strings.TrimSpace(out), "\n")
+		if len(lines) < 2 || !strings.HasPrefix(lines[len(lines)-2], "TELL_USER: ") {
+			t.Fatalf("setup must end with TELL_USER and then done: %q", out)
+		}
+		return lastLine(out)
 	}
 	for _, c := range []struct {
 		m    *machine

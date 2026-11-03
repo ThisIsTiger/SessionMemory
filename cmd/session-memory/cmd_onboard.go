@@ -110,6 +110,41 @@ func needsActionLine(blocked int) string {
 	return "NEEDS_ACTION: " + what + " did not sync and will NOT fix themselves (the same session was changed on two computers, or an earlier install was interrupted). Nothing was deleted, and everything else is connected and keeps syncing. Tell the user in plain words; to see which ones run `" + selfPath() + " relay`. Do not run adopt or choose unless the user asks."
 }
 
+// tellUser is what the person is told once setup is over: the assistant passes
+// it on in the person's language, so it holds everything they need to know and
+// nothing about commands.
+func tellUser(how vaultHow, sessions, linked int, pending, needsAction bool, blocked int, workbuddy bool, days int) string {
+	var b strings.Builder
+	switch how {
+	case vaultJoined:
+		b.WriteString("这台电脑已经加入你微云里原有的同步库，之后两边的对话会自动互相同步。")
+	case vaultConnected:
+		b.WriteString("这台电脑之前就接好了，这次只是检查并补上遗漏的部分。")
+	default:
+		fmt.Fprintf(&b, "已经接好了：这台电脑最近 %d 天的 %d 个对话会自动同步到你自己的微云。在另一台电脑上也把同样的话发给 AI 助手，并用同一个微信/QQ 登录微云，两边就会互相同步。", days, sessions)
+	}
+	if linked > 0 {
+		fmt.Fprintf(&b, "其中 %d 个对话本来就在微云里，已经对上了，没有重复上传。", linked)
+	}
+	if pending {
+		b.WriteString("第一次上传会在后台自己完成（微云今天的额度用完了，或网络暂时不通），不用管。")
+	}
+	if needsAction {
+		what := "有对话"
+		if blocked > 0 {
+			what = fmt.Sprintf("有 %d 个对话", blocked)
+		}
+		b.WriteString(what + "暂时没有同步，需要你决定怎么处理（同一个对话在两台电脑上都改过，或者之前的安装被中断过）；其余对话照常同步，没有删除任何东西。")
+	}
+	if workbuddy {
+		b.WriteString("别的电脑来的对话会在 WorkBuddy 用 Cmd+Q 完全退出后十分钟内自动装进去，有新对话到达时会弹出通知；之后重新打开 WorkBuddy 就能看到。")
+	} else {
+		b.WriteString("别的电脑来的对话到达时会弹出通知。")
+	}
+	b.WriteString("想确认是否一切正常，随时对我说“检查会话同步”。")
+	return b.String()
+}
+
 // selfCommand runs one of this program's own commands; tests replace it.
 var selfCommand = func(ctx context.Context, args ...string) (string, error) {
 	exe, err := os.Executable()
@@ -186,8 +221,10 @@ func newSetupCmd(a *App) *cobra.Command {
 			if out != "" {
 				say("%s", out)
 			}
+			var pending, needsAction bool
+			var blocked int
 			if err != nil {
-				pending, blocked, needsAction := relayOutcome(out, err)
+				pending, blocked, needsAction = relayOutcome(out, err)
 				switch {
 				case needsAction:
 					say("%s", needsActionLine(blocked))
@@ -200,7 +237,8 @@ func newSetupCmd(a *App) *cobra.Command {
 			if has(agents, "workbuddy") {
 				say("WorkBuddy: sessions from your other computers are added after WorkBuddy is fully quit (Cmd+Q), within about ten minutes; reopen it afterwards.")
 			}
-			say("%s", how.doneLine())
+			say("TELL_USER: %s", tellUser(how, n, linked, pending, needsAction, blocked, has(agents, "workbuddy"), days))
+			say("%s", how.doneLine()) // the last line says how setup ended
 			return nil
 		}}
 	c.Flags().Int("days", 60, "only sessions touched in the last N days are picked up")

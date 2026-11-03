@@ -28,6 +28,9 @@ func TestMain(m *testing.M) {
 		hookQuiet, hookPoll = 0, 5*time.Millisecond
 		os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 	}
+	// no test shows a notification on the developer's screen or asks launchd anything
+	showNotification = func(string, string) {}
+	backgroundJob = func() jobState { return jobUnknown }
 	// nothing starts a process of the test binary unless a test asks for it
 	hookSpawn = func(*App) error { return nil }
 	selfCommand = func(context.Context, ...string) (string, error) {

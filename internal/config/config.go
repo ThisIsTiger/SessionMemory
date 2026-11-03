@@ -46,6 +46,9 @@ type AgentConfig struct {
 	AssignProjects *bool `json:"assign_projects,omitempty"`
 }
 
+// NotifyEnabled reports whether background runs may show notifications (default true).
+func (c Config) NotifyEnabled() bool { return c.Notify == nil || *c.Notify }
+
 // IsEnabled reports whether the agent is enabled (default true).
 func (a AgentConfig) IsEnabled() bool { return a.Enabled == nil || *a.Enabled }
 
@@ -84,7 +87,10 @@ type LogConfig struct {
 // Config is the effective configuration.
 type Config struct {
 	// Home is the state directory (default ~/.session-memory).
-	Home      string          `json:"home"`
+	Home string `json:"home"`
+	// Notify turns the desktop notifications of background runs on (default)
+	// or off.
+	Notify    *bool           `json:"notify,omitempty"`
 	Agents    AgentsConfig    `json:"agents"`
 	Transport TransportConfig `json:"transport"`
 	Log       LogConfig       `json:"log"`
@@ -363,6 +369,7 @@ func agentKeys(prefix string, sel func(*Config) *AgentConfig) []keySpec {
 // drives parsing in Set) and how to read the effective value (config show).
 var keys = func() []keySpec {
 	ks := []keySpec{{"home", kindPath, func(c Config) string { return c.Home }}}
+	ks = append(ks, keySpec{"notify", kindBool, func(c Config) string { return boolStr(c.Notify, true) }})
 	ks = append(ks, agentKeys("agents.codex", func(c *Config) *AgentConfig { return &c.Agents.Codex })...)
 	ks = append(ks, keySpec{"agents.codex.assign_projects", kindBool, func(c Config) string { return boolStr(c.Agents.Codex.AssignProjects, true) }})
 	ks = append(ks, agentKeys("agents.claude", func(c *Config) *AgentConfig { return &c.Agents.Claude })...)
