@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"session-memory/internal/agent"
 	"session-memory/internal/device"
 	"session-memory/internal/errcode"
 	"session-memory/internal/session"
@@ -39,7 +41,14 @@ func (c *checkReport) detail(format string, args ...any) {
 	c.Details = append(c.Details, fmt.Sprintf(format, args...))
 }
 
-func (c *checkReport) next(step string) { c.Next = append(c.Next, step) }
+func (c *checkReport) next(step string) {
+	for _, n := range c.Next {
+		if n == step {
+			return
+		}
+	}
+	c.Next = append(c.Next, step)
+}
 
 // jobState is what launchd says about the background job.
 type jobState int
@@ -199,7 +208,7 @@ func (a *App) buildCheck(ctx context.Context) checkReport {
 		rep.next("把上面的错误原文告诉用户；不要自己删除状态目录")
 	default:
 		defer r.Close()
-		a.checkSessions(&rep, r, info, now)
+		a.checkSessions(ctx, &rep, r, info, now)
 	}
 
 	if rep.Level == "ok" {
@@ -226,7 +235,7 @@ func (a *App) openRTBriefly(ctx context.Context) (*rt, error) {
 	return a.openRT(ctx, false)
 }
 
-func (a *App) checkSessions(rep *checkReport, r *rt, info device.Info, now time.Time) {
+func (a *App) checkSessions(ctx context.Context, rep *checkReport, r *rt, info device.Info, now time.Time) {
 	rows, err := buildRows(r, "")
 	if err != nil {
 		rep.raise("problem")
@@ -235,9 +244,11 @@ func (a *App) checkSessions(rep *checkReport, r *rt, info device.Info, now time.
 	}
 	mine := map[string]int{}
 	received, unpublished, conflicts, unsafe := 0, 0, 0, 0
+	var receivedIDs []listRow
 	for _, x := range rows {
 		if x.State == "received" {
 			received++
+			receivedIDs = append(receivedIDs, x)
 		} else if x.State == session.StateActive {
 			mine[x.Agent]++
 		}
@@ -277,7 +288,7 @@ func (a *App) checkSessions(rep *checkReport, r *rt, info device.Info, now time.
 		rep.next("运行 `" + selfPath() + " relay` 看详情，把原文告诉用户")
 	}
 	if received > 0 {
-		rep.detail("另有 %d 个来自别的电脑的对话还没出现在本机的应用里：完全退出 Codex / WorkBuddy（Cmd+Q）后几分钟内会自动装入；还没有对应项目文件夹的，等文件夹出现后装入", received)
+		a.describeWaiting(ctx, rep, r, receivedIDs)
 	}
 
 	db := r.Store.DB()
@@ -330,4 +341,160 @@ func newCheckCmd(a *App) *cobra.Command {
 			}
 			return nil
 		}}
+}
+
+// waitingGroup is the received sessions of one project that are not in an app
+// yet, for one agent.
+type waitingGroup struct {
+	ref, agent string
+	sessions   []string
+}
+
+// describeWaiting says, project by project, why conversations from the other
+// computers are not in the apps here yet and what, if anything, to do about it.
+func (a *App) describeWaiting(ctx context.Context, rep *checkReport, r *rt, received []listRow) {
+	refOf := map[string]string{}
+	if q, err := r.Store.DB().Query(`SELECT session_id, COALESCE(project_ref, '') FROM sessions`); err == nil {
+		for q.Next() {
+			var id, ref string
+			if q.Scan(&id, &ref) == nil {
+				refOf[id] = ref
+			}
+		}
+		q.Close()
+	}
+	groups := map[string]*waitingGroup{}
+	var order []string
+	loose := 0
+	for _, x := range received {
+		ref := refOf[x.SessionID]
+		if ref == "" {
+			loose++
+			continue
+		}
+		key := ref + "|" + x.Agent
+		g := groups[key]
+		if g == nil {
+			g = &waitingGroup{ref: ref, agent: x.Agent}
+			groups[key] = g
+			order = append(order, key)
+		}
+		g.sessions = append(g.sessions, x.SessionID)
+	}
+	sort.Strings(order)
+	mapped := map[string]session.ProjectMap{}
+	for _, pm := range loadProjects(a.Cfg.StateDir()) {
+		mapped[pm.ProjectRef] = pm
+	}
+	appWaits := map[string]*appWait{}
+	for _, key := range order {
+		g := groups[key]
+		app := agentTitle(g.agent)
+		ad, err := a.adapter(g.agent)
+		if err != nil {
+			rep.detail("来自别的电脑的 %d 个 %s 对话：这台电脑不支持装入 %s", len(g.sessions), app, app)
+			continue
+		}
+		label := ""
+		if pm, ok := mapped[g.ref]; ok {
+			label = pm.Label
+			if label == "" {
+				label = filepath.Base(pm.LocalPath)
+			}
+		}
+		if label == "" {
+			if origin := projectOrigin(ctx, r, ad, g.sessions); origin != "" {
+				label = filepath.Base(origin)
+			} else {
+				label = g.ref
+			}
+		}
+		head := fmt.Sprintf("项目 %s（%d 个 %s 对话）", label, len(g.sessions), app)
+		if pm, ok := mapped[g.ref]; ok {
+			if st, err := os.Stat(pm.LocalPath); err != nil || !st.IsDir() {
+				rep.raise("attention")
+				rep.detail("%s：本机的项目文件夹 %s 不存在了，装不进去", head, pm.LocalPath)
+				rep.next(fmt.Sprintf("把 %s 这个文件夹恢复出来（或 clone 回来），或运行 `%s project map %s --path <本机的项目文件夹>` 指向别的文件夹；之后下一轮同步会自动装入", pm.LocalPath, selfPath(), g.ref))
+				continue
+			}
+			w := appWaits[g.agent]
+			if w == nil {
+				w = &appWait{}
+				appWaits[g.agent] = w
+			}
+			w.projects = append(w.projects, label)
+			w.sessions += len(g.sessions)
+			continue
+		}
+		dir, note := autoProjectDirWith(ctx, a, r, g.ref, g.agent)
+		if dir != "" {
+			rep.detail("%s：本机还没有对应文件夹，下一轮同步会自动使用 %s 并把对话装进去", head, dir)
+			continue
+		}
+		rep.raise("attention")
+		rep.detail("%s：%s", head, explainNoFolder(note, label))
+		rep.next(fmt.Sprintf("在本机放好（或 clone 回来）一个叫 %s 的文件夹，然后运行 `%s project map %s --path <那个文件夹>`；之后下一轮同步会自动装入", label, selfPath(), g.ref))
+	}
+	var agents []string
+	for ag := range appWaits {
+		agents = append(agents, ag)
+	}
+	sort.Strings(agents)
+	for _, ag := range agents {
+		w := appWaits[ag]
+		app := agentTitle(ag)
+		sort.Strings(w.projects)
+		names := projectList(w.projects)
+		head := fmt.Sprintf("%d 个来自别的电脑的 %s 对话（%d 个项目：%s）", w.sessions, app, len(w.projects), names)
+		switch a.appState(ctx, ag) {
+		case agent.NotRunning:
+			rep.detail("%s：下一轮后台同步会装入", head)
+		case agent.Running:
+			rep.raise("attention")
+			rep.detail("%s：%s 正在运行，不能往里写，完全退出后几分钟内自动装入", head, app)
+			rep.next(fmt.Sprintf("请用户完全退出 %s（Cmd+Q）：几分钟内对话会自动装入，之后重新打开 %s 就能看到", app, app))
+		default:
+			rep.detail("%s：等 %s 完全退出后自动装入（现在判断不了它是否在运行）", head, app)
+		}
+	}
+	if loose > 0 {
+		rep.detail("另有 %d 个来自别的电脑的对话没有记录项目，只能在对方的电脑上继续", loose)
+	}
+}
+
+// appWait is what waits for one app to be closed: projects whose folder is
+// fine, so only the app holds them back.
+type appWait struct {
+	projects []string
+	sessions int
+}
+
+// appState says whether the agent's app is running (Unknown when that cannot be told).
+func (a *App) appState(ctx context.Context, agentName string) agent.RunState {
+	ad, err := a.adapter(agentName)
+	if err != nil {
+		return agent.Unknown
+	}
+	home := a.Cfg.CodexHome()
+	if agentName == "workbuddy" {
+		home = a.Cfg.WorkBuddyHome()
+	}
+	st, _, err := ad.Runtime().Running(ctx, home, "")
+	if err != nil {
+		return agent.Unknown
+	}
+	return st
+}
+
+// explainNoFolder puts the reason autoProjectDirWith gave into words for the person.
+func explainNoFolder(note, label string) string {
+	switch {
+	case strings.HasPrefix(note, "no folder named"):
+		return fmt.Sprintf("本机找不到叫 %s 的文件夹，也不在对方 home 目录之下，没法自动决定放哪里", label)
+	case strings.Contains(note, " folders named "):
+		return "本机有不止一个同名文件夹，没法确定用哪一个：" + note
+	case strings.HasPrefix(note, "the sessions do not record a folder"):
+		return "这些对话没有记录项目文件夹，没法自动决定放哪里"
+	}
+	return "本机没法自动确定它的文件夹（" + note + "）"
 }

@@ -3,10 +3,12 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	osexec "os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -139,4 +141,13 @@ func agentTitle(name string) string {
 		return "Claude"
 	}
 	return name
+}
+
+// projectList names a few projects for a notification.
+func projectList(labels []string) string {
+	sort.Strings(labels)
+	if len(labels) > 3 {
+		return strings.Join(labels[:3], "、") + fmt.Sprintf(" 等 %d 个", len(labels))
+	}
+	return strings.Join(labels, "、")
 }

@@ -133,7 +133,7 @@ func TestCheckCountsSessionsAndSeesTheOtherComputer(t *testing.T) {
 	B.must("device", "join", bundle, "--passphrase-file", pf)
 	B.must("relay", "--client-closed")
 	rep := runCheck(t, B)
-	if !rep.mentions("别的电脑（设备") || !rep.mentions("来自别的电脑的对话还没出现在本机的应用里") || rep.mentions("还没有看到别的电脑") {
+	if !rep.mentions("别的电脑（设备") || !rep.mentions("项目 app（2 个 Codex 对话）") || !rep.mentions("叫 app 的文件夹") || rep.Level != "attention" || rep.mentions("还没有看到别的电脑") {
 		t.Fatalf("B sees A: %+v", rep)
 	}
 }
@@ -296,7 +296,7 @@ func TestBackgroundRelayTellsWhenAConversationArrived(t *testing.T) {
 	os.MkdirAll(filepath.Join(B.home, "work", "app"), 0700) // the one folder named like the project
 
 	B.must("relay", "--quiet", "--client-closed")
-	if len(*got) != 1 || !strings.Contains((*got)[0], "1 个已装进本机") || !strings.Contains((*got)[0], "Codex") {
+	if len(*got) != 1 || !strings.Contains((*got)[0], "1 个已装进本机") || !strings.Contains((*got)[0], "项目：app") || !strings.Contains((*got)[0], "Codex") {
 		t.Fatalf("B should be told once that a conversation arrived: %v", *got)
 	}
 	if files, _ := filepath.Glob(filepath.Join(B.home, "codex", "sessions", "*", "*", "*", "*.jsonl")); len(files) != 1 {

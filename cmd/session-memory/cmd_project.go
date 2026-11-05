@@ -284,7 +284,7 @@ func newProjectRestoreCmd(a *App) *cobra.Command {
 			if _, err := loadProject(a.Cfg.StateDir(), ref); err != nil {
 				if cwd == "" {
 					found, note := autoProjectDir(cmd.Context(), a, ref, name)
-					autoTask = found != "" && strings.HasPrefix(note, taskFolderNote)
+					autoTask = found != "" && (strings.HasPrefix(note, taskFolderNote) || strings.HasPrefix(note, mirrorNote))
 					if found == "" {
 						return errcode.New(errcode.NotFound, "project is not mapped on this device and its folder was not found automatically ("+note+"); pass --cwd <local project directory>")
 					}
@@ -295,7 +295,7 @@ func newProjectRestoreCmd(a *App) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if autoTask && !planOnly { // a task folder the agent itself would make; a preview makes nothing
+				if autoTask && !planOnly { // a task folder the agent itself would make, or the mirror of the other computer's folder; a preview makes nothing
 					if err := os.MkdirAll(abs, 0755); err != nil {
 						return err
 					}
@@ -503,7 +503,35 @@ func autoProjectDir(ctx context.Context, a *App, ref, agentName string) (string,
 const (
 	taskFolderNote = "the agent's own task folder "
 	sameNameNote   = "same folder name as "
+	mirrorNote     = "the same place under your home folder as on the other computer: "
 )
+
+// mirrorOfOrigin is where a project's folder would sit on this computer if it
+// lived at the same place under the home folder as on the computer it came
+// from (/Users/ann/Documents/work/app is ~/Documents/work/app here, whatever
+// the user names are). It says no for a folder outside a home folder, for the
+// home folder itself and for places an app keeps for itself.
+func mirrorOfOrigin(origin string) (string, bool) {
+	parts := strings.Split(filepath.Clean(origin), string(filepath.Separator))
+	// ["", "Users"|"home", user, rest...]
+	if len(parts) < 4 || parts[0] != "" || (parts[1] != "Users" && parts[1] != "home") {
+		return "", false
+	}
+	rest := parts[3:]
+	for _, p := range rest {
+		if p == "" || p == "." || p == ".." || strings.HasPrefix(p, ".") {
+			return "", false
+		}
+	}
+	if rest[0] == "Library" {
+		return "", false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", false
+	}
+	return filepath.Join(append([]string{home}, rest...)...), true
+}
 
 func autoProjectDirWith(ctx context.Context, a *App, r *rt, ref, agentName string) (string, string) {
 	ad, err := a.adapter(agentName)
@@ -535,6 +563,9 @@ func autoProjectDirWith(ctx context.Context, a *App, r *rt, ref, agentName strin
 		return c[0], sameNameNote + filepath.Base(origin)
 	case len(c) > 1:
 		return "", fmt.Sprintf("%d folders named %s: %s", len(c), filepath.Base(origin), strings.Join(c, ", "))
+	}
+	if dir, ok := mirrorOfOrigin(origin); ok {
+		return dir, mirrorNote + filepath.Base(origin)
 	}
 	return "", "no folder named " + filepath.Base(origin) + " in the usual places"
 }

@@ -85,7 +85,7 @@ func mapTaskProjects(ctx context.Context, a *App, r *rt, agents []string) error 
 	for _, ref := range refs {
 		for _, name := range agents {
 			dir, note := autoProjectDirWith(ctx, a, r, ref, name)
-			if dir == "" || !(strings.HasPrefix(note, taskFolderNote) || strings.HasPrefix(note, sameNameNote)) {
+			if dir == "" || !(strings.HasPrefix(note, taskFolderNote) || strings.HasPrefix(note, sameNameNote) || strings.HasPrefix(note, mirrorNote)) {
 				continue
 			}
 			if err := os.MkdirAll(dir, 0755); err != nil {
@@ -265,18 +265,25 @@ func newRelayCmd(a *App) *cobra.Command {
 				}
 				a.noteRound(active)
 				installed := 0
+				var installedIn, waitingIn []string
 				for _, p := range projects {
 					installed += p.Updated
+					if p.Updated > 0 {
+						installedIn = append(installedIn, p.Label)
+					}
+					if p.Waiting > 0 {
+						waitingIn = append(waitingIn, p.Label)
+					}
 				}
 				var apps []string
 				for _, n := range names {
 					apps = append(apps, agentTitle(n))
 				}
 				if installed > 0 {
-					a.notify("installed", 0, fmt.Sprintf("收到别的电脑的对话：%d 个已装进本机，重新打开 %s 就能看到。", installed, strings.Join(apps, " / ")))
+					a.notify("installed", 0, fmt.Sprintf("收到别的电脑的对话：%d 个已装进本机（项目：%s），重新打开 %s 就能看到。", installed, projectList(installedIn), strings.Join(apps, " / ")))
 				}
 				if waiting > 0 {
-					a.notify("waiting", 6*time.Hour, fmt.Sprintf("有 %d 个来自别的电脑的对话在等：请完全退出 %s（Cmd+Q），几分钟内会自动装入。", waiting, strings.Join(apps, " / ")))
+					a.notify("waiting", 6*time.Hour, fmt.Sprintf("有 %d 个来自别的电脑的对话在等（项目：%s）：请完全退出 %s（Cmd+Q），几分钟内会自动装入。", waiting, projectList(waitingIn), strings.Join(apps, " / ")))
 				}
 			}
 			if quiet && !a.JSON {
