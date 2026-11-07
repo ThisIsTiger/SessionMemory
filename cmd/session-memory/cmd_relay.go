@@ -133,6 +133,7 @@ func newRelayCmd(a *App) *cobra.Command {
 			quiet, _ := cmd.Flags().GetBool("quiet")
 			pushOnly, _ := cmd.Flags().GetBool("push-only")
 			if quiet { // background runs hold back; one started by hand never does
+				a.rotateLog()
 				a.quietRun = true
 				a.defersToHooks = !pushOnly
 				// a push is wanted now, not at the background rhythm: only the quota can hold it
@@ -197,6 +198,7 @@ func newRelayCmd(a *App) *cobra.Command {
 				Problems []string `json:"problems,omitempty"`
 			}
 			var projects []projOut
+			var blockedNow []blockedSession
 			mapped := map[string]bool{}
 			failed, waiting := 0, 0
 			for _, pm := range loadProjects(a.Cfg.StateDir()) {
@@ -233,10 +235,17 @@ func newRelayCmd(a *App) *cobra.Command {
 					po.Waiting += res.Waiting
 					po.Failed += res.Failed
 					po.Problems = append(po.Problems, res.Problems...)
+					blockedNow = append(blockedNow, res.Blocked...)
 				}
 				projects = append(projects, po)
 				failed += po.Failed
 				waiting += po.Waiting
+			}
+			// sessions the app refuses are the same ones round after round: a
+			// background run speaks of them when they are new, not every two minutes
+			newlyBlocked := len(blockedNow)
+			if plan, _ := cmd.Flags().GetBool("plan"); explicit == "" && !plan {
+				newlyBlocked = a.noteBlocked(blockedNow) // `check` reads the record; a run for one agent only does not speak for the others
 			}
 			type unmappedOut struct {
 				Ref      string `json:"project_ref"`
@@ -287,7 +296,7 @@ func newRelayCmd(a *App) *cobra.Command {
 				}
 			}
 			if quiet && !a.JSON {
-				noteworthy := sync["published"] > 0 || sync["received_revisions"] > 0 || sync["quarantined"] > 0 || failed > 0 || waiting > 0
+				noteworthy := sync["published"] > 0 || sync["received_revisions"] > 0 || sync["quarantined"] > 0 || newlyBlocked > 0 || waiting > 0
 				for _, p := range projects {
 					noteworthy = noteworthy || p.Updated > 0
 				}

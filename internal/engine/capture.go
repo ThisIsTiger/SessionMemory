@@ -142,7 +142,7 @@ func (e *Engine) Checkpoint(ctx context.Context, ad agent.Adapter, bindingID, pr
 	// checkpoints still record code-state changes).
 	codeOnly := captureState == session.CaptureAuto
 	if !res.Changed && (!repoChanged || codeOnly) && b.InstalledRevisionID != "" {
-		return session.Revision{}, false, tx.Finish()
+		return session.Revision{}, false, tx.Discard() // nothing happened: nothing to keep a record of
 	}
 	if repoRef == "" {
 		obj, err := e.Store.PutObject(ctx, vault.TypeRepoState, nil, bytesNewReader(repoJSON))

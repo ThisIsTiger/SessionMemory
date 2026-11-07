@@ -184,8 +184,10 @@ func (a *App) buildCheck(ctx context.Context) checkReport {
 			rep.next("让用户重新授权微云：按微云 skill 自带的 `references/auth.md` 扫码，然后运行 `" + selfPath() + " setup`")
 		case "attention":
 			rep.raise("attention")
-			rep.detail("有对话需要决定怎么处理（同一个对话在两台电脑上都改过了）")
-			rep.next("运行 `" + selfPath() + " relay` 看是哪几个，用白话告诉用户；不要自己执行 adopt / choose，除非用户要求")
+			rep.detail("最近一轮同步里有对话没能装进本机")
+			if _, ok := a.loadBlocked(); !ok {
+				rep.next("运行 `" + selfPath() + " relay` 看是哪几个、为什么，用白话告诉用户；不要自己执行 adopt / choose，除非用户要求")
+			}
 		default:
 			if now.Sub(round.Since) >= time.Hour {
 				rep.raise("problem")
@@ -287,8 +289,13 @@ func (a *App) checkSessions(ctx context.Context, rep *checkReport, r *rt, info d
 		rep.detail("%d 个对话的安装被中断过，需要先检查", unsafe)
 		rep.next("运行 `" + selfPath() + " relay` 看详情，把原文告诉用户")
 	}
+	blocked := map[string]blockedEntry{}
+	if st, ok := a.loadBlocked(); ok && now.Sub(st.At) <= blockedFresh {
+		blocked = st.Sessions
+		a.describeBlocked(ctx, rep, r, now, blocked)
+	}
 	if received > 0 {
-		a.describeWaiting(ctx, rep, r, receivedIDs)
+		a.describeWaiting(ctx, rep, r, receivedIDs, blocked)
 	}
 
 	db := r.Store.DB()
@@ -352,21 +359,15 @@ type waitingGroup struct {
 
 // describeWaiting says, project by project, why conversations from the other
 // computers are not in the apps here yet and what, if anything, to do about it.
-func (a *App) describeWaiting(ctx context.Context, rep *checkReport, r *rt, received []listRow) {
-	refOf := map[string]string{}
-	if q, err := r.Store.DB().Query(`SELECT session_id, COALESCE(project_ref, '') FROM sessions`); err == nil {
-		for q.Next() {
-			var id, ref string
-			if q.Scan(&id, &ref) == nil {
-				refOf[id] = ref
-			}
-		}
-		q.Close()
-	}
+func (a *App) describeWaiting(ctx context.Context, rep *checkReport, r *rt, received []listRow, blocked map[string]blockedEntry) {
+	refOf := sessionRefs(r)
 	groups := map[string]*waitingGroup{}
 	var order []string
 	loose := 0
 	for _, x := range received {
+		if _, held := blocked[x.SessionID]; held {
+			continue // said above with its reason; it is not waiting for anything that will pass
+		}
 		ref := refOf[x.SessionID]
 		if ref == "" {
 			loose++
@@ -395,20 +396,7 @@ func (a *App) describeWaiting(ctx context.Context, rep *checkReport, r *rt, rece
 			rep.detail("来自别的电脑的 %d 个 %s 对话：这台电脑不支持装入 %s", len(g.sessions), app, app)
 			continue
 		}
-		label := ""
-		if pm, ok := mapped[g.ref]; ok {
-			label = pm.Label
-			if label == "" {
-				label = filepath.Base(pm.LocalPath)
-			}
-		}
-		if label == "" {
-			if origin := projectOrigin(ctx, r, ad, g.sessions); origin != "" {
-				label = filepath.Base(origin)
-			} else {
-				label = g.ref
-			}
-		}
+		label := projectLabel(ctx, r, ad, g.ref, g.sessions, mapped)
 		head := fmt.Sprintf("项目 %s（%d 个 %s 对话）", label, len(g.sessions), app)
 		if pm, ok := mapped[g.ref]; ok {
 			if st, err := os.Stat(pm.LocalPath); err != nil || !st.IsDir() {
@@ -497,4 +485,92 @@ func explainNoFolder(note, label string) string {
 		return "这些对话没有记录项目文件夹，没法自动决定放哪里"
 	}
 	return "本机没法自动确定它的文件夹（" + note + "）"
+}
+
+// sessionRefs maps each session to its project.
+func sessionRefs(r *rt) map[string]string {
+	refOf := map[string]string{}
+	if q, err := r.Store.DB().Query(`SELECT session_id, COALESCE(project_ref, '') FROM sessions`); err == nil {
+		for q.Next() {
+			var id, ref string
+			if q.Scan(&id, &ref) == nil {
+				refOf[id] = ref
+			}
+		}
+		q.Close()
+	}
+	return refOf
+}
+
+// projectLabel is the name a person knows a project by: its label here, else
+// the name of the folder its sessions were recorded in.
+func projectLabel(ctx context.Context, r *rt, ad agent.Adapter, ref string, sessions []string, mapped map[string]session.ProjectMap) string {
+	if pm, ok := mapped[ref]; ok {
+		if pm.Label != "" {
+			return pm.Label
+		}
+		return filepath.Base(pm.LocalPath)
+	}
+	if ad != nil {
+		if origin := projectOrigin(ctx, r, ad, sessions); origin != "" {
+			return filepath.Base(origin)
+		}
+	}
+	return ref
+}
+
+// describeBlocked says which sessions the last relay round could not install,
+// and why, one line per reason.
+func (a *App) describeBlocked(ctx context.Context, rep *checkReport, r *rt, now time.Time, blocked map[string]blockedEntry) {
+	refOf := sessionRefs(r)
+	mapped := map[string]session.ProjectMap{}
+	for _, pm := range loadProjects(a.Cfg.StateDir()) {
+		mapped[pm.ProjectRef] = pm
+	}
+	type group struct {
+		canAct   bool
+		sessions int
+		projects map[string][]string // ref -> sessions
+		agent    string
+		since    time.Time
+	}
+	groups := map[string]*group{}
+	var order []string
+	for id, e := range blocked {
+		what, canAct := explainBlocked(e.Reason)
+		g := groups[what]
+		if g == nil {
+			g = &group{canAct: canAct, projects: map[string][]string{}, agent: e.Agent}
+			groups[what] = g
+			order = append(order, what)
+		}
+		g.sessions++
+		g.projects[refOf[id]] = append(g.projects[refOf[id]], id)
+		if g.since.IsZero() || e.Since.Before(g.since) {
+			g.since = e.Since
+		}
+	}
+	sort.Strings(order)
+	for _, what := range order {
+		g := groups[what]
+		ad, _ := a.adapter(g.agent)
+		var names []string
+		for ref, ids := range g.projects {
+			if ref == "" {
+				names = append(names, "未归入项目")
+				continue
+			}
+			names = append(names, projectLabel(ctx, r, ad, ref, ids, mapped))
+		}
+		sort.Strings(names)
+		rep.raise("attention")
+		since := ""
+		if !g.since.IsZero() {
+			since = "，" + ago(now, g.since) + "起一直如此"
+		}
+		rep.detail("%d 个对话（%d 个项目：%s）%s：%s", g.sessions, len(names), projectList(names), since, what)
+		if g.canAct {
+			rep.next("把上面这条的原文告诉用户；不要自己改 WorkBuddy 或 Codex 的会话文件，也不要执行 adopt / choose，除非用户要求")
+		}
+	}
 }

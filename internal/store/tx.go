@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"session-memory/internal/agent"
 	"session-memory/internal/device"
@@ -108,6 +109,48 @@ func (t *tx) Finish() error {
 		return err
 	}
 	return os.RemoveAll(t.StagingDir())
+}
+
+// Discard removes a transaction that changed nothing, so that rounds which find
+// nothing to do leave nothing behind.
+func (t *tx) Discard() error {
+	if err := os.Remove(t.s.journalPath(t.rec.TxID)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return os.RemoveAll(t.StagingDir())
+}
+
+// PruneDone removes archived journals older than keep (the spec keeps them
+// seven days). It looks at most once a day, and returns how many it removed.
+func (s *FS) PruneDone(keep time.Duration) (int, error) {
+	marker := s.path("journal", ".pruned")
+	now := s.Now()
+	if st, err := os.Stat(marker); err == nil && now.Sub(st.ModTime()) < 24*time.Hour {
+		return 0, nil
+	}
+	dir := s.path("journal", "done")
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, e := range ents {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || now.Sub(info.ModTime()) < keep {
+			continue
+		}
+		if os.Remove(filepath.Join(dir, e.Name())) == nil {
+			removed++
+		}
+	}
+	if f, err := os.OpenFile(marker, os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+		f.Close()
+		os.Chtimes(marker, now, now)
+	}
+	return removed, nil
 }
 
 func (s *FS) loadJournal(path string) (JournalRecord, error) {

@@ -105,7 +105,7 @@ func TestCheckSaysWhatIsRightAndWhatIsWrong(t *testing.T) {
 		t.Fatalf("long outage: %+v", rep)
 	}
 	putJSON(t, filepath.Join(state, "last-round.json"), roundResult{At: now, Kind: "attention", Error: "2 session(s) need attention", Since: now})
-	if rep := runCheck(t, m); rep.Level != "attention" || !rep.mentions("需要决定") || !rep.mentions("adopt") {
+	if rep := runCheck(t, m); rep.Level != "attention" || !rep.mentions("没能装进本机") || !rep.mentions("relay") || !rep.mentions("adopt") {
 		t.Fatalf("sessions that need a decision: %+v", rep)
 	}
 }
@@ -267,7 +267,7 @@ func TestFailedRoundsTellThePersonOnlyWhatTheyCanActOn(t *testing.T) {
 	}
 
 	a.noteOutcome(errcode.New(errcode.RecoveryNeeded, "2 session(s) need attention"))
-	if last := (*got)[len(*got)-1]; !strings.Contains(last, "需要你决定") {
+	if last := (*got)[len(*got)-1]; !strings.Contains(last, "没能装进这台电脑") {
 		t.Fatalf("sessions that need a decision: %v", *got)
 	}
 }
@@ -341,5 +341,50 @@ func TestSetupEndsWithWordsForThePerson(t *testing.T) {
 				t.Errorf("%s: the words for the person hold %q: %s", c.name, bad, c.got)
 			}
 		}
+	}
+}
+
+// What the last relay round refused is what check says, with the reason; it is
+// not described as waiting for an app to be quit, which would never help.
+func TestCheckExplainsWhatRelayRefused(t *testing.T) {
+	_, B, ref := twoComputersWithSessionIn(t, "/Users/ann/Documents/work/app")
+	// B has just joined: let the received session be installed, then pretend the
+	// agent refused a newer version of it
+	B.must("relay", "--client-closed")
+	var sid string
+	for _, line := range strings.Split(strings.TrimSpace(B.must("list")), "\n") {
+		if f := strings.Fields(line); len(f) > 0 {
+			sid = f[0]
+		}
+	}
+	state := filepath.Join(B.home, "sm")
+	putJSON(t, filepath.Join(state, "blocked-sessions.json"), blockedState{At: time.Now(), Sessions: map[string]blockedEntry{
+		sid: {Code: "needs_action", Reason: "WorkBuddy target must have exactly one active local account; use a separate profile", Agent: "codex", Since: time.Now().Add(-26 * time.Hour)},
+	}})
+	rep := runCheck(t, B)
+	if rep.Level != "attention" || !rep.mentions("不止一个账号") || !rep.mentions("1 个项目：app") || !rep.mentions("26 小时前起一直如此") || rep.mentions("正在运行") {
+		t.Fatalf("%+v", rep)
+	}
+	for _, n := range rep.Next {
+		if strings.Contains(n, "退出") {
+			t.Fatalf("quitting the app does not help here, yet: %q", n)
+		}
+	}
+	_ = ref
+
+	// a reason nobody has put into words is shown as it is, and the assistant is told to pass it on
+	putJSON(t, filepath.Join(state, "blocked-sessions.json"), blockedState{At: time.Now(), Sessions: map[string]blockedEntry{
+		sid: {Code: "unsupported", Reason: "something new and unexpected", Agent: "codex", Since: time.Now()},
+	}})
+	if rep := runCheck(t, B); !rep.mentions("装不进去：something new and unexpected") || len(rep.Next) == 0 {
+		t.Fatalf("%+v", rep)
+	}
+
+	// a record from long ago says nothing about now
+	putJSON(t, filepath.Join(state, "blocked-sessions.json"), blockedState{At: time.Now().Add(-8 * time.Hour), Sessions: map[string]blockedEntry{
+		sid: {Code: "needs_action", Reason: "something", Agent: "codex", Since: time.Now().Add(-9 * time.Hour)},
+	}})
+	if rep := runCheck(t, B); rep.mentions("something") {
+		t.Fatalf("a stale record was believed: %+v", rep)
 	}
 }

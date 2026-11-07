@@ -197,6 +197,9 @@ type Tx interface {
 	Rollback() error
 	// Finish moves the journal to done/ and removes StagingDir.
 	Finish() error
+	// Discard ends a transaction that changed nothing: the journal and
+	// StagingDir are removed instead of being archived.
+	Discard() error
 }
 
 // ---- store ----

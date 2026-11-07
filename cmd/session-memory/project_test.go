@@ -285,6 +285,11 @@ func TestRelayConflictChooseThenLoserTakesChosen(t *testing.T) {
 		SessionID string `json:"session_id"`
 	}
 	json.Unmarshal([]byte(A.must("list", "--json")), &list)
+	// the refusal is written down with its session, for `check` to explain
+	blockedPath := filepath.Join(A.home, "sm", "blocked-sessions.json")
+	if raw, err := os.ReadFile(blockedPath); err != nil || !strings.Contains(string(raw), list[0].SessionID) {
+		t.Fatalf("the blocked session is not recorded: %v %s", err, raw)
+	}
 	var g struct {
 		Revisions []struct {
 			RevisionID string `json:"revision_id"`
@@ -314,6 +319,9 @@ func TestRelayConflictChooseThenLoserTakesChosen(t *testing.T) {
 	A.must("choose", list[0].SessionID, "--revision", aHead)
 	if out := A.must("relay", "--client-closed"); !strings.Contains(out, "up to date 1") {
 		t.Fatalf("A after choosing its own branch: %s", out)
+	}
+	if _, err := os.Stat(blockedPath); err == nil {
+		t.Fatal("nothing is blocked any more, so the record must be gone")
 	}
 	// B still has the abandoned branch installed: it is told, not overwritten
 	if code, _, errs := B.run("relay", "--client-closed"); code != 6 || !strings.Contains(errs, "session-memory adopt") {

@@ -124,7 +124,7 @@ func (a *App) noteOutcome(err error) {
 	case r.Kind == "auth":
 		a.notify("auth", 24*time.Hour, "微云的登录失效了，同步已暂停。对 AI 助手说“重新连接微云”就能恢复。")
 	case r.Kind == "attention":
-		a.notify("attention", 12*time.Hour, "有对话需要你决定怎么处理（同一个对话在两台电脑上都改过了）。请让 AI 助手“检查会话同步”。")
+		a.notify("attention", 12*time.Hour, "有对话没能装进这台电脑（原因各不相同）。请让 AI 助手“检查会话同步”，它会告诉你具体是哪些、为什么。")
 	case a.Now().Sub(r.Since) >= time.Hour:
 		a.notify("failing", 6*time.Hour, "会话同步已经连续失败超过一小时。请让 AI 助手“检查会话同步”。")
 	}

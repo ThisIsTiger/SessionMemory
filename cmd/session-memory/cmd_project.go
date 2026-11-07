@@ -444,6 +444,7 @@ type projectResult struct {
 	Sessions, Installed, UpToDate, Skipped, Failed, Waiting int
 	Done                                                    []string // session ids installed now
 	Problems                                                []string // "<session>: <error>" for sessions that failed or wait
+	Blocked                                                 []blockedSession
 }
 
 // installProject brings every session of a project, in the target agent's
@@ -475,6 +476,7 @@ func installProject(ctx context.Context, a *App, r *rt, ad agent.Adapter, name, 
 		default:
 			res.Failed++
 			res.Problems = append(res.Problems, fmt.Sprintf("%s: %v", id, err))
+			res.Blocked = append(res.Blocked, blockedSession{ID: id, Code: string(errcode.CodeOf(err)), Reason: err.Error(), Agent: name})
 		}
 	}
 	if res.Installed > 0 && !opt.PlanOnly && name == "codex" {

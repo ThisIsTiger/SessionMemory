@@ -170,6 +170,7 @@ func (a *App) openRT(ctx context.Context, needSync bool) (*rt, error) {
 	if err != nil {
 		return nil, err
 	}
+	st.PruneDone(7 * 24 * time.Hour) // archived transactions are kept a week (spec); a failure only leaves them for next time
 	st.InstallGuard = func(ctx context.Context, d store.InstallData) (func(), error) {
 		if d.Agent == workbuddy.AgentName {
 			return workbuddy.GuardRecovery(ctx, d)

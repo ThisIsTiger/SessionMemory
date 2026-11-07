@@ -215,3 +215,15 @@ func (a *App) migrateAccountKeys(accounts []wyAccount) {
 		}
 	}
 }
+
+// autosync.log is where launchd sends the background job's output. It is kept
+// to about a megabyte plus the one before it: a run that finds it larger moves
+// it to autosync.log.1 (the next run of the job opens a new file).
+const logLimit = 1 << 20
+
+func (a *App) rotateLog() {
+	p := filepath.Join(a.Cfg.StateDir(), "autosync.log")
+	if st, err := os.Stat(p); err == nil && st.Size() > logLimit {
+		os.Rename(p, p+".1")
+	}
+}
