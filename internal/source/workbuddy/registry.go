@@ -147,7 +147,12 @@ func readRow(ctx context.Context, db sqlReader, id string) (row, error) {
 	return out, rows.Err()
 }
 
-func localUser(ctx context.Context, db sqlReader) (string, error) {
+// localUser is the account whose conversations this WorkBuddy home holds. A
+// home that was once signed in as another account keeps that account's old
+// rows; the account in use is the one with a personal workspace folder
+// (user-<id>-personal) in the home. When that does not single one out the
+// answer stays "ambiguous": a conversation is never put under a guess.
+func localUser(ctx context.Context, db sqlReader, home string) (string, error) {
 	rows, err := db.QueryContext(ctx, "SELECT DISTINCT user_id FROM sessions WHERE deleted_at IS NULL AND user_id<>''")
 	if err != nil {
 		return "", err
@@ -164,10 +169,19 @@ func localUser(ctx context.Context, db sqlReader) (string, error) {
 	if err := rows.Err(); err != nil {
 		return "", err
 	}
-	if len(ids) != 1 {
+	if len(ids) == 1 {
+		return ids[0], nil
+	}
+	var inUse []string
+	for _, id := range ids {
+		if st, err := os.Stat(filepath.Join(home, "user-"+id+"-personal")); err == nil && st.IsDir() {
+			inUse = append(inUse, id)
+		}
+	}
+	if len(inUse) != 1 {
 		return "", errcode.New(errcode.NeedsAction, "WorkBuddy target must have exactly one active local account; use a separate profile")
 	}
-	return ids[0], nil
+	return inUse[0], nil
 }
 
 func rowHash(r row) string {

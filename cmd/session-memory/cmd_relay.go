@@ -61,7 +61,10 @@ func relayClientState(ctx context.Context, ad agent.Adapter, name string, opt en
 // here when that folder is one the agent makes by itself (WorkBuddy tasks) or
 // the one existing folder with the same name, so handing work over needs no
 // command on the receiving side.
-func mapTaskProjects(ctx context.Context, a *App, r *rt, agents []string) error {
+//
+// With plan set it only says what it would do (on stderr): no folder is made
+// and nothing is remembered.
+func mapTaskProjects(ctx context.Context, a *App, r *rt, agents []string, plan bool) error {
 	mapped := map[string]bool{}
 	for _, pm := range loadProjects(a.Cfg.StateDir()) {
 		mapped[pm.ProjectRef] = true
@@ -87,6 +90,10 @@ func mapTaskProjects(ctx context.Context, a *App, r *rt, agents []string) error 
 			dir, note := autoProjectDirWith(ctx, a, r, ref, name)
 			if dir == "" || !(strings.HasPrefix(note, taskFolderNote) || strings.HasPrefix(note, sameNameNote) || strings.HasPrefix(note, mirrorNote)) {
 				continue
+			}
+			if plan {
+				fmt.Fprintf(a.Err, "plan: project %s would use %s as its folder here (%s)\n", ref, dir, note)
+				break
 			}
 			if err := os.MkdirAll(dir, 0755); err != nil {
 				return err
@@ -169,12 +176,19 @@ func newRelayCmd(a *App) *cobra.Command {
 			if pushOnly {
 				return pushOnce(cmd.Context(), a, r, quiet)
 			}
-			sync, err := syncOnce(cmd.Context(), a, r)
-			if err != nil {
-				return err
-			}
-			if err := captureFailure(sync); err != nil {
-				return err // handing over work that was not saved would lose it
+			// a preview changes nothing on this computer: no capture, no upload or
+			// download, no folder made, no mapping remembered; it shows what the
+			// install step would do with what was last received
+			plan, _ := cmd.Flags().GetBool("plan")
+			sync := map[string]int{}
+			if !plan {
+				var err error
+				if sync, err = syncOnce(cmd.Context(), a, r); err != nil {
+					return err
+				}
+				if err := captureFailure(sync); err != nil {
+					return err // handing over work that was not saved would lose it
+				}
 			}
 			if !strict {
 				// the history is what is being handed over; a differing code state is only noted in the receipt
@@ -184,7 +198,7 @@ func newRelayCmd(a *App) *cobra.Command {
 			for _, t := range targets {
 				names = append(names, t.name)
 			}
-			if err := mapTaskProjects(cmd.Context(), a, r, names); err != nil {
+			if err := mapTaskProjects(cmd.Context(), a, r, names, plan); err != nil {
 				return err
 			}
 			type projOut struct {
@@ -244,7 +258,7 @@ func newRelayCmd(a *App) *cobra.Command {
 			// sessions the app refuses are the same ones round after round: a
 			// background run speaks of them when they are new, not every two minutes
 			newlyBlocked := len(blockedNow)
-			if plan, _ := cmd.Flags().GetBool("plan"); explicit == "" && !plan {
+			if explicit == "" && !plan {
 				newlyBlocked = a.noteBlocked(blockedNow) // `check` reads the record; a run for one agent only does not speak for the others
 			}
 			type unmappedOut struct {
@@ -310,7 +324,11 @@ func newRelayCmd(a *App) *cobra.Command {
 					return err
 				}
 			} else {
-				fmt.Fprintf(a.Out, "uploaded %d item(s), received %d version(s)\n", sync["published"], sync["received_revisions"])
+				if plan {
+					fmt.Fprintln(a.Out, "plan only: nothing was uploaded, downloaded or written")
+				} else {
+					fmt.Fprintf(a.Out, "uploaded %d item(s), received %d version(s)\n", sync["published"], sync["received_revisions"])
+				}
 				for _, p := range projects {
 					fmt.Fprintf(a.Out, "project %s: updated %d, up to date %d", p.Label, p.Updated, p.UpToDate)
 					if p.Waiting > 0 {

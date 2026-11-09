@@ -676,3 +676,37 @@ func TestManagedMetaUpdateKeepsLocalEditProtected(t *testing.T) {
 		t.Fatalf("local edit was overwritten: %s", got)
 	}
 }
+
+// A home once signed in as another account keeps that account's old rows. The
+// account in use is the one with a personal workspace folder; when that does
+// not single one out, nothing is installed.
+func TestWriterPicksTheAccountInUse(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	db := testRegistry(t, home, "main")
+	w := testWriter()
+	in := writerInput(home)
+	if _, err := db.Exec("INSERT INTO sessions(id,cwd,user_id,created_at,updated_at) VALUES('old','/local','old-account',1,1)"); err != nil {
+		t.Fatal(err)
+	}
+	refuse := func(why string) {
+		t.Helper()
+		if _, err := w.Plan(ctx, in); errcode.CodeOf(err) != errcode.NeedsAction {
+			t.Fatalf("%s: accepted: %v", why, err)
+		}
+	}
+	refuse("no account has a personal folder")
+
+	mk := func(id string) {
+		if err := os.Mkdir(filepath.Join(home, "user-"+id+"-personal"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("main")
+	mkdirTwo := func() { mk("old-account") }
+	if _, err := w.Plan(ctx, in); err != nil {
+		t.Fatalf("the account in use was not chosen: %v", err)
+	}
+	mkdirTwo()
+	refuse("both accounts have a personal folder")
+}

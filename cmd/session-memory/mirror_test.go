@@ -163,3 +163,32 @@ func TestCheckNamesAProjectWhoseFolderIsGone(t *testing.T) {
 		t.Fatalf("%+v", rep)
 	}
 }
+
+// A preview changes nothing: no folder is made, no mapping is remembered and
+// nothing is installed. It says what the real run would do.
+func TestRelayPlanLeavesThisComputerAsItWas(t *testing.T) {
+	_, B, ref := twoComputersWithSessionIn(t, "/Users/ann/Documents/work/app")
+	want := filepath.Join(B.home, "Documents", "work", "app")
+
+	out := B.must("relay", "--plan", "--client-closed")
+	if _, err := os.Stat(want); err == nil {
+		t.Fatalf("--plan made the folder %s", want)
+	}
+	if list := B.must("project", "list"); strings.Contains(list, ref) {
+		t.Fatalf("--plan remembered a mapping:\n%s", list)
+	}
+	if len(codexFiles(B)) != 0 {
+		t.Fatalf("--plan installed: %v", codexFiles(B))
+	}
+	if !strings.Contains(out, "plan only") {
+		t.Fatalf("the output does not say it was only a preview:\n%s", out)
+	}
+
+	B.must("relay", "--client-closed") // the real run does all of it
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("the real run did not make the folder: %v", err)
+	}
+	if len(codexFiles(B)) != 1 {
+		t.Fatalf("not installed: %v", codexFiles(B))
+	}
+}

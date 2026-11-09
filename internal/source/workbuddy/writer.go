@@ -391,7 +391,7 @@ func (w *Writer) build(ctx context.Context, in agent.WriteInput) (nativeBuild, e
 	if err != nil {
 		return b, err
 	}
-	user, err := localUser(ctx, db)
+	user, err := localUser(ctx, db, in.TargetState.Home)
 	if err != nil {
 		return b, err
 	}
